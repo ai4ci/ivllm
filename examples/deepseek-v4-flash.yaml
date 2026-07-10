@@ -22,8 +22,9 @@ enable-expert-parallel: true
 kv-cache-dtype: fp8
 block-size: 256
 
-max-model-len: 131072
+max-model-len: 1048576
 gpu-memory-utilization: 0.90
+# cpu-offload-gb: 40
 
 trust-remote-code: true
 
@@ -39,6 +40,6 @@ tokenizer-mode: deepseek_v4
 # Prefix caching — valuable for repeated system prompts and CoT contexts.
 enable-prefix-caching: true
 
-min-vllm-version: "0.20.0"
+min-vllm-version: "0.23.0"
 # min-vllm-version: DeepSeek-V4 support is present in vLLM 0.20.0+.
 # ivllm checks this before submitting; stripped before passing to vLLM.

@@ -197,6 +197,8 @@ export interface ServeOptions {
   pipelineParallelSize: number;
   /** Data parallelism degree (default `1`) */
   dataParallelSize: number;
+  /** Number of nodes (overrides other calculations) */
+  nnodes: number | unknown;
   /** Maximum model context length in tokens */
   maxModelLen: number;
   /** Enable auto tool choice without explicit prompt hints */

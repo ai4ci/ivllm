@@ -68,3 +68,20 @@ export function semverSort(versions: string[]): string[] {
     semverLt(a, b) ? 1 : semverLt(b, a) ? -1 : 0,
   );
 }
+
+/**
+ * Sort an array of semantic version strings in ascending order
+ * (lowest version first).
+ *
+ * Returns a **new** array; the input array is not mutated.
+ *
+ * **Examples**
+ *
+ * @param versions - Array of version strings (e.g. `['0.19.0', '0.20.0']`)
+ * @returns A new array sorted descending by version
+ */
+export function revSemverSort(versions: string[]): string[] {
+  return [...versions].sort((a, b) =>
+    semverLt(a, b) ? -1 : semverLt(b, a) ? 1 : 0,
+  );
+}

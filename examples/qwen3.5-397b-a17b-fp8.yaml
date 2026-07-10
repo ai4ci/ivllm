@@ -22,8 +22,8 @@ tensor-parallel-size: 4
 pipeline-parallel-size: 2
 max-model-len: 262144
 gpu-memory-utilization: 0.90
-dtype: bfloat16
-quantization: fp8
+dtype: fp8
+kv-cache-dtype: fp8
 safetensors-load-strategy: eager
 
 # Reasoning (thinking mode enabled by default; use /no_think in prompt to disable)

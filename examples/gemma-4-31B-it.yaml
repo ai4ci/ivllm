@@ -18,11 +18,11 @@
 #
 # Usage: ivllm start <job-name> --config examples/gemma-4-31B-it.yaml
 
-model: google/gemma-4-31B-it
-tensor-parallel-size: 4
+model: RedHatAI/gemma-4-31B-it-FP8-dynamic
+tensor-parallel-size: 1
 max-model-len: 262144
 gpu-memory-utilization: 0.90
-dtype: bfloat16
+kv-cache-dtype: fp8
 
 # Required for Gemma 4's custom multimodal processing pipeline.
 trust-remote-code: true

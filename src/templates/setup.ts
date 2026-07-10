@@ -134,11 +134,12 @@ if [ ! -d ${venvDir} ]; then
   python -c "import importlib.metadata; print('vllm', importlib.metadata.version('vllm'))"
   echo "IVLLM_SETUP_SUCCESS"
 else
+  source ${paths.remoteProjectVllmVenvActivate}
   echo "=== vLLM ${vllmVersion} already installed at ${venvDir} — skipping ==="
   echo "IVLLM_SETUP_SUCCESS"
 fi
 
-FLASHINFER=$(uv pip list --format=json | jq '.[] | select(.name == "flashinfer-python") | .version' -r)
+export FLASHINFER=$(uv pip list --format=json | jq '.[] | select(.name == "flashinfer-python") | .version' -r)
 echo "=== Installing flashinfer-jit-cache ($FLASHINFER) ==="
 uv pip install flashinfer-jit-cache==$FLASHINFER --index-url https://flashinfer.ai/whl/cu129
 echo "flashinfer-jit-cache ($FLASHINFER) install complete."

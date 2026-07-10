@@ -86,9 +86,11 @@ export async function parseStartArgs(
 
   const gpuCount = flags['gpus']
     ? parseInt(flags['gpus'], 10)
-    : (yaml.tensorParallelSize ?? 1) *
-      (yaml.pipelineParallelSize ?? 1) *
-      (yaml.dataParallelSize ?? 1);
+    : yaml.nnodes
+      ? yaml.nnodes * 4
+      : (yaml.tensorParallelSize ?? 1) *
+        (yaml.pipelineParallelSize ?? 1) *
+        (yaml.dataParallelSize ?? 1);
 
   const cacheKey = `${yaml.model}/${yaml.tensorParallelSize}/${yaml.pipelineParallelSize}`;
 

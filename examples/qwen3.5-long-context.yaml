@@ -23,15 +23,14 @@
 #
 # Usage: ivllm start <job-name> --config examples/qwen3.5-long-context.yaml
 
-model: Qwen/Qwen3.5-35B-A3B
-tensor-parallel-size: 4
-pipeline-parallel-size: 2
+model: RedHatAI/Qwen3.5-35B-A3B-FP8-dynamic
+tensor-parallel-size: 2
 # Native context ceiling; the hybrid architecture keeps KV cache tiny (~2.5 GB)
 # even at full 262K. Reduce only if you encounter OOM on activations during
 # very large batch prefills.
 gpu-memory-utilization: 0.90
-dtype: bfloat16
-quantization: fp8
+dtype: fp8
+kv-cache-dtype: fp8
 safetensors-load-strategy: eager
 
 # MoE expert parallelism: routes MoE layers via all-to-all (more efficient than

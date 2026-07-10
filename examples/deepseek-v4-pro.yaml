@@ -1,3 +1,5 @@
+# NOT WORKING
+#
 # vLLM config for deepseek-ai/DeepSeek-V4-Pro on Isambard AI
 #
 # Hardware: 4 × GH200 120GB per node (Isambard AI Phase 1/2) — ~96 GiB usable HBM3e per GPU

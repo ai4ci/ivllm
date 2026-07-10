@@ -12,8 +12,14 @@ import yaml from 'js-yaml';
 import type { JobConfigEntry, ServeOptions, EnvVarEntry } from './types';
 
 /** Keys that are ivllm-specific and must be stripped before passing the config to `vllm serve`. */
-
-export const IVLLM_ONLY_KEYS = new Set(['min-vllm-version', 'env']);
+// nnodes is stripped because it is not used in ray. It is translated into a number of gpus and then recalculated
+// in the mp templates (and held back in the ray templates)
+export const IVLLM_ONLY_KEYS = new Set([
+  'min-vllm-version',
+  'env',
+  'nnodes',
+  'ivllm',
+]);
 export const JOB_CONFIG_DIR = join(homedir(), '.config', 'ivllm');
 
 /** Lists all stored job configs in the job config directory. */
@@ -87,6 +93,9 @@ export function parseVllmConfig(filePath: string): ServeOptions {
   const tensorParallelSize = typeof tp === 'number' ? tp : 1;
 
   // vLLM YAML uses kebab-case keys; also accept underscore variant
+  const nnodes: number | unknown = doc['nnodes'];
+
+  // vLLM YAML uses kebab-case keys; also accept underscore variant
   const pp = doc['pipeline-parallel-size'] ?? doc['pipeline_parallel_size'];
   const pipelineParallelSize = typeof pp === 'number' ? pp : 1;
 
@@ -124,6 +133,7 @@ export function parseVllmConfig(filePath: string): ServeOptions {
     tensorParallelSize,
     pipelineParallelSize,
     dataParallelSize,
+    nnodes,
     maxModelLen,
     enableAutoToolChoice,
     enableReasoning,

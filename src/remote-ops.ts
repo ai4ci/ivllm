@@ -3,7 +3,7 @@ import { basename, join } from 'path';
 import EventEmitter from 'node:events';
 import { spawn } from 'child_process';
 import readline from 'readline';
-import { semverGte, semverSort } from './semver.ts';
+import { semverGte, revSemverSort } from './semver.ts';
 
 import type {
   CloseableEventEmitter,
@@ -581,7 +581,7 @@ export function selectBestVersion(
 ): string | null {
   const candidates = installed.filter((v) => semverGte(v, minVersion));
   if (candidates.length === 0) return null;
-  return semverSort(candidates)[0]!;
+  return revSemverSort(candidates)[0]!;
 }
 
 /**
@@ -600,7 +600,10 @@ export function selectBestVersion(
  */
 export async function checkSSH(credentials: Credentials): Promise<boolean> {
   console.log('Checking SSH connectivity...');
-  const { exitCode: sshCheck } = await runRemote(credentials as Credentials, 'echo ok');
+  const { exitCode: sshCheck } = await runRemote(
+    credentials as Credentials,
+    'echo ok',
+  );
   if (sshCheck !== 0) {
     console.error('Error: Cannot connect to login node.');
     process.exit(1);
