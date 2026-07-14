@@ -133,6 +133,13 @@ if [ ! -d ${venvDir} ]; then
   echo "=== vLLM version ==="
   python -c "import importlib.metadata; print('vllm', importlib.metadata.version('vllm'))"
   echo "IVLLM_SETUP_SUCCESS"
+
+  # Copy fused MoE for H200
+  cd ${paths.remoteProjectVllmVersionDir}/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/configs
+
+  for f in *device_name=NVIDIA_H200*; do cp "$f" "\${f//device_name=NVIDIA_H200/device_name=NVIDIA GH200 120GB}"; done
+
+  cd ${paths.remoteProjectVllmVersionDir}
 else
   source ${paths.remoteProjectVllmVenvActivate}
   echo "=== vLLM ${vllmVersion} already installed at ${venvDir} — skipping ==="

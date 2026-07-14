@@ -68,7 +68,9 @@ export TP_SOCKET_IFNAME=hsn0
 # NVHPC separates math library headers (cuBLAS, cuSPARSE) from the CUDA SDK headers.
 # flashinfer JIT kernels include cublasLt.h which is in math_libs, not cuda/include.
 export CPATH=$NVHPC_ROOT/math_libs/12.9/include:\${CPATH:-}
-export LD_LIBRARY_PATH=$NVHPC_ROOT/cuda/12.9/compat:$NVHPC_ROOT/cuda/12.9/lib64:$NVHPC_ROOT/compilers/lib:$NVHPC_ROOT/comm_libs/12.9/nccl/lib:$NVHPC_ROOT/comm_libs/12.9/nvshmem/lib:$NVHPC_ROOT/math_libs/12.9/lib64:\${LD_LIBRARY_PATH:-}
+
+# HPC-specific paths kept first so Slingshot/aws-ofi-nccl wins over generic CUDA libs.
+export LD_LIBRARY_PATH=\${LD_LIBRARY_PATH:-}:$NVHPC_ROOT/cuda/12.9/compat:$NVHPC_ROOT/cuda/12.9/lib64:$NVHPC_ROOT/compilers/lib:$NVHPC_ROOT/comm_libs/12.9/nccl/lib:$NVHPC_ROOT/comm_libs/12.9/nvshmem/lib:$NVHPC_ROOT/math_libs/12.9/lib64
 export CUDA_VERSION=12.9
 
 export VLLM_ENABLE_CUDA_COMPATIBILITY=1
@@ -89,7 +91,8 @@ export FI_CXI_DEFAULT_CQ_SIZE=131072 # Expand Completion Queue size to prevent d
 
 # === Libfabric CXI Buffer Optimisations ===
 # These prevent Slingshot event-queue overflows and flow-control locks
-export FI_CXI_DEFAULT_TX_SIZE=16384
+# export FI_CXI_DEFAULT_TX_SIZE=16384
+export FI_CXI_DEFAULT_TX_SIZE=1024 # as per isambard_containers
 export FI_CXI_DISABLE_HOST_REGISTER=1
 export FI_CXI_RX_MATCH_MODE=software
 
@@ -103,6 +106,9 @@ export FI_MR_CACHE_MONITOR=userfaultfd
 # These ensure NCCL spreads parallel communication across all 4 rails.
 export NCCL_CROSS_NIC=1
 export NCCL_MIN_NCHANNELS=4
+
+# CRUCIAL FOR 4x GH200: Ensure full NVLink cross-mesh is forced for P2P collective transfers
+export NCCL_P2P_LEVEL=SYS
 
 # prevents parallel GPU worker processes from overlapping data transfers and causing a race condition or kernel hang during deep pipeline/tensor synchronizations
 export CUDA_DEVICE_MAX_CONNECTIONS=1
