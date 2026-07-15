@@ -9,8 +9,8 @@ the additive phase that creates the foundation without touching existing code.
 
 - **364 tests**: 336 pass, 28 fail (stale template tests — expected, these
   test the v2 template system we're replacing)
-- **Design docs**: Complete — architecture, ADRs (101–115), roadmap (M1–M7 + F3–F6),
-  coding standards, testing plan
+- **Design docs**: Complete — architecture, ADRs (101–115), roadmap (M1–M7.6 + F3–F6),
+  coding standards, testing plan, implementation plan
 - **Prototype**: `design/prototype/prototype.sh` (687 lines) — working bash
   framework with lockfile management, monitor triad, cache, shutdown
 - **Prototype test harness**: `design/prototype/test-vllm.sh` (199 lines) —

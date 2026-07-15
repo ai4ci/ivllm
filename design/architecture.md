@@ -228,7 +228,7 @@ Reconnect:
 |-----------|---------|--------|
 | CLI entry & command routing | `src/index.ts` | Preserved — add new commands |
 | Config management | `src/config.ts` | Preserved as-is |
-| YAML config parsing | `src/vllm-config.ts` | Preserved — add `idleTimeout` field |
+| YAML config parsing | `src/vllm-config.ts` | Preserved — add `idleTimeout` field, metadata block, and `targetVllmVersion` replacing `minVllmVersion` |
 | SSH/SCP operations | `src/remote-ops.ts` | Preserved — refactor interface slightly |
 | Local port/health ops | `src/local-ops.ts` | Preserved |
 | Version matching | `src/semver.ts` | Preserved |

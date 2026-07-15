@@ -110,9 +110,43 @@ the backend switches over.
 | `src/job.ts` | Add `makeV3Paths()` for new `$PROJECTDIR/engine/jobs/<job>/` structure |
 | `src/job.ts` | Add `parseV3Lockfile()` for new `status.json` schema |
 | `src/types.ts` | Add `LockfileState` type, `JobStatusV3` union, `LockfileV3` interface |
-| `src/vllm-config.ts` | Add optional `idleTimeout` field |
+| `src/vllm-config.ts` | Add `idleTimeout` field, metadata block (`version`, `author`, `lifecycle`, `targetVllmVersion` replacing `minVllmVersion`). Metadata is stripped before job runs but preserved in the job directory. |
 | `src/commands/list.ts` | Read new `status.json` format, display richer info |
 | `src/commands/status.ts` | Update for new lockfile path |
+
+### vllm.yaml metadata format
+
+The vllm.yaml config file gains an optional `metadata:` block at the top
+level. This block is stripped before being passed to vLLM but is preserved
+in the job directory for debugging and provenance.
+
+```yaml
+metadata:
+  version: "1.0"
+  author: "alice@example.com"
+  lifecycle: maturing        # experimental | maturing | stable | deprecated
+  target-vllm-version: "0.22.0"  # replaces min-vllm-version
+  description: "Qwen3.6 35B A3B FP8 on 4 GH200 nodes"
+
+model: Qwen/Qwen3.6-35B-A3B-FP8
+tensor-parallel-size: 4
+pipeline-parallel-size: 4
+# ... remaining vLLM args
+idle-timeout: 30
+```
+
+**Stripping**: The metadata block is parsed by `parseVllmConfig()` and
+removed from the dict passed to vLLM. The original (raw) config file is
+always uploaded to the job directory alongside the stripped version.
+
+**Storage**: Both `vllm.yaml` (raw, with metadata) and `vllm.stripped.yaml`
+(without metadata) are stored in `$PROJECTDIR/engine/jobs/<job>/`.
+
+**Alternatives considered**:
+- YAML comments for metadata: harder to parse in both TypeScript and bash.
+  A `metadata:` key is cleaner and survives YAML round-trips.
+- Metadata-only file (`job.meta.yaml`): adds a file to manage. Inline
+  metadata in the config is simpler and stays with the config.
 
 ### Files to remove
 
@@ -191,17 +225,21 @@ Instead of the old 10-step `runInferenceSession`:
 
 ### What the new SLURM script looks like
 
-COMMENT #1: the prototype used a nested subshell for the VLLM process so that
-multiple models can be started with one SLURM script. Need to justify if this
-is needed or not:
+**Single model per script** — each model gets its own `sbatch` job. The
+nested subshell pattern in the prototype was for running multiple models
+within one SLURM allocation, but independent jobs are simpler, more
+resilient, and align with ADR-113 (each model is an independent job).
 
-COMMENT #2: This is the simple single node case. We need to think about
-multinode. Exisitng interactive multinode switches on node id to get head and
-worker behaviour in mp as script designed to be run once per node. Older ray
-based multinode template uses srun to fire up workers from within single sbatch
-script across worker nodes. correct approaches need to be determined for
-multinode using sbatch but with mp and ray as potential executor backends.
-Correct routing of logs is also going to be an issue.
+**Multi-node** — two approaches coexist for now (see Phase M7.5):
+
+- **MP** (interactive default): script runs once per node via `srun`,
+  `SLURM_NODEID` determines head vs worker. Simple, no extra deps.
+- **Ray** (batch default): script runs once on head node, uses `srun`
+  to start workers. More resilient to node failure.
+
+**Log routing** — each node writes its own log file (`vllm.<NODEID>.log`).
+The head node log is the one `monitor_head` reads; worker logs are for
+diagnostics. This works for both MP and Ray backends.
 
 ```bash
 #!/bin/bash
@@ -254,32 +292,23 @@ This is ~30 lines instead of the current 300+ line template.
 
 `ivllm setup`, `ivllm agent`, `ivllm config`
 
-### M3.5 — Multi-node: MP vs Ray evaluation
+### Multi-node approach (both backends kept)
 
-Our codebase already has **both** backends for multi-node:
-- Interactive template: uses **MP** (default when `--nnodes` is set without
-  `--distributed-executor-backend`)
-- Batch template: uses **Ray** (explicit `--distributed-executor-backend ray`)
+Both multi-node backends are retained for now:
+- **MP** (interactive default): used when `--nnodes` is set without
+  `--distributed-executor-backend`. Script runs once per node via `srun`,
+  `SLURM_NODEID` determines head vs worker.
+- **Ray** (batch default): used with explicit `--distributed-executor-backend ray`.
+  Script runs once on head node, uses `srun` to start workers.
 
-The interactive template has dead Ray env vars (`RAY_PORT`,
-`RAY_OBJECT_STORE_MEMORY`) that are set in the preamble but never consumed.
+A systematic comparison (MP vs Ray on Slingshot) is deferred to Phase M7.5
+at the end of the roadmap. The comparative evaluation is expensive and risks
+a tweak-startup-crash loop. Both approaches work — keep them both for now.
 
-The `isambard_containers` project uses MP exclusively and has validated it
-for multi-node on Isambard. However, MP performance on Slingshot's CXI
-fabric is not yet benchmarked against Ray.
-
-**Assessment criteria**:
-- [ ] Benchmark MP vs Ray on Slingshot: throughput, latency, NCCL bus bandwidth
-- [ ] Does MP handle all parallelism modes (TP, PP, DP, EP) correctly?
-- [ ] Does MP handle node failure gracefully (or is Ray's failure handling needed)?
-- [ ] Clean up interactive template: remove dead Ray env vars
-- [ ] Evaluate swap: can batch template use MP instead of Ray?
-
-**Decision framework**:
-- If MP performance ≥ Ray → switch to MP for both templates, drop Ray dependency
-- If Ray has meaningful advantages (node churn, failure handling) → keep both,
-  document which to use when
-- In either case → clean up dead Ray env vars from the interactive template
+Clean-up tasks that can be done now without evaluation:
+- [ ] Interactive template: remove dead Ray env vars (`RAY_PORT`,
+      `RAY_OBJECT_STORE_MEMORY`, etc.) that are set but never consumed
+- [ ] Each node writes its own log (`vllm.<NODEID>.log`) for both backends
 
 ### Done when
 
@@ -504,6 +533,79 @@ onward, but proper hardening is needed before it's reliable for a team.
 
 ---
 
+## Phase M7.5 — Multi-node backend evaluation (deferred)
+
+**Why deferred**: This was originally Phase M3.5 but is moved to the end
+of the roadmap. Comparative benchmarking of MP vs Ray on Slingshot is
+expensive — it risks a tweak-startup-crash loop where each change requires
+a full multi-node job submission, hours of queue time, and careful analysis.
+
+Both backends work today. Keep both until the v3 migration is stable.
+
+**Prerequisites**: All of M1–M7 (v3 migration complete, codebase clean).
+
+**Scope**:
+- [ ] Benchmark MP vs Ray on Slingshot: throughput, latency, NCCL bus bandwidth
+- [ ] Does MP handle all parallelism modes (TP, PP, DP, EP) correctly?
+- [ ] Does MP handle node failure gracefully?
+- [ ] Decide: can batch template use MP instead of Ray?
+- [ ] If yes: remove Ray dependency, clean up both templates
+- [ ] If no: document which to use when
+
+---
+
+## Phase M7.6 — Benchmarking as a backend capability
+
+**Goal**: A fire-and-forget batch benchmarking workflow. Set up multiple
+jobs with different names/configs, trigger benchmarking, come back later
+and review results.
+
+**Why this phase**: With the v3 migration complete and both multi-node
+backends working, we need a systematic way to measure performance.
+Benchmarking is a natural backend capability — each backend knows how to
+benchmark its own models.
+
+**How it works**:
+
+```bash
+# Set up a model for benchmarking
+ivllm connect qwen36 --config qwen36.yaml --benchmark
+
+# Or benchmark an already-configured job
+ivllm benchmark qwen36 --output results/qwen36/
+
+# Fire-and-forget: submit multiple, check results later
+for model in qwen36 gemma4 llama4; do
+  ivllm connect $model --config ${model}.yaml --benchmark
+done
+```
+
+The benchmark:
+1. Starts vLLM (or uses an already-running instance)
+2. Runs a configurable benchmark suite (latency, throughput, TTFT, ITL)
+3. Writes results to the job directory and a shared results location
+4. Shuts down (if `--benchmark` was the only purpose)
+
+**Implementation**:
+- Add `benchmark` method to the `Backend` interface (ADR-111):
+  ```typescript
+  interface Backend {
+    benchmark?(jobName: string, options: BenchmarkOptions): Promise<BenchmarkResult>;
+  }
+  ```
+- For Isambard: the benchmark runs inside the SLURM job after vLLM is healthy,
+  using tools like `vllm benchmark` or custom benchmark scripts
+- Results are saved as JSON in the job directory and a shared results index
+- The `--benchmark` flag on `ivllm connect` auto-runs benchmark after startup
+- A `ivllm benchmark <job>` command re-runs benchmark on an existing instance
+
+**Test criteria**:
+- [ ] `ivllm connect --benchmark` with mock vLLM returns synthetic results
+- [ ] Real run on Isambard produces latency and throughput numbers
+- [ ] Results are reproducible within acceptable variance
+- [ ] Multiple benchmark jobs can run concurrently
+- [ ] All tests pass
+
 ## Quick Reference
 
 | Phase | TypeScript | Bash | Tests | Risk |
@@ -515,6 +617,8 @@ onward, but proper hardening is needed before it's reliable for a team.
 | M5: Idle Timeout | ~3 files modified | Monitor hooked up | Updated tests | Low |
 | M6: Multi-User | ~2 files modified | Permission hardening | Updated tests | Low |
 | M7: Clean Up | ~10 files removed | No changes | Tests removed/updated | Low |
+| M7.5: MP vs Ray eval | No changes | Benchmark scripts | Benchmark tests | High (deferred) |
+| M7.6: Benchmarking | Backend interface + CLI | Benchmark scripts | New tests | Low |
 
 **Total**: ~6,500 lines TypeScript → ~3,000 lines TypeScript + ~500 lines bash
 
