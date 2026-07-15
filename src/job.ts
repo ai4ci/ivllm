@@ -9,6 +9,7 @@ import { jobConfigPath, parseVllmConfig, saveJobConfig } from './vllm-config';
 import { existsSync } from 'fs';
 import os from 'os';
 import crypto from 'crypto';
+import { join } from 'path';
 
 /**
  *
@@ -187,8 +188,8 @@ export function makePaths(
   const remoteProjectHfModelDir = `${remoteProjectHfDir}/hub/${hfModelKey}`;
   const remoteProjectJobCacheDir = `${base.remoteProjectVllmDir}/cache/${cacheKey}`;
   const remoteProjectJobCacheFile = `${remoteProjectJobCacheDir}/cache.tar.gz`;
-  const localCacheDir = `${os.homedir()}/.config/ivllm`;
-  const localCacheVllmConfigFile = `${localCacheDir}/${jobName}.yaml`;
+  const localCacheDir = join(os.homedir(), '.config', 'ivllm');
+  const localCacheVllmConfigFile = join(localCacheDir, `${jobName}.yaml`);
 
   return {
     ...base,
