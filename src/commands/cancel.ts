@@ -102,14 +102,14 @@ export async function cmdCancel(args: string[]): Promise<void> {
   if (cancelArgs.dryRun) {
     console.log(`\n=== ivllm cancel (dry-run) ===`);
     console.log(`Job       : ${cancelArgs.jobName}`);
-    console.log(`Lockfile  : ${v3paths.lockfilePath}`);
+    console.log(`Lockfile  : ${v3paths.statusFile}`);
     console.log(`Method    : ${cancelArgs.force ? 'force (scancel)' : 'graceful (write cancel)'}`);
     console.log(`\nSteps:`);
     if (cancelArgs.force) {
       console.log(`  1. SSH: scancel --name ${cancelArgs.jobName}`);
-      console.log(`  2. SSH: rm -f ${v3paths.lockfilePath}`);
+      console.log(`  2. SSH: rm -f ${v3paths.statusFile}`);
     } else {
-      console.log(`  1. SSH: write 'cancel' to ${v3paths.lockfilePath}`);
+      console.log(`  1. SSH: write 'cancel' to ${v3paths.statusFile}`);
       console.log(`  2. SSH: tail log files (${v3paths.logFileGlob}) until status=stopped`);
       console.log(`  3. SSH: verify cleanup`);
     }

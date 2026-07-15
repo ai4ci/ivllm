@@ -167,51 +167,6 @@ export function makeSimplePaths(
  * @param cacheKey
  * @param vllmVersion
  */
-/**
- * Build v3 engine paths for an inference job.
- *
- * Uses the new `$PROJECTDIR/engine/` structure instead of the old
- * `$HOME/<jobname>/` layout:
- *
- * ```
- * $PROJECTDIR/engine/
- * ├── lib/                    Shared bash libraries
- * │   ├── utils.sh
- * │   └── preamble.sh
- * └── jobs/
- *     └── <jobname>/
- *         ├── status.json     Lockfile (replaces job_details.json)
- *         ├── slurm.sh        Generated SLURM script
- *         ├── vllm.yaml       vLLM config
- *         └── vllm.log        vLLM server log
- * ```
- *
- * @param projectDir - The shared project directory on the HPC
- * @param jobName - User-provided job name
- * @returns EnginePathsV3 object
- */
-export function makeV3Paths(
-  projectDir: string,
-  jobName: string,
-): EnginePathsV3 {
-  const engineDir = `${projectDir}/engine`;
-  const engineLibDir = `${engineDir}/lib`;
-  const engineJobsDir = `${engineDir}/jobs`;
-  const jobDir = `${engineJobsDir}/${jobName}`;
-
-  return {
-    engineDir,
-    engineLibDir,
-    engineJobsDir,
-    jobDir,
-    statusFile: `${jobDir}/status.json`,
-    scriptFile: `${jobDir}/slurm.sh`,
-    vllmConfigFile: `${jobDir}/vllm.yaml`,
-    logFile: `${jobDir}/vllm.log`,
-    jitCacheFile: `${jobDir}/jit-cache.tar.gz`,
-  };
-}
-
 export function makePaths(
   config: Credentials,
   jobName: string,
@@ -254,79 +209,52 @@ export function makePaths(
   };
 }
 
-// ── v3 path helpers ──────────────────────────────────────────────────────────
-
-/**
- * Paths for the v3 project structure under `$PROJECTDIR/engine/`.
- *
- * Log file paths are intentionally absent — they are node-specific
- * (`vllm.<NODEID>.log`) and should be discovered at runtime by the
- * bash framework (see `resolve_logfile` in utils.sh) or by globbing
- * `$jobDir/vllm.*.log` from the CLI.
- */
-export interface V3Paths {
-  /** Root of the engine directory (`$PROJECTDIR/engine`) */
-  engineDir: string;
-  /** Directory for all job data (`$PROJECTDIR/engine/jobs`) */
-  jobsDir: string;
-  /** Per-job directory (`$PROJECTDIR/engine/jobs/<jobName>`) */
-  jobDir: string;
-  /** Lockfile path (`$PROJECTDIR/engine/jobs/<jobName>/status.json`) */
-  lockfilePath: string;
-  /** Raw vllm config (with metadata) */
-  configPath: string;
-  /** Stripped vllm config (without metadata) */
-  strippedConfigPath: string;
-  /** SLURM script path */
-  scriptPath: string;
-  /** JIT cache tarball path */
-  cachePath: string;
-  /** Shared bash library directory (`$PROJECTDIR/engine/lib`) */
-  libDir: string;
-  /** Regex pattern matching all log files in the job directory */
-  logFileGlob: string;
-}
-
 /**
  * Build v3 paths from a project directory and job name.
  *
- * Paths follow the new structure:
+ * Paths follow the new $PROJECTDIR/engine/ structure:
  * ```
  * $PROJECTDIR/engine/
- * ├── lib/           ← Shared bash framework
- * ├── jobs/<job>/   ← Per-job data
- * │   ├── status.json
- * │   ├── vllm.yaml
- * │   ├── vllm.stripped.yaml
- * │   └── slurm.sh
- * ├── vllm/          ← vLLM installations
- * └── hf/            ← HuggingFace cache
+ * ├── lib/                Shared bash framework
+ * ├── jobs/<jobname>/     Per-job data
+ * │   ├── status.json     Lockfile
+ * │   ├── vllm.yaml       Config (raw, with metadata)
+ * │   ├── vllm.stripped.yaml  Config (stripped for vLLM)
+ * │   ├── slurm.sh        SLURM batch script
+ * │   ├── jit-cache.tar.gz    JIT compilation cache
+ * │   └── vllm.*.log      Log files (per-node)
+ * ├── vllm/               vLLM installations
+ * └── hf/                 HuggingFace cache
  * ```
- * @param projectDir — Shared project directory (e.g. `/projects/XXXX`)
- * @param jobName — User-provided job name
- * @returns Complete set of v3 paths
+ *
+ * @param projectDir - Shared project directory (e.g. `/projects/XXXX`)
+ * @param jobName - User-provided job name
+ * @returns EnginePathsV3 object
  */
 export function makeV3Paths(
   projectDir: string,
   jobName: string,
-): V3Paths {
+): EnginePathsV3 {
   const engineDir = `${projectDir.replace(/\/+$/, '')}/engine`;
-  const jobsDir = `${engineDir}/jobs`;
-  const jobDir = `${jobsDir}/${jobName}`;
+  const engineLibDir = `${engineDir}/lib`;
+  const engineJobsDir = `${engineDir}/jobs`;
+  const jobDir = `${engineJobsDir}/${jobName}`;
 
   return {
     engineDir,
-    jobsDir,
+    engineLibDir,
+    engineJobsDir,
     jobDir,
-    lockfilePath: `${jobDir}/status.json`,
-    configPath: `${jobDir}/vllm.yaml`,
-    strippedConfigPath: `${jobDir}/vllm.stripped.yaml`,
-    scriptPath: `${jobDir}/slurm.sh`,
-    cachePath: `${jobDir}/jit-cache.tar.gz`,
-    libDir: `${engineDir}/lib`,
+    statusFile: `${jobDir}/status.json`,
+    scriptFile: `${jobDir}/slurm.sh`,
+    vllmConfigFile: `${jobDir}/vllm.yaml`,
+    strippedConfigFile: `${jobDir}/vllm.stripped.yaml`,
+    jitCacheFile: `${jobDir}/jit-cache.tar.gz`,
     logFileGlob: `${jobDir}/vllm.*.log`,
   };
 }
+
+// ── v3 lockfile parser ───────────────────────────────────────────────────────
 
 /**
  * Parse a v3 lockfile JSON string into a {@link LockfileV3} object.

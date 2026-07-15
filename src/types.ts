@@ -204,12 +204,14 @@ export interface EnginePathsV3 {
   statusFile: string;
   /** Path to the generated `slurm.sh` */
   scriptFile: string;
-  /** Path to the vllm.yaml on the HPC */
+  /** Path to the vllm.yaml on the HPC (raw, with metadata) */
   vllmConfigFile: string;
-  /** Path to the vLLM log file */
-  logFile: string;
+  /** Path to the vllm.yaml stripped of metadata */
+  strippedConfigFile: string;
   /** Path to the JIT cache tarball */
   jitCacheFile: string;
+  /** Glob pattern matching all per-node log files (vllm.<NODEID>.log) */
+  logFileGlob: string;
 }
 
 /**

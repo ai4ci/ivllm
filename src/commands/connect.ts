@@ -109,9 +109,9 @@ function dryRunPreview(
   console.log(`Partition: ${args.batch ? 'standard' : 'interactive'}`);
   console.log(`Time     : ${args.timeLimit}`);
   console.log(`\nRemote paths:`);
-  console.log(`  Lockfile : ${v3paths.lockfilePath}`);
-  console.log(`  Config   : ${v3paths.configPath}`);
-  console.log(`  Script   : ${v3paths.scriptPath}`);
+  console.log(`  Lockfile : ${v3paths.statusFile}`);
+  console.log(`  Config   : ${v3paths.vllmConfigFile}`);
+  console.log(`  Script   : ${v3paths.scriptFile}`);
   console.log(`  Log      : ${v3paths.logFileGlob} (node-specific, one per node)`);
 
   if (args.configFile) {
@@ -129,7 +129,7 @@ function dryRunPreview(
   }
 
   console.log(`\nGenerated SLURM script would be written to:`);
-  console.log(`  ${v3paths.scriptPath}`);
+  console.log(`  ${v3paths.scriptFile}`);
   console.log(`\nTo run for real, omit --dry-run.\n`);
 }
 
@@ -171,15 +171,6 @@ export async function cmdConnect(args: string[]): Promise<void> {
   } catch (e) {
     console.error('Error:', (e as Error).message);
     process.exit(1);
-  }
-
-  // Check for config file (required for first use)
-  if (!connectArgs.configFile) {
-    // Try to find a saved config
-    const savedPath = `${config.projectDir}/engine/jobs/${connectArgs.jobName}/vllm.yaml`;
-    if (!existsSync) {
-      // Will check via SSH at runtime
-    }
   }
 
   // ── Placeholder for real implementation ──

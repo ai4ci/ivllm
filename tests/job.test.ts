@@ -5,21 +5,21 @@ describe('makeV3Paths', () => {
   test('builds correct paths for a job', () => {
     const paths = makeV3Paths('/projects/XXXX', 'my-job');
     expect(paths.engineDir).toBe('/projects/XXXX/engine');
-    expect(paths.jobsDir).toBe('/projects/XXXX/engine/jobs');
+    expect(paths.engineJobsDir).toBe('/projects/XXXX/engine/jobs');
     expect(paths.jobDir).toBe('/projects/XXXX/engine/jobs/my-job');
-    expect(paths.lockfilePath).toBe('/projects/XXXX/engine/jobs/my-job/status.json');
+    expect(paths.statusFile).toBe('/projects/XXXX/engine/jobs/my-job/status.json');
     expect(paths.logFileGlob).toBe('/projects/XXXX/engine/jobs/my-job/vllm.*.log');
-    expect(paths.configPath).toBe('/projects/XXXX/engine/jobs/my-job/vllm.yaml');
-    expect(paths.strippedConfigPath).toBe('/projects/XXXX/engine/jobs/my-job/vllm.stripped.yaml');
-    expect(paths.scriptPath).toBe('/projects/XXXX/engine/jobs/my-job/slurm.sh');
-    expect(paths.cachePath).toBe('/projects/XXXX/engine/jobs/my-job/jit-cache.tar.gz');
-    expect(paths.libDir).toBe('/projects/XXXX/engine/lib');
+    expect(paths.vllmConfigFile).toBe('/projects/XXXX/engine/jobs/my-job/vllm.yaml');
+    expect(paths.strippedConfigFile).toBe('/projects/XXXX/engine/jobs/my-job/vllm.stripped.yaml');
+    expect(paths.scriptFile).toBe('/projects/XXXX/engine/jobs/my-job/slurm.sh');
+    expect(paths.jitCacheFile).toBe('/projects/XXXX/engine/jobs/my-job/jit-cache.tar.gz');
+    expect(paths.engineLibDir).toBe('/projects/XXXX/engine/lib');
   });
 
   test('handles jobs with hyphens and dots', () => {
     const paths = makeV3Paths('/p/test', 'my-model.v2');
     expect(paths.jobDir).toContain('my-model.v2');
-    expect(paths.lockfilePath).toContain('my-model.v2');
+    expect(paths.statusFile).toContain('my-model.v2');
   });
 
   test('handles project dir without trailing slash', () => {
