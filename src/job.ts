@@ -258,6 +258,11 @@ export function makePaths(
 
 /**
  * Paths for the v3 project structure under `$PROJECTDIR/engine/`.
+ *
+ * Log file paths are intentionally absent — they are node-specific
+ * (`vllm.<NODEID>.log`) and should be discovered at runtime by the
+ * bash framework (see `resolve_logfile` in utils.sh) or by globbing
+ * `$jobDir/vllm.*.log` from the CLI.
  */
 export interface V3Paths {
   /** Root of the engine directory (`$PROJECTDIR/engine`) */
@@ -268,8 +273,6 @@ export interface V3Paths {
   jobDir: string;
   /** Lockfile path (`$PROJECTDIR/engine/jobs/<jobName>/status.json`) */
   lockfilePath: string;
-  /** Log file path (`$PROJECTDIR/engine/jobs/<jobName>/vllm.<nodeId>.log`) */
-  logPath: string;
   /** Raw vllm config (with metadata) */
   configPath: string;
   /** Stripped vllm config (without metadata) */
@@ -280,6 +283,8 @@ export interface V3Paths {
   cachePath: string;
   /** Shared bash library directory (`$PROJECTDIR/engine/lib`) */
   libDir: string;
+  /** Regex pattern matching all log files in the job directory */
+  logFileGlob: string;
 }
 
 /**
@@ -314,12 +319,12 @@ export function makeV3Paths(
     jobsDir,
     jobDir,
     lockfilePath: `${jobDir}/status.json`,
-    logPath: `${jobDir}/vllm.0.log`,
     configPath: `${jobDir}/vllm.yaml`,
     strippedConfigPath: `${jobDir}/vllm.stripped.yaml`,
     scriptPath: `${jobDir}/slurm.sh`,
     cachePath: `${jobDir}/jit-cache.tar.gz`,
     libDir: `${engineDir}/lib`,
+    logFileGlob: `${jobDir}/vllm.*.log`,
   };
 }
 

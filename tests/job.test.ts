@@ -8,7 +8,7 @@ describe('makeV3Paths', () => {
     expect(paths.jobsDir).toBe('/projects/XXXX/engine/jobs');
     expect(paths.jobDir).toBe('/projects/XXXX/engine/jobs/my-job');
     expect(paths.lockfilePath).toBe('/projects/XXXX/engine/jobs/my-job/status.json');
-    expect(paths.logPath).toBe('/projects/XXXX/engine/jobs/my-job/vllm.0.log');
+    expect(paths.logFileGlob).toBe('/projects/XXXX/engine/jobs/my-job/vllm.*.log');
     expect(paths.configPath).toBe('/projects/XXXX/engine/jobs/my-job/vllm.yaml');
     expect(paths.strippedConfigPath).toBe('/projects/XXXX/engine/jobs/my-job/vllm.stripped.yaml');
     expect(paths.scriptPath).toBe('/projects/XXXX/engine/jobs/my-job/slurm.sh');

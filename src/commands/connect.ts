@@ -112,7 +112,7 @@ function dryRunPreview(
   console.log(`  Lockfile : ${v3paths.lockfilePath}`);
   console.log(`  Config   : ${v3paths.configPath}`);
   console.log(`  Script   : ${v3paths.scriptPath}`);
-  console.log(`  Log      : ${v3paths.logPath}`);
+  console.log(`  Log      : ${v3paths.logFileGlob} (node-specific, one per node)`);
 
   if (args.configFile) {
     try {

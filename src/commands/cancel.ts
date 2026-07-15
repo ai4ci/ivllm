@@ -110,7 +110,7 @@ export async function cmdCancel(args: string[]): Promise<void> {
       console.log(`  2. SSH: rm -f ${v3paths.lockfilePath}`);
     } else {
       console.log(`  1. SSH: write 'cancel' to ${v3paths.lockfilePath}`);
-      console.log(`  2. SSH: tail -f ${v3paths.logPath} until status=stopped`);
+      console.log(`  2. SSH: tail log files (${v3paths.logFileGlob}) until status=stopped`);
       console.log(`  3. SSH: verify cleanup`);
     }
     console.log();
