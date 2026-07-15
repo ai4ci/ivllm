@@ -86,13 +86,14 @@ resolve_setting() {
 create_status_pending() {
     local lockfile=$(resolve_lockfile "$1")
     mkdir -p "$(resolve_location "$1")"
+    local serverPort=$(shuf -i 49152-65535 -n 1)
     echo "[startup] creating lockfile for job $1"
     if ((${SLURM_NODEID:-0} == 0)); then
         jq -n \
         --arg job_name "$1" \
         --arg model "$2" \
-        --argjson server_port "$3" \
-        --argjson idle_timeout "$4" \
+        --argjson server_port "$serverPort" \
+        --argjson idle_timeout "$3" \
         --arg req_time "$(date -Iseconds)" \
         '{status: "pending", jobName: $job_name, model: $model, serverPort: $server_port, requestedTime: $req_time, idleTimeout: $idle_timeout}' \
         > "$lockfile"
@@ -106,6 +107,7 @@ create_status_pending() {
 update_status_initialise() {
     local lockfile=$(resolve_lockfile "$1")
     local log=$(resolve_logfile "$1")
+
     touch "$log"
 
     if ((${SLURM_NODEID:-0} == 0)); then

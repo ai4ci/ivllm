@@ -142,6 +142,9 @@ It lives on the parallel filesystem, visible to all nodes. All parties
 }
 ```
 
+Notes:
+
+
 ### Lockfile lifecycle rules
 
 | Action | Status change | Who | How |
@@ -388,7 +391,8 @@ interactive reservation only accepted `srun` jobs. This is incorrect —
 **Implication for `ivllm connect`**: The `--interactive` flag is still
 useful as a shorthand for `--partition=interactive --reservation=interactive`,
 but it should use `sbatch` by default, not `srun`. The `srun` TTY-binding
-mode is only needed when the user explicitly wants terminal-coupled output.
+mode is deprecated. Tailing the log file over ssh is the only way to follow the
+progress of the .
 The default behaviour (`sbatch` to interactive partition) is cleaner.
 
 ```bash
@@ -641,6 +645,7 @@ SSH tunnel**, not part of the core lifecycle.
 
 | Pattern | From | Benefit |
 |---------|------|--------|
+| DeepEP installation | `vllm.def` | Support for DeepEP |
 | MP backend (not Ray) | `serve_vllm_mp.slurm` | Simpler multi-node, fewer bugs |
 | Model recipe YAML | `model_recipes.yaml` | Auto-config for 100+ models |
 | Static SLURM templates | `serve_vllm_mp.slurm` | Cleaner than generated templates |

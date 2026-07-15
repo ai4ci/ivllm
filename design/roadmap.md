@@ -191,6 +191,18 @@ Instead of the old 10-step `runInferenceSession`:
 
 ### What the new SLURM script looks like
 
+COMMENT #1: the prototype used a nested subshell for the VLLM process so that
+multiple models can be started with one SLURM script. Need to justify if this
+is needed or not:
+
+COMMENT #2: This is the simple single node case. We need to think about
+multinode. Exisitng interactive multinode switches on node id to get head and
+worker behaviour in mp as script designed to be run once per node. Older ray
+based multinode template uses srun to fire up workers from within single sbatch
+script across worker nodes. correct approaches need to be determined for
+multinode using sbatch but with mp and ray as potential executor backends.
+Correct routing of logs is also going to be an issue.
+
 ```bash
 #!/bin/bash
 #SBATCH --job-name=qwen2
@@ -271,7 +283,7 @@ fabric is not yet benchmarked against Ray.
 
 ### Done when
 
-- [ ] End-to-end test on Isambard with a real model (Qwen2.5-0.5B-Instruct):
+- [ ] End-to-end test on Isambard with a real multi-node model (GLM-5.2 and QWEN3.5-397):
       connect → monitor → cancel, verify clean shutdown
 - [ ] Disconnect test: connect → Ctrl+C → reconnect → verify tunnel works
 - [ ] Multi-node test: connect with a 2-node config → verify Ray starts
@@ -528,6 +540,9 @@ and the router dispatches requests by model name.
 | Auto-shutdown after inactivity | Idle timeout (M5) |
 | Port pool for model discovery | ADR-112 (port pool) |
 | Backend-agnostic dispatch | ADR-111 (Backend interface) |
+
+Also for consideration model request / response healing (particularly
+unsupported use of different user types for specific models)
 
 **Implementation sketch**:
 

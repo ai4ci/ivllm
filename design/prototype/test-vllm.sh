@@ -146,16 +146,24 @@ rm -rf $LOCALDIR
 
 source "prototype.sh"
 
-create_status_pending "$JOBNAME" test_model 8000 1
+# prior to slurm allocation
+create_status_pending "$JOBNAME" test_model 1
+
+# waiting in the slurm queue
+# slurm sbatch job:
 if is_status "$JOBNAME" "pending"; then
+
+    PORT=$(resolve_setting $JOBNAME "serverPort")
+    MODEL=$(resolve_setting $JOBNAME "model")
 
     # launch and background long running process
     (
 
         LOG=$(resolve_logfile $JOBNAME)
 
+
         # The long running process
-        srun vllm --model test_model --port 8000 > "$LOG" 2>&1 & VLLM_PID=$!
+        srun vllm --model "$MODEL" --port "$PORT" > "$LOG" 2>&1 & VLLM_PID=$!
         sleep 1
 
         echo "[test] vllm pid: $VLLM_PID; jobid: $SLURM_JOB_ID"
@@ -175,14 +183,14 @@ if is_status "$JOBNAME" "pending"; then
     # poll health until api responding
     monitor_startup "$JOBNAME"
 
-
+    # Outside of slurm
     # simulate a request.
-    curl "http://localhost:8000/v1/chat/completions" \
+    curl "http://localhost:$PORT/v1/chat/completions" \
             -H "Content-Type: application/json" \
-            -d '{
-                "model": "test_model",
-                "messages": [{"role": "user", "content": "Hello."}]
-            }'
+            -d "{
+                \"model\": \"$MODEL\",
+                \"messages\": [{\"role\": \"user\", \"content\": \"Hello.\"}]
+            }"
 
     # simulate a user requested shutdown:
     request_cancel "$JOBNAME"

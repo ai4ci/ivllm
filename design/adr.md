@@ -137,6 +137,8 @@ the only coordination point.
 - The `ivllm connect` command must handle all lockfile states gracefully
 - Idle timeout is essential to prevent abandoned jobs consuming GPU hours
 - No heartbeat from LOCAL — `monitor_head` on COMPUTE is the only authority
+- COMPUTE must manage shutdowns and write state changes on crashes and slurm timeouts
+- Force cancel (using slurm scancel) and clean up from the client in case of inconsistent state.
 
 ---
 
@@ -162,7 +164,7 @@ Approaches considered (and their limitations):
 | **Poll vLLM `/metrics` endpoint** | Requires the backend to expose Prometheus metrics (not universal). Adds extra request load. |
 | **Sidecar that tracks requests per model** | Another process to manage. Adds deployment complexity. |
 | **Process-level monitoring (/proc/net)** | OS-specific. Doesn't work inside containers. |
-| **inotify on log file** | Lustre (parallel filesystem) doesn't support inotify. Linux-specific. |
+| **inotify on log file** | Lustre (parallel filesystem) doesn't support inotify. Linux-specific. | **clients periodically touch lockfile & check logfile mtime** | places responsibility on clients to keep connection alive but could be backend independent
 
 **Decision**: Idle timeout is a per-backend responsibility. The lockfile
 carries `idleTimeout` (in minutes, or `-1` for never) as a cross-backend
@@ -177,7 +179,8 @@ Parse the vLLM access log incrementally:
    `/v1/models`, `/v1/completions`, not `/health`), record the current time
 4. If time since last real request > idleTimeout → shutdown
 
-Real log line format (confirmed from live vLLM run):
+Baseline VLLM log line format does not include dates unless configured - requires vllm_logs.json configuration file and `export VLLM_LOGGING_CONFIG_PATH="vllm_logs.json"` to be present on the HPC. With this in place we get logs like (confirmed from live vLLM run):
+
 ```
 (APIServer pid=34633) [2026-07-14 22:37:50,765] INFO:     10.242.0.28:38194 - "POST /v1/chat/completions HTTP/1.1" 200 OK
 (APIServer pid=34633) [2026-07-14 22:37:50,935] INFO:     10.242.0.28:45178 - "GET /health HTTP/1.1" 200 OK
@@ -244,8 +247,9 @@ mechanisms and different user experiences. The distinction confused users.
 
 1. If the job doesn't exist or is in a terminal state (`stopped`/`failed`):
    - Submit via `sbatch` (background) by default
-   - Offer `--interactive` flag for TTY-bound mode
-2. If the job is `running`:
+   - Offer `--batch` flag for submission to standard non-interactive queue
+   - tail remote logfiles over SSH to monitor startup progress.
+2. When the job is `running`:
    - Establish SSH tunnel immediately
    - Print endpoint URL
    - Stay in foreground with optional monitoring mode
@@ -255,9 +259,9 @@ mechanisms and different user experiences. The distinction confused users.
 
 **Rationale**:
 - Single mental model: "I want to connect to my model"
+- default is interactive reservation (can use slurm )
 - Handles all job states (new, running, stopped, failed)
 - No confusion about which command to use
-- `--interactive` flag preserves the TTY-bound workflow for debugging
 
 **Consequences**:
 - `ivllm start` and `ivllm interactive` are deprecated and removed
@@ -356,7 +360,7 @@ $PROJECTDIR/engine/
 
 **Status**: Accepted (design intent)
 
-**Context**: The lockfile protocol (ADR-102) currently has Isambard-specific
+**Context**: The lockfile protocol (ADR-102) currently has mechanism-specific
 fields like `slurmJobId`, `computeHostname`, and `vllmPid`. Future backends
 (Ollama, other HPCs, containers) will have different runtime metadata.
 
@@ -474,31 +478,48 @@ ephemeral single-model use but doesn't support discovery or conflict
 avoidance when multiple models share a node or when a router needs to know
 where each model is.
 
-**Decision**: Reserve a port range (11435–11534, 100 ports) as the
-model port pool. Ports are assigned per-model when the job is created
-and stored in the lockfile. The port is stable for the lifetime of the
-job configuration, surviving stop/restart cycles.
+There are 2 types of port assignment:
 
-Port assignment:
-- First connect with a config → assign a free port from the pool
-- Store the port in the lockfile and in `$PROJECTDIR/engine/port-allocations.json`
-- On stop/restart → reuse the same port (read from existing allocation)
-- On job config deletion → release the port
-- If all 100 ports are in use → error (unlikely in practice)
+1) server port where vllm is exposed on compute node.
+This is strictly the responsibility of the backend to decide, and can used a
+random high port (preferred) or vllm default 8000. This is up to the backend
+but must be communicated to clients via the lockfile. In the context of a single
+noide running multiple models the backend will have to make sure there are no
+conflicts.
+
+2) Local ports: localhost endpoints for ssh tunnel (or passthrough when backend is local ollama).
+We need a port per model running. This should default to 11434 if only a single
+model is connected. The user can override this with a --local-port cli flag to
+`ivllm connect`. Users responsibility to manage local ports in multiple connections.
+
+In the future a model router will handle multiple local ports and ssh tunnels:
+
+Local port assignment (router mode):
+- Discover running models from backends.
+- Construct multiple ssh tunnels to endpoints using random high local ports.
+- Maintain an emphemeral mapping in router, from model name to local port.
+- Serve router on 11434, and route requests from client to backend depending on
+model name
+- Some routing heuristics on model name collision across backends will be required
 
 **Rationale**:
-- Stable port per model: agents can be configured once and keep working
-  across restarts
-- Port range is known: firewall rules, `sbx policy allow`, and SSH config
+- Stable port for client in pre-router world: agents can be configured once and
+  keep working across restarts
+- Port range is known by user: firewall rules, `sbx policy allow`, and SSH config
   can target the full range
-- Collision-free: port allocations are tracked in a shared file
 
 **Consequences**:
+Backend:
+- If a single node is running multiple models the backend will need heuristics
+  to prevent vllm server port collisions.
 - Lockfile schema unchanged (already has `serverPort`)
-- New CLI command: `ivllm port-release <job>` to manually free a port
-- The router (future) reads port allocations to build its model catalog
-- Default single-model mode still uses `localPort` from config (e.g. 11434);
-  port pool is only activated when multiple models or the router mode is used
+Client (pre-router):
+- Default single-model mode uses port 11434 unless overridden
+- Client needs to check for existing ssh tunnels and port usage when connecting.
+Future router implementation:
+- Router runs on local but outside of any sandboxes.
+- The router reads remote port allocations to build its model catalog dynamically
+- Router listens on 11434.
 
 ---
 
