@@ -128,6 +128,9 @@ PYEOF
 # set -x
 set -euo pipefail
 
+# TODO: in the real thing this needs to resolve to the vllm_logs.json path
+export VLLM_LOGGING_CONFIG_PATH="vllm_logs.json"
+
 # main execution flow in a slurm sbatch script or via srun:
 export PROJECTDIR="./test_proj"
 export LOCALDIR="./test_cache"

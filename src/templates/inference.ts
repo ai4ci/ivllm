@@ -60,6 +60,8 @@ export NVHPC_ROOT=${ss.paths.nvhpcRoot}
 export CUDA_HOME=$NVHPC_ROOT/cuda/12.9
 export PATH=$CUDA_HOME/bin:$PATH
 
+export VLLM_LOGGING_CONFIG_PATH="${ss.paths.remoteProjectVllmDir}/vllm_logs.json"
+
 export GLOO_SOCKET_IFNAME=hsn0
 export NCCL_SOCKET_IFNAME=hsn
 # Force PyTorch's internal TensorPipe layer to follow Gloo to the exact index
