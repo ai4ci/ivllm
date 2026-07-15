@@ -4,6 +4,8 @@ import type {
   InferenceJobOptions,
   Paths,
   SimplePaths,
+  LockfileV3,
+  EnginePathsV3,
 } from './types';
 import { jobConfigPath, parseVllmConfig, saveJobConfig } from './vllm-config';
 import { existsSync } from 'fs';
@@ -165,6 +167,51 @@ export function makeSimplePaths(
  * @param cacheKey
  * @param vllmVersion
  */
+/**
+ * Build v3 engine paths for an inference job.
+ *
+ * Uses the new `$PROJECTDIR/engine/` structure instead of the old
+ * `$HOME/<jobname>/` layout:
+ *
+ * ```
+ * $PROJECTDIR/engine/
+ * ├── lib/                    Shared bash libraries
+ * │   ├── utils.sh
+ * │   └── preamble.sh
+ * └── jobs/
+ *     └── <jobname>/
+ *         ├── status.json     Lockfile (replaces job_details.json)
+ *         ├── slurm.sh        Generated SLURM script
+ *         ├── vllm.yaml       vLLM config
+ *         └── vllm.log        vLLM server log
+ * ```
+ *
+ * @param projectDir - The shared project directory on the HPC
+ * @param jobName - User-provided job name
+ * @returns EnginePathsV3 object
+ */
+export function makeV3Paths(
+  projectDir: string,
+  jobName: string,
+): EnginePathsV3 {
+  const engineDir = `${projectDir}/engine`;
+  const engineLibDir = `${engineDir}/lib`;
+  const engineJobsDir = `${engineDir}/jobs`;
+  const jobDir = `${engineJobsDir}/${jobName}`;
+
+  return {
+    engineDir,
+    engineLibDir,
+    engineJobsDir,
+    jobDir,
+    statusFile: `${jobDir}/status.json`,
+    scriptFile: `${jobDir}/slurm.sh`,
+    vllmConfigFile: `${jobDir}/vllm.yaml`,
+    logFile: `${jobDir}/vllm.log`,
+    jitCacheFile: `${jobDir}/jit-cache.tar.gz`,
+  };
+}
+
 export function makePaths(
   config: Credentials,
   jobName: string,
@@ -205,4 +252,92 @@ export function makePaths(
     localCacheDir,
     localCacheVllmConfigFile,
   };
+}
+
+// ── v3 path helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Paths for the v3 project structure under `$PROJECTDIR/engine/`.
+ */
+export interface V3Paths {
+  /** Root of the engine directory (`$PROJECTDIR/engine`) */
+  engineDir: string;
+  /** Directory for all job data (`$PROJECTDIR/engine/jobs`) */
+  jobsDir: string;
+  /** Per-job directory (`$PROJECTDIR/engine/jobs/<jobName>`) */
+  jobDir: string;
+  /** Lockfile path (`$PROJECTDIR/engine/jobs/<jobName>/status.json`) */
+  lockfilePath: string;
+  /** Log file path (`$PROJECTDIR/engine/jobs/<jobName>/vllm.<nodeId>.log`) */
+  logPath: string;
+  /** Raw vllm config (with metadata) */
+  configPath: string;
+  /** Stripped vllm config (without metadata) */
+  strippedConfigPath: string;
+  /** SLURM script path */
+  scriptPath: string;
+  /** JIT cache tarball path */
+  cachePath: string;
+  /** Shared bash library directory (`$PROJECTDIR/engine/lib`) */
+  libDir: string;
+}
+
+/**
+ * Build v3 paths from a project directory and job name.
+ *
+ * Paths follow the new structure:
+ * ```
+ * $PROJECTDIR/engine/
+ * ├── lib/           ← Shared bash framework
+ * ├── jobs/<job>/   ← Per-job data
+ * │   ├── status.json
+ * │   ├── vllm.yaml
+ * │   ├── vllm.stripped.yaml
+ * │   └── slurm.sh
+ * ├── vllm/          ← vLLM installations
+ * └── hf/            ← HuggingFace cache
+ * ```
+ * @param projectDir — Shared project directory (e.g. `/projects/XXXX`)
+ * @param jobName — User-provided job name
+ * @returns Complete set of v3 paths
+ */
+export function makeV3Paths(
+  projectDir: string,
+  jobName: string,
+): V3Paths {
+  const engineDir = `${projectDir.replace(/\/+$/, '')}/engine`;
+  const jobsDir = `${engineDir}/jobs`;
+  const jobDir = `${jobsDir}/${jobName}`;
+
+  return {
+    engineDir,
+    jobsDir,
+    jobDir,
+    lockfilePath: `${jobDir}/status.json`,
+    logPath: `${jobDir}/vllm.0.log`,
+    configPath: `${jobDir}/vllm.yaml`,
+    strippedConfigPath: `${jobDir}/vllm.stripped.yaml`,
+    scriptPath: `${jobDir}/slurm.sh`,
+    cachePath: `${jobDir}/jit-cache.tar.gz`,
+    libDir: `${engineDir}/lib`,
+  };
+}
+
+/**
+ * Parse a v3 lockfile JSON string into a {@link LockfileV3} object.
+ *
+ * Returns `null` for empty, malformed, or unparseable input.
+ * @param raw — Raw JSON string from `status.json`
+ * @returns Parsed lockfile, or `null` on failure
+ */
+export function parseV3Lockfile(raw: string): LockfileV3 | null {
+  if (!raw.trim()) return null;
+  try {
+    const obj = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof obj['status'] !== 'string') return null;
+    if (typeof obj['jobName'] !== 'string') return null;
+    return obj as unknown as LockfileV3;
+  } catch {
+    return null;
+  }
 }
