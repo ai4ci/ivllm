@@ -615,6 +615,85 @@ export interface V1ModelsResponse {
 }
 
 // =================================
+// V3 LOCKFILE
+// =================================
+
+/**
+ * Lockfile state machine (v3).
+ *
+ * `cancel` is a request state — the monitor detects it and transitions
+ * to `stopped`. All other states are lifecycle phases.
+ */
+export type LockfileState =
+  | 'pending'
+  | 'initialising'
+  | 'running'
+  | 'failed'
+  | 'stopped'
+  | 'cancel';
+
+/**
+ * Full lockfile schema for the v3 `status.json` format.
+ *
+ * Written by the CLI (on LOGIN) and updated by the bash framework
+ * (on COMPUTE). Read by the CLI for monitoring and reconnection.
+ *
+ * | Field | Description |
+ * |-------|-------------|
+ * | `status` | Current lifecycle state |
+ * | `jobName` | User-provided job name |
+ * | `model` | HuggingFace model ID |
+ * | `serverPort` | Random high port for vLLM server |
+ * | `requestedTime` | ISO-8601 timestamp of job creation |
+ * | `idleTimeout` | Minutes of inactivity before auto-shutdown (-1 = never) |
+ * | `backend` | Optional backend identifier (e.g. `'isambard-vllm'`) |
+ * | `backendConfig` | Backend-specific metadata (opaque to CLI) |
+ * | `slurmJobId` | SLURM job ID (Isambard backend) |
+ * | `computeHostname` | Compute node hostname for SSH tunnel |
+ * | `startTime` | ISO-8601 timestamp of job start |
+ * | `stopTime` | ISO-8601 timestamp of job stop |
+ * | `vllmPid` | vLLM process ID on the compute node |
+ * | `reason` | Human-readable reason for stopping/failure |
+ * | `exitCode` | vLLM exit code on failure |
+ */
+export interface LockfileV3 {
+  status: LockfileState;
+  jobName: string;
+  model: string;
+  serverPort: number;
+  requestedTime: string;
+  idleTimeout: number;
+  backend?: string;
+  backendConfig?: Record<string, unknown>;
+  slurmJobId?: string;
+  computeHostname?: string;
+  startTime?: string;
+  stopTime?: string;
+  vllmPid?: number;
+  reason?: string;
+  exitCode?: number;
+}
+
+/**
+ * Optional metadata block in vllm.yaml config files.
+ *
+ * This block is stripped before the config is passed to vLLM but is
+ * preserved in the job directory for debugging and provenance.
+ */
+export interface VllmConfigMetadata {
+  /** Config format version (user-managed) */
+  version?: string;
+  /** Config author (e.g. email or username) */
+  author?: string;
+  /** Lifecycle stage for config maturity tracking */
+  lifecycle?: 'experimental' | 'maturing' | 'stable' | 'deprecated';
+  /** Minimum vLLM version required for this config */
+  targetVllmVersion?: string;
+  /** Free-text description of what this config is for */
+  description?: string;
+}
+
+// =================================
 
 // Previously used as the input for `renderInferenceScript()` before the
 // project migrated to Handlebars templates (`src/templates/inference.ts`).
