@@ -11,6 +11,8 @@ import { join } from 'path';
 import { tmpdir, homedir } from 'os';
 import {
   parseVllmConfig,
+  parseVllmConfigWithMetadata,
+  stripMetadata,
   stripIvllmKeys,
   IVLLM_ONLY_KEYS,
   jobConfigPath,
@@ -372,5 +374,107 @@ describe('jobConfigPath', () => {
   it('uses the job name verbatim', () => {
     const expected = join(homedir(), '.config', 'ivllm', 'my-job.yaml');
     expect(jobConfigPath('my-job')).toBe(expected);
+  });
+});
+
+describe('idleTimeout', () => {
+  it('defaults to 30 when not specified', () => {
+    const p = writeTmp(yaml.dump({ model: 'test', 'max-model-len': 4096 }));
+    const cfg = parseVllmConfig(p);
+    unlinkSync(p);
+    expect(cfg.idleTimeout).toBe(30);
+  });
+
+  it('reads idle-timeout from config', () => {
+    const p = writeTmp(
+      yaml.dump({ model: 'test', 'max-model-len': 4096, 'idle-timeout': 60 }),
+    );
+    const cfg = parseVllmConfig(p);
+    unlinkSync(p);
+    expect(cfg.idleTimeout).toBe(60);
+  });
+
+  it('accepts -1 for never timeout', () => {
+    const p = writeTmp(
+      yaml.dump({ model: 'test', 'max-model-len': 4096, 'idle-timeout': -1 }),
+    );
+    const cfg = parseVllmConfig(p);
+    unlinkSync(p);
+    expect(cfg.idleTimeout).toBe(-1);
+  });
+
+  it('strips idle-timeout from raw config', () => {
+    const p = writeTmp(
+      yaml.dump({ model: 'test', 'max-model-len': 4096, 'idle-timeout': 30 }),
+    );
+    const cfg = parseVllmConfig(p);
+    unlinkSync(p);
+    expect(cfg.raw['idle-timeout']).toBeUndefined();
+  });
+});
+
+describe('parseVllmConfigWithMetadata', () => {
+  it('returns metadata when present', () => {
+    const p = writeTmp(
+      yaml.dump({
+        metadata: {
+          version: '1.0',
+          author: 'alice',
+          lifecycle: 'maturing',
+          targetVllmVersion: '0.22.0',
+          description: 'test config',
+        },
+        model: 'test-model',
+        'max-model-len': 4096,
+      }),
+    );
+    const { config, metadata } = parseVllmConfigWithMetadata(p);
+    unlinkSync(p);
+    expect(metadata).not.toBeNull();
+    expect(metadata!.version).toBe('1.0');
+    expect(metadata!.author).toBe('alice');
+    expect(metadata!.lifecycle).toBe('maturing');
+    expect(metadata!.targetVllmVersion).toBe('0.22.0');
+    expect(metadata!.description).toBe('test config');
+    expect(config.model).toBe('test-model');
+  });
+
+  it('returns null metadata when no metadata block', () => {
+    const p = writeTmp(
+      yaml.dump({ model: 'test-model', 'max-model-len': 4096 }),
+    );
+    const { config, metadata } = parseVllmConfigWithMetadata(p);
+    unlinkSync(p);
+    expect(metadata).toBeNull();
+    expect(config.model).toBe('test-model');
+  });
+});
+
+describe('stripMetadata', () => {
+  it('removes metadata block from YAML', () => {
+    const raw = yaml.dump({
+      metadata: { version: '1.0', author: 'alice' },
+      model: 'test-model',
+      'max-model-len': 4096,
+      'tensor-parallel-size': 2,
+    });
+    const stripped = stripMetadata(raw);
+    const parsed = yaml.load(stripped) as Record<string, unknown>;
+    expect(parsed['metadata']).toBeUndefined();
+    expect(parsed['model']).toBe('test-model');
+    expect(parsed['tensor-parallel-size']).toBe(2);
+  });
+
+  it('preserves all non-metadata keys', () => {
+    const raw = yaml.dump({
+      model: 'test-model',
+      'max-model-len': 4096,
+      'gpu-memory-utilization': 0.9,
+    });
+    const stripped = stripMetadata(raw);
+    const parsed = yaml.load(stripped) as Record<string, unknown>;
+    expect(parsed['metadata']).toBeUndefined();
+    expect(parsed['model']).toBe('test-model');
+    expect(parsed['gpu-memory-utilization']).toBe(0.9);
   });
 });

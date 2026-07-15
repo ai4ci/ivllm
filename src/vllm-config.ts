@@ -9,7 +9,7 @@ import {
 import { join } from 'path';
 import { tmpdir, homedir } from 'os';
 import yaml from 'js-yaml';
-import type { JobConfigEntry, ServeOptions, EnvVarEntry } from './types';
+import type { JobConfigEntry, ServeOptions, EnvVarEntry, VllmConfigMetadata } from './types';
 
 /** Keys that are ivllm-specific and must be stripped before passing the config to `vllm serve`. */
 // nnodes is stripped because it is not used in ray. It is translated into a number of gpus and then recalculated
@@ -19,6 +19,8 @@ export const IVLLM_ONLY_KEYS = new Set([
   'env',
   'nnodes',
   'ivllm',
+  'metadata',
+  'idle-timeout',
 ]);
 export const JOB_CONFIG_DIR = join(homedir(), '.config', 'ivllm');
 
@@ -118,6 +120,9 @@ export function parseVllmConfig(filePath: string): ServeOptions {
       ? true
       : false;
 
+  const idleTimeoutVal = doc['idle-timeout'] ?? doc['idle_timeout'];
+  const idleTimeout = typeof idleTimeoutVal === 'number' ? idleTimeoutVal : 30;
+
   const envBlock = doc['env'];
   const env: EnvVarEntry[] = [];
   if (envBlock && typeof envBlock === 'object' && !Array.isArray(envBlock)) {
@@ -138,9 +143,54 @@ export function parseVllmConfig(filePath: string): ServeOptions {
     enableAutoToolChoice,
     enableReasoning,
     minVllmVersion,
+    idleTimeout,
     env,
     raw: stripIvllmKeys(doc),
   };
+}
+
+/**
+ * Parse a vLLM YAML config file and separate out the metadata block.
+ *
+ * Returns both the config (with metadata stripped) and the metadata block
+ * for storage in the job directory.
+ * @param filePath — Path to the YAML config file
+ * @returns Parsed config and optional metadata
+ */
+export function parseVllmConfigWithMetadata(
+  filePath: string,
+): {
+  config: ServeOptions;
+  metadata: VllmConfigMetadata | null;
+} {
+  const raw = readFileSync(filePath, 'utf-8');
+  const doc = yaml.load(raw) as Record<string, unknown>;
+
+  // Extract metadata block
+  let metadata: VllmConfigMetadata | null = null;
+  const metaBlock = doc['metadata'];
+  if (metaBlock && typeof metaBlock === 'object' && !Array.isArray(metaBlock)) {
+    metadata = metaBlock as VllmConfigMetadata;
+  }
+
+  // Use existing parser for the config (it will strip metadata via IVLLM_ONLY_KEYS)
+  const config = parseVllmConfig(filePath);
+
+  return { config, metadata };
+}
+
+/**
+ * Strip the metadata block from a raw YAML string.
+ *
+ * Returns the YAML with only the `metadata:` key removed. All other content
+ * (including vLLM config keys) is preserved exactly.
+ * @param rawYaml — Full YAML content as a string
+ * @returns YAML string without the metadata block
+ */
+export function stripMetadata(rawYaml: string): string {
+  const doc = yaml.load(rawYaml) as Record<string, unknown>;
+  delete doc['metadata'];
+  return yaml.dump(doc, { lineWidth: -1 });
 }
 
 /**

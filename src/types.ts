@@ -169,6 +169,49 @@ export interface Paths extends SimplePaths {
   localCacheVllmConfigFile: string;
 }
 
+// =================================
+// V3 PATHS (ENGINE DIR STRUCTURE)
+// =================================
+
+/**
+ * Paths for a v3 inference job under the engine directory.
+ *
+ * All job artifacts live under `$PROJECTDIR/engine/jobs/<jobname>/`.
+ * Shared libraries live in `$PROJECTDIR/engine/lib/`.
+ *
+ * | Field | Description |
+ * |-------|-------------|
+ * | `engineDir` | Root of the engine directory (`$PROJECTDIR/engine`) |
+ * | `engineLibDir` | Shared bash libraries (`$PROJECTDIR/engine/lib`) |
+ * | `engineJobsDir` | Root of all job directories |
+ * | `jobDir` | Per-job working directory |
+ * | `statusFile` | Path to `status.json` lockfile |
+ * | `scriptFile` | Path to the generated `slurm.sh` |
+ * | `vllmConfigFile` | Path to the vllm.yaml on the HPC |
+ * | `logFile` | Path to the vLLM log file |
+ * | `jitCacheFile` | Path to the JIT cache tarball |
+ */
+export interface EnginePathsV3 {
+  /** Root of the engine directory (`$PROJECTDIR/engine`) */
+  engineDir: string;
+  /** Shared bash libraries (`$PROJECTDIR/engine/lib`) */
+  engineLibDir: string;
+  /** Root of all job directories (`$PROJECTDIR/engine/jobs`) */
+  engineJobsDir: string;
+  /** Per-job working directory (`$PROJECTDIR/engine/jobs/<jobname>`) */
+  jobDir: string;
+  /** Path to `status.json` lockfile */
+  statusFile: string;
+  /** Path to the generated `slurm.sh` */
+  scriptFile: string;
+  /** Path to the vllm.yaml on the HPC */
+  vllmConfigFile: string;
+  /** Path to the vLLM log file */
+  logFile: string;
+  /** Path to the JIT cache tarball */
+  jitCacheFile: string;
+}
+
 /**
  * Parsed vLLM YAML configuration with all serving parameters.
  *
@@ -207,6 +250,8 @@ export interface ServeOptions {
   enableReasoning: boolean;
   /** Minimum vLLM version string required (e.g. `'0.20.0'`) */
   minVllmVersion: string;
+  /** Idle timeout in minutes (-1 = never). Config-driven auto-shutdown. */
+  idleTimeout: number;
   /** User-defined environment variables for the vLLM process */
   env: EnvVarEntry[];
   /** Unparsed keys from the YAML (preserved for forward compatibility) */
