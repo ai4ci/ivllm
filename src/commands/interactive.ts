@@ -46,7 +46,7 @@ until you type 'exit' or press Ctrl+C. Use 'ivllm start' for background job subm
     console.clear();
     const startArgs = await parseStartArgs(args, credentials);
     startArgs.isInteractive = true;
-    const ops = makeRemoteOps(credentials, startArgs.dryRun);
+    const ops = makeRemoteOps(credentials, startArgs.dryRun ? 'dry-run' : 'real');
     const localOps = makeLocalOps(startArgs.localPort, startArgs.dryRun);
     // Delegate to unified session pipeline (isInteractive: true → uses srun)
     await runInferenceSession(startArgs, ops, localOps);

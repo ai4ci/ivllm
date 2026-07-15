@@ -80,7 +80,7 @@ Examples:
     process.exit(1);
   }
 
-  const ops = makeRemoteOps(config, false);
+  const ops = makeRemoteOps(config, 'real');
 
   const { jobName } = parseStatusArgs(args);
 

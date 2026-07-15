@@ -57,7 +57,7 @@ const paths = makePaths(
 const base = new SessionState({
   startArgs: job,
   localOps: makeLocalOps(job.localPort, true),
-  ops: makeRemoteOps(creds, true),
+  ops: makeRemoteOps(creds, 'dry-run'),
   vllmVersion: '0.10.10',
   paths: paths,
   sessionName: job.jobName,

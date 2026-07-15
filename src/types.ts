@@ -437,6 +437,15 @@ export interface JobDetails {
 // =================================
 
 /**
+ * Operation mode for {@link makeRemoteOps}.
+ * - `'real'`: Actual SSH/SCP execution against the HPC login node
+ * - `'mock'`: Local filesystem sandbox for integration testing (lockfiles
+ *   are created and read from a temp directory; no SSH involved)
+ * - `'dry-run'`: Print what would happen without executing anything
+ */
+export type OpsMode = 'real' | 'mock' | 'dry-run';
+
+/**
  * Options for executing a remote command via {@link RemoteOps.runRemote}.
  *
  * | Field | Description |

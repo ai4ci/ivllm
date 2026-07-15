@@ -16,7 +16,7 @@ describe('renderSetupScript', () => {
 
   const base: ProcessState = {
     sessionName: 'test',
-    ops: makeRemoteOps(creds, true),
+    ops: makeRemoteOps(creds, 'dry-run'),
     paths: makeSimplePaths(creds, '0.19.1'),
     vllmVersion: '0.19.1',
   };

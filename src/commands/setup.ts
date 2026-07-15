@@ -44,7 +44,7 @@ Examples:
     process.exit(1);
   }
 
-  const ops = makeRemoteOps(config, false);
+  const ops = makeRemoteOps(config, 'real');
   const paths = makeSimplePaths(config, vllmVersion);
   const venvDir = paths.remoteProjectVllmVersionDir;
   const remoteSetupDir = `${paths.remoteHomeDir}/.config/ivllm/${vllmVersion}`;

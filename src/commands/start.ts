@@ -48,7 +48,7 @@ ivllm start test-job --mock --model Qwen/Qwen2.5-0.5B-Instruct --dry-run
     startArgs = await parseStartArgs(args, config);
 
     startArgs.isInteractive = false;
-    const ops = makeRemoteOps(config, startArgs.dryRun);
+    const ops = makeRemoteOps(config, startArgs.dryRun ? 'dry-run' : 'real');
     const localOps = makeLocalOps(startArgs.localPort, startArgs.dryRun);
 
     // Delegate to unified session pipeline
