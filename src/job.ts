@@ -86,10 +86,11 @@ export async function parseStartArgs(
   const yaml = parseVllmConfig(configPath);
   if (flags['config']) saveJobConfig(jobName, flags['config']);
 
+  const nnodes = yaml.nnodes;
   const gpuCount = flags['gpus']
     ? parseInt(flags['gpus'], 10)
-    : yaml.nnodes
-      ? yaml.nnodes * 4
+    : typeof nnodes === 'number' && nnodes > 0
+      ? nnodes * 4
       : (yaml.tensorParallelSize ?? 1) *
         (yaml.pipelineParallelSize ?? 1) *
         (yaml.dataParallelSize ?? 1);

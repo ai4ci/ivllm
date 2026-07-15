@@ -4,7 +4,6 @@ import { cmdConnect } from './commands/connect.ts';
 import { cmdCancel } from './commands/cancel.ts';
 import { cmdStatus } from './commands/status.ts';
 import { cmdList } from './commands/list.ts';
-import { cmdAgent } from './commands/agent.ts';
 import { cmdConfig } from './commands/config.ts';
 
 // Assign globally across Node.js/Browser using the universal globalThis object
@@ -23,7 +22,6 @@ Commands:
   list                    List stored vLLM job configs
   status [job]            Show status of a job (or all jobs)
   config                  Show or set configuration
-  agent                   Launch AI assistant connected to local vLLM server
 
 Options:
   --version, -v           Show version
@@ -34,7 +32,6 @@ For command-specific help, run:
   ivllm connect --help    Connect options
   ivllm cancel --help     Cancel options
   ivllm setup --help      Setup options
-  ivllm agent --help      Agent options (including --port)
   ivllm config --help     Config options
 `.trim();
 
@@ -60,9 +57,6 @@ switch (command) {
     break;
   case 'config':
     await cmdConfig(args);
-    break;
-  case 'agent':
-    await cmdAgent(args);
     break;
   default:
     console.log(USAGE);

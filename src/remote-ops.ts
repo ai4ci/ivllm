@@ -658,7 +658,7 @@ export async function matchVllmVersion(
   const minVersion = minVllmVersion;
   const bestVersion = minVersion
     ? selectBestVersion(installed, minVersion)
-    : semverSort(installed)[0];
+    : revSemverSort(installed)[0];
 
   if (!bestVersion) {
     throw new Error(

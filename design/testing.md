@@ -66,7 +66,86 @@ verify the derived state.
 
 ---
 
-## Layer 2: Bash Unit Tests
+## Mock Remote Ops (TypeScript)
+
+The `makeRemoteOps` factory in `src/remote-ops.ts` currently has two modes:
+`real` (SSH) and `dry-run` (canned text responses). For v3 connect/cancel
+testing we need a **third mode** that simulates a real filesystem on the
+remote side without requiring actual SSH.
+
+### Current problems with `dry-run` mode
+
+| Issue | Example | Impact |
+|-------|---------|--------|
+| Canned `cat` response returns `'lockfile'` (not JSON) | `command.startsWith('cat') → 'lockfile'` | Can't test lockfile parsing |
+| No writable filesystem | `set -C; cat > status.json <<...` returns empty string | Can't test lockfile creation |
+| No state tracking | Every call is independent | Can't simulate pending→running transitions |
+| `dryRun` is boolean | No middle ground | Can't test with real filesystem but fake SSH |
+
+### Solution: add a `mock` mode
+
+```typescript
+type OpsMode = 'real' | 'mock' | 'dry-run';
+
+function makeRemoteOps(config: Credentials, mode: OpsMode): RemoteOps;
+```
+
+In `mock` mode:
+
+| Method | Behaviour |
+|--------|-----------|
+| `runRemote` | Executes commands against a local temp filesystem. `cat`, `mkdir`, `jq` operations work on real files. `sbatch` returns a fake job ID. `scancel` is a no-op. |
+| `copyFile` | Copies to a local temp directory (same as dry-run) |
+| `spawnTunnel` | Returns a mock emitter (same as dry-run) |
+| `checkSSH` | Returns true (same as dry-run) |
+| `streamSrun` | Logs and returns mock emitter (same as dry-run) |
+
+For lockfile simulation, the mock `runRemote` detects `cat` and `jq` patterns
+and delegates to local bash. A `MockLockfile` helper tracks simulated state
+and can inject failures:
+
+```typescript
+class MockRemoteFs {
+  private baseDir: string;
+
+  /**
+   * Simulate a SLURM job progressing from pending → initialising → running.
+   * After `delayMs`, runs `jq '.status = "running"'` on the lockfile.
+   */
+  simulateJobStart(jobName: string, delayMs: number): void;
+
+  /**
+   * Read back the current lockfile for assertions.
+   */
+  readLockfile(jobName: string): LockfileV3 | null;
+}
+```
+
+Test flow for `ivllm connect`:
+
+```typescript
+test('connect creates lockfile, submits sbatch, transitions to running', async () => {
+  const fs = new MockRemoteFs();
+  const ops = makeMockRemoteOps(fs.baseDir);
+
+  // Inject a SLURM job that becomes "running" after 2s
+  fs.simulateJobStart('test-job', 2000);
+
+  await cmdConnect(['test-job', '--config', testConfig, '--local-port', '9999'], ops);
+
+  // Verify lockfile was created
+  const lockfile = fs.readLockfile('test-job');
+  expect(lockfile?.status).toBe('running');
+});
+```
+
+### Migration path
+
+1. Refactor `makeRemoteOps` to accept `OpsMode` instead of `boolean`
+2. Add `MockRemoteFs` class (wraps `mkdir`, `cat`, `jq` against a temp dir)
+3. Build `mock` mode that delegates to `MockRemoteFs` for filesystem commands
+4. Update existing tests that pass `dryRun: true` → pass `'dry-run'`
+5. Add new integration tests using `'mock'` mode
 
 The bash framework must be tested without an HPC connection. All tests use
 the mock harness (`tests/bash/lib/test-utils.sh`) which provides:

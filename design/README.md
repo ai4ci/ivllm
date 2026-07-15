@@ -11,7 +11,9 @@ This directory contains the architectural design for the v3 migration.
 | `roadmap.md` | Step-by-step migration plan with 7 phases (M1–M7) |
 | `coding-standards.md` | Coding conventions: TypeScript OptionParser, object-oriented patterns, bash function design |
 | `testing.md` | Test architecture: 4 layers, mock infrastructure, handoff testing, scenario matrix, phase-by-phase plan |
-| `implementation-plan.md` | **Actionable next steps** — start here tomorrow. Step-by-step tasks for Phase M1 (bash framework) with TDD. |
+| `implementation-plan.md` | **Day 1** — Phase M1 bash framework (foundation, additive) |
+| `implementation-plan-2.md` | **Day 2** — Phase M2 new CLI commands (types, paths, metadata, connect/cancel scaffold) |
+| `implementation-plan-3.md` | **Day 3** — Phase M3 self-managed lifecycle (SSH ops, real connect/cancel, remove old code) |
 
 ## Reference and support
 
