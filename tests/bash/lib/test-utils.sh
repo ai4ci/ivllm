@@ -221,7 +221,7 @@ assert_json_eq() {
 assert_status() {
     local file="$1"
     local expected="$2"
-    assert_json_eq "$file" ".status" "\"$expected\""
+    assert_json_eq "$file" ".status" "$expected"
 }
 
 assert_exit_code() {
