@@ -1,7 +1,10 @@
-import type { Credentials } from '../types.ts';
+import type { Credentials, LockfileV3, OpsMode } from '../types.ts';
 import { loadCredentials, assertConfigured } from '../config.ts';
 import { makeV3Paths } from '../job.ts';
-import { parseVllmConfig } from '../vllm-config.ts';
+import { parseVllmConfig, stripMetadata } from '../vllm-config.ts';
+import { makeRemoteOps } from '../remote-ops.ts';
+import { readFileSync } from 'fs';
+import crypto from 'crypto';
 
 /**
  * Parsed CLI arguments for the `ivllm connect` command.
@@ -130,7 +133,12 @@ function dryRunPreview(
 
   console.log(`\nGenerated SLURM script would be written to:`);
   console.log(`  ${v3paths.scriptFile}`);
-  console.log(`\nTo run for real, omit --dry-run.\n`);
+}
+
+/** Generate a random high port for the vLLM server. */
+function generateRandomHighPort(): number {
+  const MIN = 49152, MAX = 65535;
+  return crypto.randomInt(0, MAX - MIN + 1) + MIN;
 }
 
 /**
@@ -173,18 +181,90 @@ export async function cmdConnect(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // ── Placeholder for real implementation ──
-  // Steps to implement when SSH integration is added:
-  // 1. SSH pre-flight: check connectivity, venv exists
-  // 2. Create lockfile on HPC (status.json with "pending")
-  // 3. Upload config and generated SLURM script
-  // 4. Download model if not cached
-  // 5. Submit sbatch job
-  // 6. Monitor lockfile for status transitions
-  // 7. When running: establish SSH tunnel
-  // 8. Print endpoint URL
-  // 9. Optional: launch assistant
+  // Resolve config file — required for first use, cached for subsequent
+  const configFile = connectArgs.configFile;
+  if (!configFile) {
+    console.error('Error: --config <file> is required for first use.');
+    console.error('  ivllm connect my-job --config examples/qwen2.5-instruct.yaml');
+    process.exit(1);
+  }
 
-  console.log(`\nNot yet implemented — use --dry-run to preview, or`);
-  console.log(`use 'ivllm start' (v2) for actual job submission.\n`);
+  // Parse config
+  let parsedConfig;
+  try {
+    parsedConfig = parseVllmConfig(configFile);
+  } catch (e) {
+    console.error('Error parsing config:', (e as Error).message);
+    process.exit(1);
+  }
+
+  // Create remote ops
+  const mode: OpsMode = 'real';
+  const ops = makeRemoteOps(config, mode);
+
+  // Stage 1: SSH pre-flight
+  console.log(`\n=== ivllm connect: ${connectArgs.jobName} ===`);
+  console.log(`Model    : ${parsedConfig.model}`);
+  console.log(`Server   : ${connectArgs.batch ? 'standard partition' : 'interactive reservation'}`);
+
+  console.log('\nChecking SSH connectivity...');
+  await ops.checkSSH();
+  console.log('  ✓ SSH connection OK');
+
+  // Stage 2: Create job directory and lockfile
+  const v3paths = makeV3Paths(config.projectDir, connectArgs.jobName);
+  const serverPort = generateRandomHighPort();
+
+  console.log(`\nCreating job directory...`);
+  const mkdirResult = await ops.runRemote(`mkdir -p ${v3paths.jobDir}`);
+  if (mkdirResult.exitCode !== 0) {
+    console.error('Error: could not create job directory');
+    process.exit(1);
+  }
+  console.log(`  ✓ ${v3paths.jobDir}`);
+
+  console.log('Creating lockfile...');
+  const lockfile: LockfileV3 = {
+    status: 'pending',
+    jobName: connectArgs.jobName,
+    model: parsedConfig.model,
+    serverPort,
+    requestedTime: new Date().toISOString(),
+    idleTimeout: parsedConfig.idleTimeout,
+  };
+
+  // Use set -C (noclobber) for atomic lockfile creation
+  const lockfileJson = JSON.stringify(lockfile);
+  const createResult = await ops.runRemote(
+    `set -C; cat > ${v3paths.statusFile} << 'LOCKFILE_EOF'\n${lockfileJson}\nLOCKFILE_EOF`,
+    { env: [], silent: true },
+  );
+
+  if (createResult.exitCode !== 0) {
+    // Check if lockfile already exists
+    const existingResult = await ops.runRemote(`cat ${v3paths.statusFile} 2>/dev/null`, {
+      env: [],
+      silent: true,
+    });
+    if (existingResult.stdout) {
+      console.error(`Error: Job '${connectArgs.jobName}' already exists.`);
+      console.error(`  Use 'ivllm cancel ${connectArgs.jobName}' to stop it, or`);
+      console.error(`  use 'ivllm cancel ${connectArgs.jobName} --force' to force-cancel.`);
+    } else {
+      console.error('Error: could not create lockfile');
+    }
+    process.exit(1);
+  }
+  console.log(`  ✓ ${v3paths.statusFile} (port ${serverPort})`);
+
+  // Stage 3: Upload config
+  console.log('Uploading config...');
+  await ops.copyFile(configFile, v3paths.vllmConfigFile);
+  console.log(`  ✓ ${v3paths.vllmConfigFile}`);
+
+  console.log(`\nJob '${connectArgs.jobName}' is set up and ready.`);
+  console.log(`Lockfile : ${v3paths.statusFile}`);
+  console.log(`Config   : ${v3paths.vllmConfigFile}`);
+  console.log(`Endpoint : http://localhost:${connectArgs.localPort}/v1 (after start)`);
+  console.log(`\nNext: SLURM script generation and job submission.\n`);
 }
