@@ -1,10 +1,9 @@
 #!/usr/bin/env bun
 import { cmdSetup } from './commands/setup.ts';
-import { cmdStart } from './commands/start.ts';
+import { cmdConnect } from './commands/connect.ts';
+import { cmdCancel } from './commands/cancel.ts';
 import { cmdStatus } from './commands/status.ts';
-import { cmdStop } from './commands/stop.ts';
 import { cmdList } from './commands/list.ts';
-import { cmdInteractive } from './commands/interactive.ts';
 import { cmdAgent } from './commands/agent.ts';
 import { cmdConfig } from './commands/config.ts';
 
@@ -18,14 +17,13 @@ const USAGE = `
 Usage: ivllm <command> [options]
 
 Commands:
-  setup <version>         Install vLLM <version> on the HPC (one-off, e.g. ivllm setup 0.19.1)
-  start <job>             Start an inference session and monitor it
-  interactive <job>       Start an interactive inference session (bound to terminal)
+  setup <version>         Install vLLM <version> on the HPC (one-off)
+  connect <job>           Start or connect to an inference session
+  cancel <job>            Cancel a running job
   list                    List stored vLLM job configs
   status [job]            Show status of a job (or all jobs)
-  stop <job>              Stop a job and clean up (recovery)
   config                  Show or set configuration
-  agent                   Launch AI assistant connected to local vLLM server (interactive menu)
+  agent                   Launch AI assistant connected to local vLLM server
 
 Options:
   --version, -v           Show version
@@ -33,7 +31,8 @@ Options:
 Run 'ivllm <command> --help' for command-specific options.
 
 For command-specific help, run:
-  ivllm start --help      Start options (including --no-launch)
+  ivllm connect --help    Connect options
+  ivllm cancel --help     Cancel options
   ivllm setup --help      Setup options
   ivllm agent --help      Agent options (including --port)
   ivllm config --help     Config options
@@ -47,17 +46,14 @@ switch (command) {
   case 'setup':
     await cmdSetup(args);
     break;
-  case 'start':
-    await cmdStart(args);
+  case 'connect':
+    await cmdConnect(args);
+    break;
+  case 'cancel':
+    await cmdCancel(args);
     break;
   case 'status':
     await cmdStatus(args);
-    break;
-  case 'stop':
-    await cmdStop(args);
-    break;
-  case 'interactive':
-    await cmdInteractive(args);
     break;
   case 'list':
     await cmdList(args);
