@@ -3,6 +3,7 @@
 #
 # Tests all lockfile operations: create, update state transitions,
 # cancel requests, status checks, and error handling.
+# shellcheck disable=SC1091,SC2155,SC2015
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-utils.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../src/templates/lib" && pwd)/utils.sh"

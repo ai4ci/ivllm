@@ -1,5 +1,5 @@
 #!/bin/bash
-# shellcheck disable=SC2155
+# shellcheck disable=SC2155,SC2153
 #
 # utils.sh — Shared bash library for vLLM job lifecycle on Isambard.
 #

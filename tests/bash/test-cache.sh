@@ -2,6 +2,7 @@
 # tests/bash/test-cache.sh — JIT cache save/restore tests.
 #
 # Each test runs in a completely isolated subshell to prevent state leakage.
+# shellcheck disable=SC1091,SC2016
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-utils.sh"
 

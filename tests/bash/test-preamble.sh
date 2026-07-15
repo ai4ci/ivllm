@@ -1,5 +1,6 @@
 #!/bin/bash
 # tests/bash/test-preamble.sh — Preamble environment validation tests.
+# shellcheck disable=SC1091,SC2015
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-utils.sh"
 
