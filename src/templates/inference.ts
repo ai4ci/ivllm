@@ -185,27 +185,23 @@ if [ -d "${paths.remoteProjectVllmPluginsDir}" ]; then
   ln -sfn "${paths.remoteProjectVllmPluginsDir}" "${paths.remoteJobVllmPluginsDir}"
 fi
 
-# Detect and handle missing LOCALDIR in interactive srun allocations
-if [ -z "\${LOCALDIR:-}" ]; then
-  export LOCALDIR="/local/user/$UID"
-  mkdir -p "$LOCALDIR"
-  chmod 700 "$LOCALDIR"
-fi
+# 1. Purge any contaminated or inherited LOCALDIR from parent environments
+unset LOCALDIR
 
-# Isolate node workspaces by true kernel hostname to prevent cross-node collisions on shared interactive loopbacks
-if [ -z "\${LOCALDIR:-}" ]; then
-  export LOCALDIR="/local/user/$UID"
-fi
+# 2. Extract the literal, currently executing user ID dynamically
+CURRENT_UID=$(id -u)
+
+# 3. Securely isolate node workspaces strictly by the current runner's context
+export LOCALDIR="/local/user/$CURRENT_UID"
 export NODE_LOCALDIR="$LOCALDIR/$(hostname -s)"
 mkdir -p "$NODE_LOCALDIR"
 
 echo "=== Interactive Deployment Context Resolved ==="
-echo "Node only LOCALDIR is bound to: $NODE_LOCALDIR"
+echo "Node only LOCALDIR is bound to: $NODE_LOCALDIR (Executing User UID: $CURRENT_UID)"
 
 # Clean up ONLY this specific node's unique subfolder
 echo "Pristine cleanup of isolated workspace for $(hostname -s)..."
 rm -rf "\${NODE_LOCALDIR:?}"/* 2>/dev/null || true
-
 
 # 1. Identify possible compiler cache location
 TAR_FILE="${paths.remoteProjectJobCacheFile}"
