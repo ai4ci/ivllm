@@ -1,34 +1,22 @@
 import { loadCredentials, assertConfigured } from '../config.ts';
 
-import { parseJobDetails } from '../job.ts';
-import type { JobDetails } from "../types.ts";
-import { makeRemoteOps } from "../remote-ops.ts";
-
-export interface StatusArgs {
-  jobName?: string;
-}
-
-/**
- *
- * @param args
- */
-export function parseStatusArgs(args: string[]): StatusArgs {
-  const jobName = args[0] && !args[0].startsWith('--') ? args[0] : undefined;
-  return { jobName };
-}
+import { makeJobV3Paths, parseV3Lockfile } from '../job.ts';
+import type { LockfileV3 } from '../types.ts';
+import { makeRemoteOps } from '../remote-ops.ts';
+import { makeV3Paths } from '../job.ts';
 
 /**
  *
  * @param job
  */
-export function formatJobRow(job: JobDetails): string {
+export function formatJobRow(job: LockfileV3): string {
   const parts: string[] = [
-    job.job_name.padEnd(20),
+    job.jobName.padEnd(20),
     job.status.padEnd(14),
-    (job.slurm_job_id ?? '-').padEnd(10),
+    (job.slurmJobId ?? '-').padEnd(10),
     (job.model ?? '-').padEnd(36),
   ];
-  if (job.error) parts.push(`ERROR: ${job.error}`);
+  if (job.reason) parts.push(job.reason!);
   return parts.join('  ').trimEnd();
 }
 
@@ -36,7 +24,7 @@ export function formatJobRow(job: JobDetails): string {
  *
  * @param jobs
  */
-export function formatJobTable(jobs: JobDetails[]): string {
+export function formatJobTable(jobs: LockfileV3[]): string {
   if (jobs.length === 0) return 'No active ivllm jobs found.';
   const header =
     'JOB NAME'.padEnd(20) +
@@ -45,7 +33,9 @@ export function formatJobTable(jobs: JobDetails[]): string {
     '  ' +
     'SLURM ID'.padEnd(10) +
     '  ' +
-    'MODEL';
+    'MODEL'.padEnd(36) +
+    '  ' +
+    'REASON';
   const separator = '-'.repeat(header.length);
   const rows = jobs.map(formatJobRow);
   return [header, separator, ...rows].join('\n');
@@ -53,26 +43,11 @@ export function formatJobTable(jobs: JobDetails[]): string {
 
 /**
  *
- * @param args
+ * @param jobName
  */
-export async function cmdStatus(args: string[]): Promise<void> {
-  // Handle help flag
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log(`
-Usage: ivllm status [job]
-
-Options:
-  [job]                 Show status of specific job (if omitted, show all jobs)
-  --help, -h            Show this help message
-
-Examples:
-  ivllm status
-  ivllm status my-job
-`);
-    return;
-  }
-
+export async function cmdStatus(jobName?: string): Promise<void> {
   const config = loadCredentials();
+
   try {
     assertConfigured(config);
   } catch (e) {
@@ -82,37 +57,38 @@ Examples:
 
   const ops = makeRemoteOps(config, 'real');
 
-  const { jobName } = parseStatusArgs(args);
-
   if (jobName) {
     // Single job
+    const paths = makeJobV3Paths(config.projectDir, jobName);
     const { exitCode, stdout } = await ops.runRemote(
-      `cat ~/${jobName}/job_details.json 2>/dev/null`
+      `cat ${paths.statusFile} 2>/dev/null`,
     );
     if (exitCode !== 0 || !stdout.trim()) {
       console.error(
-        `No job '${jobName}' found. (No job_details.json at ~/${jobName}/)`,
+        `No job '${jobName}' found. (No status.json at ${paths.statusFile})`,
       );
       process.exit(1);
     }
-    const details = parseJobDetails(stdout);
+    const details = parseV3Lockfile(stdout);
     if (!details) {
-      console.error(`Could not parse job_details.json for '${jobName}'.`);
+      console.error(`Could not parse status.json for '${jobName}'.`);
       process.exit(1);
     }
     console.log(formatJobTable([details]));
   } else {
+    const paths = makeV3Paths(config.projectDir);
+
     // All jobs — use jq to combine all job_details.json into a JSON array
     const { stdout } = await ops.runRemote(
-      `shopt -s nullglob; files=(~/*/job_details.json); if [ \${#files[@]} -eq 0 ]; then echo '[]'; else jq -s '.' "\${files[@]}"; fi`,
+      `shopt -s nullglob; files=(${paths.statusGlob}); if [ \${#files[@]} -eq 0 ]; then echo '[]'; else jq -s '.' "\${files[@]}"; fi`,
     );
-    let jobs: JobDetails[] = [];
+    let jobs: LockfileV3[] = [];
     try {
       const parsed = JSON.parse(stdout || '[]');
       if (Array.isArray(parsed)) {
         jobs = parsed
-          .map((j) => parseJobDetails(JSON.stringify(j)))
-          .filter((j): j is JobDetails => j !== null);
+          .map((j) => parseV3Lockfile(JSON.stringify(j)))
+          .filter((j): j is LockfileV3 => j !== null);
       }
     } catch {
       // ignore parse errors — show empty list

@@ -82,6 +82,6 @@ export function semverSort(versions: string[]): string[] {
  */
 export function revSemverSort(versions: string[]): string[] {
   return [...versions].sort((a, b) =>
-    semverLt(a, b) ? 1 : semverLt(b, a) ? -1 : 0,
+    semverLt(a, b) ? -1 : semverLt(b, a) ? 1 : 0,
   );
 }

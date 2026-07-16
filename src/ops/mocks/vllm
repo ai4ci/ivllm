@@ -1,0 +1,103 @@
+#!/bin/bash
+
+delay="${MOCK_VLLM_DELAY:-0}"
+crash_after="${MOCK_VLLM_CRASH_AFTER:-0}"
+
+# Extract --model and --port from arguments
+local model="test-model"
+local port="8000"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --model) model="$2"; shift 2 ;;
+        --port) port="$2"; shift 2 ;;
+        --config) shift 2 ;;  # skip vllm config file
+        --host) shift 2 ;;    # skip host
+        --served-model-name) shift 2 ;;  # skip served model names
+        --) shift; break ;;
+        *) shift ;;
+    esac
+done
+
+# Inject delay and crash config into the Python script
+exec python3 -c "
+import http.server, json, os, sys, atexit, signal
+from datetime import datetime
+
+delay = $delay
+crash_after = $crash_after
+request_count = 0
+
+# Handle signals from parent srun mock
+signal.signal(signal.SIGUSR1, lambda *_: sys.exit(200))
+signal.signal(signal.SIGUSR2, lambda *_: sys.exit(201))
+
+# Simulate startup delay
+if delay > 0:
+    import time
+    time.sleep(delay)
+
+def handle_exit():
+    sys.stderr.write('Mock vLLM: shutdown\n')
+    sys.stderr.flush()
+atexit.register(handle_exit)
+
+class MockHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        global request_count
+        timestamp = datetime.now().strftime('%m-%d %H:%M:%S')
+        request_count += 1
+
+        if crash_after > 0 and request_count > crash_after:
+            sys.stderr.write('Mock vLLM: crashing after $crash_after requests\n')
+            sys.stderr.flush()
+            sys.exit(1)
+
+        sys.stderr.write(f'[{timestamp}] api call {self.path}\\n')
+        sys.stderr.flush()
+
+        if self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{}')
+        elif self.path == '/v1/models':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            body = json.dumps({'object': 'list', 'data': [{'id': '$model', 'object': 'model'}]})
+            self.wfile.write(body.encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        global request_count
+        timestamp = datetime.now().strftime('%m-%d %H:%M:%S')
+        request_count += 1
+
+        if crash_after > 0 and request_count > crash_after:
+            sys.stderr.write('Mock vLLM: crashing after $crash_after requests\\n')
+            sys.stderr.flush()
+            sys.exit(1)
+
+        if self.path == '/v1/chat/completions':
+            sys.stderr.write(f'[{timestamp}] api call /v1/chat/completions\\n')
+            sys.stderr.flush()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            body = json.dumps({'object': 'list', 'data': [{'result': 'the response'}]})
+            self.wfile.write(body.encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, fmt, *args):
+        pass
+
+print(f'Mock vLLM listening on port $port, model=$model, delay={delay}s, crash_after={crash_after}', flush=True)
+try:
+    http.server.HTTPServer(('0.0.0.0', $port), MockHandler).serve_forever()
+except KeyboardInterrupt:
+    sys.exit(130)
+"

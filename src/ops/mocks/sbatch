@@ -1,0 +1,22 @@
+#!/bin/bash
+
+script_path=""
+
+# Find the last positional argument (the script path)
+for arg in "$@"; do
+    if [[ "$arg" != -* ]]; then
+        script_path="$arg"
+    fi
+done
+
+local fake_job_id="${MOCK_SBATCH_JOB_ID:-99999}"
+echo "[mock] sbatch: submitted batch job $fake_job_id ($script_path)"
+echo "Submitted batch job $fake_job_id"
+
+export SLURM_JOB_ID=${MOCK_SBATCH_JOB_ID}
+export SLURM_NODEID=0
+export COMPUTE_HOSTNAME="nid1234"
+export SLURM_JOB_START_TIME="$(date +%s)"
+export SLURM_JOB_END_TIME="$(date +%s)"
+
+bash -c $script_path

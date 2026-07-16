@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import type {Credentials} from './types.ts';
+import type { Credentials } from './types.ts';
 
 // =================================
 // CONSTANTS (internal/private)

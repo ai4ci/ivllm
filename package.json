@@ -38,7 +38,9 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "js-yaml": "^4.1.1"
+    "commander": "^15.0.0",
+    "js-yaml": "^4.1.1",
+    "vsbx": "^0.0.24"
   },
   "knip": {
     "ignoreDependencies": [

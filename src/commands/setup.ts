@@ -5,7 +5,7 @@ import { loadCredentials, assertConfigured } from '../config.ts';
 import { renderSetupScript } from '../templates/setup.ts';
 import { makeRemoteOps } from '../remote-ops.ts';
 import { ProcessState } from '../types.ts';
-import { makeSimplePaths } from '../job.ts';
+import { makeVllmV3Paths } from '../job.ts';
 
 // TODO: --dry-run flag
 
@@ -13,29 +13,7 @@ import { makeSimplePaths } from '../job.ts';
  *
  * @param args
  */
-export async function cmdSetup(args: string[]): Promise<void> {
-  // Handle help flag
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log(`
-Usage: ivllm setup <version>
-
-Options:
-  <version>             vLLM version to install (e.g. 0.19.1)
-  --help, -h            Show this help message
-
-Examples:
-  ivllm setup 0.19.1
-`);
-    return;
-  }
-
-  const vllmVersion = args[0];
-  if (!vllmVersion || vllmVersion.startsWith('--')) {
-    console.error('Error: vLLM version is required.');
-    console.error('Usage: ivllm setup <version>  (e.g. ivllm setup 0.19.1)');
-    process.exit(1);
-  }
-
+export async function cmdSetup(vllmVersion: string): Promise<void> {
   const config = loadCredentials();
   try {
     assertConfigured(config);
@@ -45,8 +23,8 @@ Examples:
   }
 
   const ops = makeRemoteOps(config, 'real');
-  const paths = makeSimplePaths(config, vllmVersion);
-  const venvDir = paths.remoteProjectVllmVersionDir;
+  const paths = makeVllmV3Paths(config.projectDir, vllmVersion);
+  const venvDir = paths.vllmVersionDir;
   const remoteSetupDir = `${paths.remoteHomeDir}/.config/ivllm/${vllmVersion}`;
   const remoteSetupScript = `${remoteSetupDir}/slurm.sh`;
   const remoteSetupLog = `${remoteSetupDir}/setup.log`;

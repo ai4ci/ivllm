@@ -1,27 +1,25 @@
 import type {
   Credentials,
-  JobDetails,
   InferenceJobOptions,
-  Paths,
-  SimplePaths,
   LockfileV3,
   EnginePathsV3,
+  JobEnginePathsV3,
+  VllmJobEnginePathsV3,
+  VllmEnginePathsV3,
 } from './types';
 import { jobConfigPath, parseVllmConfig, saveJobConfig } from './vllm-config';
-import { existsSync } from 'fs';
-import os from 'os';
 import crypto from 'crypto';
 
 /**
  *
  * @param raw
  */
-export function parseJobDetails(raw: string): JobDetails | null {
+export function parseLockFile(raw: string): LockfileV3 | null {
   if (!raw.trim()) return null;
   try {
     const obj = JSON.parse(raw) as Record<string, unknown>;
     if (typeof obj['status'] !== 'string') return null;
-    return obj as unknown as JobDetails;
+    return obj as unknown as LockfileV3;
   } catch {
     return null;
   }
@@ -48,40 +46,18 @@ export function hfCachePath(projectHfDir: string, model: string): string {
  * @param config
  */
 export async function parseStartArgs(
-  args: string[],
+  jobName: string,
+  path: string | unknown,
+  mock: boolean,
+  dryRun: boolean,
   config: Credentials,
 ): Promise<InferenceJobOptions> {
   // First positional arg is job name — it must not start with --
-  const jobName = args[0] && !args[0].startsWith('--') ? args[0] : null;
   if (!jobName) throw new Error('Job name is required as the first argument');
 
-  // Parse boolean flags and key=value flags
-  const boolFlags = new Set<string>();
-  const flags: Record<string, string> = {};
-  for (let i = 1; i < args.length; i++) {
-    const arg = args[i];
-    if (!arg?.startsWith('--')) continue;
-    const key = arg.slice(2);
-    const next = args[i + 1];
-    if (!next || next.startsWith('--')) {
-      boolFlags.add(key);
-    } else {
-      flags[key] = next;
-      i++;
-    }
-  }
+  const configPath = path ? path! : jobConfigPath(jobName);
 
-  const mock = boolFlags.has('mock');
-  const dryRun = boolFlags.has('dry-run');
-  const noLaunch = boolFlags.has('no-launch');
-  const preCache = boolFlags.has('create-cache');
-  const configPath = flags['config'] ?? jobConfigPath(jobName);
-
-  if (!existsSync(configPath)) {
-    throw new Error(
-      `No --config provided and no stored config found for '${jobName}'.\n  First run: ivllm start ${jobName} --config <path>`,
-    );
-  }
+  // TODO: can't check config until ssh connected
 
   const yaml = parseVllmConfig(configPath);
   if (flags['config']) saveJobConfig(jobName, flags['config']);
@@ -131,86 +107,6 @@ function generateRandomHighPort(): number {
 }
 
 /**
- *
- * @param config
- * @param vllmVersion
- */
-export function makeSimplePaths(
-  config: Credentials,
-  vllmVersion: string,
-): SimplePaths {
-  const remoteProjectDir = config.projectDir;
-  const remoteHomeDir = `${remoteProjectDir.replace('/projects', '/home')}/${config.username}`;
-  const remoteProjectVllmDir = `${remoteProjectDir}/ivllm`;
-  const remoteProjectVllmPluginsDir = `${remoteProjectVllmDir}/plugins`;
-  const remoteProjectVllmVersionDir = `${remoteProjectVllmDir}/${vllmVersion}`;
-  const remoteProjectVllmVenvActivate = `${remoteProjectVllmVersionDir}/bin/activate`;
-  const nvhpcDir = `${remoteProjectVllmDir}/nvhpc`;
-  const nvhpcRoot = `${nvhpcDir}/Linux_aarch64/26.3`;
-
-  return {
-    remoteProjectDir,
-    remoteHomeDir,
-    remoteProjectVllmDir,
-    remoteProjectVllmPluginsDir,
-    remoteProjectVllmVersionDir,
-    remoteProjectVllmVenvActivate,
-    nvhpcDir,
-    nvhpcRoot,
-  };
-}
-
-/**
- *
- * @param config
- * @param jobName
- * @param model
- * @param cacheKey
- * @param vllmVersion
- */
-export function makePaths(
-  config: Credentials,
-  jobName: string,
-  model: string,
-  cacheKey: string,
-  vllmVersion: string,
-): Paths {
-  const hfModelKey = model.includes('/')
-    ? 'models--' + model.replace('/', '--')
-    : 'models--' + model;
-
-  const base = makeSimplePaths(config, vllmVersion);
-  const remoteJobDir = `${base.remoteHomeDir}/${jobName}`;
-  const remoteJobLockFile = `${remoteJobDir}/job_details.json`;
-  const remoteJobScriptFile = `${remoteJobDir}/slurm.sh`;
-  const remoteJobLogFile = `${remoteJobDir}/vllm.log`;
-  const remoteJobVllmConfigFile = `${remoteJobDir}/${jobName}.yaml`;
-  const remoteJobVllmPluginsDir = `${remoteJobDir}/plugins`;
-  const remoteProjectHfDir = `${base.remoteProjectDir}/hf`;
-  const remoteProjectHfModelDir = `${remoteProjectHfDir}/hub/${hfModelKey}`;
-  const remoteProjectJobCacheDir = `${base.remoteProjectVllmDir}/cache/${cacheKey}`;
-  const remoteProjectJobCacheFile = `${remoteProjectJobCacheDir}/cache.tar.gz`;
-  const localCacheDir = `${os.homedir()}/.config/ivllm`;
-  const localCacheVllmConfigFile = `${localCacheDir}/${jobName}.yaml`;
-
-  return {
-    ...base,
-    remoteJobDir,
-    remoteJobLockFile,
-    remoteJobScriptFile,
-    remoteJobLogFile,
-    remoteJobVllmConfigFile,
-    remoteJobVllmPluginsDir,
-    remoteProjectHfDir,
-    remoteProjectHfModelDir,
-    remoteProjectJobCacheDir,
-    remoteProjectJobCacheFile,
-    localCacheDir,
-    localCacheVllmConfigFile,
-  };
-}
-
-/**
  * Build v3 paths from a project directory and job name.
  *
  * Paths follow the new $PROJECTDIR/engine/ structure:
@@ -232,19 +128,35 @@ export function makePaths(
  * @param jobName - User-provided job name
  * @returns EnginePathsV3 object
  */
-export function makeV3Paths(
-  projectDir: string,
-  jobName: string,
-): EnginePathsV3 {
+export function makeV3Paths(projectDir: string): EnginePathsV3 {
+  const modelDir = `${projectDir.replace(/\/+$/, '')}/mdoel`;
   const engineDir = `${projectDir.replace(/\/+$/, '')}/engine`;
   const engineLibDir = `${engineDir}/lib`;
   const engineJobsDir = `${engineDir}/jobs`;
-  const jobDir = `${engineJobsDir}/${jobName}`;
+  const hfVenvDir = `${modelDir}/venv`;
+  const hfHomeDir = `${modelDir}/hf`;
+  const statusGlob = `${engineJobsDir}/*/status.json`;
 
   return {
     engineDir,
     engineLibDir,
     engineJobsDir,
+    modelDir,
+    hfVenvDir,
+    hfHomeDir,
+    statusGlob,
+  };
+}
+
+export function makeJobV3Paths(
+  projectDir: string,
+  jobName: string,
+): JobEnginePathsV3 {
+  const paths = makeV3Paths(projectDir);
+  const jobDir = `${paths.engineJobsDir}/${jobName}`;
+
+  return {
+    ...paths,
     jobDir,
     statusFile: `${jobDir}/status.json`,
     scriptFile: `${jobDir}/slurm.sh`,
@@ -252,6 +164,33 @@ export function makeV3Paths(
     strippedConfigFile: `${jobDir}/vllm.stripped.yaml`,
     jitCacheFile: `${jobDir}/jit-cache.tar.gz`,
     logFileGlob: `${jobDir}/vllm.*.log`,
+  };
+}
+
+export function makeVllmV3Paths(
+  projectDir: string,
+  vllmVersion: string,
+): VllmEnginePathsV3 {
+  const paths = makeV3Paths(projectDir);
+  const vllmVersionDir = `${paths.engineDir}/vllm/${vllmVersion}`;
+
+  return {
+    ...paths,
+    vllmVersionDir,
+  };
+}
+
+export function makeVllmJobV3Paths(
+  projectDir: string,
+  vllmVersion: string,
+  jobName: string,
+): VllmJobEnginePathsV3 {
+  const paths = makeJobV3Paths(projectDir, jobName);
+  const vllmVersionDir = `${paths.engineDir}/vllm/${vllmVersion}`;
+
+  return {
+    ...paths,
+    vllmVersionDir,
   };
 }
 

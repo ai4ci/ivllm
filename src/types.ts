@@ -84,91 +84,6 @@ export interface InferenceJobOptions {
   cacheKey: string;
 }
 
-/**
- * Shared project-level paths used across all jobs for a given vLLM version.
- *
- * These paths are the same for every session running the same vLLM version
- * on the same project allocation. Computed by {@link makeSimplePaths}.
- *
- * | Field | Description |
- * |-------|-------------|
- * | `remoteProjectDir` | Shared project directory (e.g. `/projects/XXXX`) |
- * | `remoteHomeDir` | User home on HPC (e.g. `/projects/XXXX/home/YYYY.XXXX`) |
- * | `remoteProjectVllmDir` | Shared vLLM installation root |
- * | `remoteProjectVllmPluginsDir` | Directory for shared vLLM plugins |
- * | `remoteProjectVllmVersionDir` | Versioned venv directory |
- * | `remoteProjectVllmVenvActivate` | Path to venv activate script |
- * | `nvhpcDir` | NVHPC SDK installation directory |
- * | `nvhpcRoot` | NVHPC root (e.g. `Linux_aarch64/26.3`) |
- */
-export interface SimplePaths {
-  /** Shared project directory on the HPC (e.g. `/projects/XXXX`) */
-  remoteProjectDir: string;
-  /** User home directory on the HPC */
-  remoteHomeDir: string;
-  /** Root of the shared vLLM installation tree */
-  remoteProjectVllmDir: string;
-  /** Directory for shared vLLM plugins across all jobs */
-  remoteProjectVllmPluginsDir: string;
-  /** Versioned vLLM installation directory (e.g. `…/ivllm/0.22.0`) */
-  remoteProjectVllmVersionDir: string;
-  /** Path to the Python virtualenv `activate` script */
-  remoteProjectVllmVenvActivate: string;
-  /** NVHPC SDK installation directory */
-  nvhpcDir: string;
-  /** NVHPC root (e.g. `Linux_aarch64/26.3`) */
-  nvhpcRoot: string;
-}
-
-/**
- * Complete set of file system paths for a single inference session.
- *
- * Extends {@link SimplePaths} with job-scoped paths. Computed by
- * {@link makePaths} from the job name, model name, cache key, and
- * vLLM version.
- *
- * | Field | Description |
- * |-------|-------------|
- * | `remoteJobDir` | Job working directory on the HPC |
- * | `remoteJobLockFile` | Path to the `job_details.json` lockfile |
- * | `remoteJobVllmConfigFile` | Path to the vllm.yaml on the HPC |
- * | `remoteJobVllmPluginsDir` | Per-job plugin directory (symlinked from project) |
- * | `remoteJobScriptFile` | Path to the generated SLURM script |
- * | `remoteJobLogFile` | Path to the vLLM log file |
- * | `remoteProjectHfDir` | Shared HuggingFace cache root |
- * | `remoteProjectHfModelDir` | Cache path for the specific model |
- * | `remoteProjectJobCacheDir` | Shared JIT cache directory |
- * | `remoteProjectJobCacheFile` | Cached tarball of compiled models |
- * | `localCacheDir` | Local machine cache directory |
- * | `localCacheVllmConfigFile` | Local cached copy of the job YAML config |
- */
-export interface Paths extends SimplePaths {
-  /** Job working directory on the HPC (e.g. `/projects/XXXX/home/YYY.XXXX/<jobName>`) */
-  remoteJobDir: string;
-  /** Path to the `job_details.json` lockfile on the HPC */
-  remoteJobLockFile: string;
-  /** Path to the vllm.yaml file on the HPC */
-  remoteJobVllmConfigFile: string;
-  /** Per-job plugin directory (usually a symlink to the project plugins dir) */
-  remoteJobVllmPluginsDir: string;
-  /** Path to the generated SLURM batch script on the HPC */
-  remoteJobScriptFile: string;
-  /** Path to the vLLM log file on the HPC */
-  remoteJobLogFile: string;
-  /** Shared HuggingFace cache root directory */
-  remoteProjectHfDir: string;
-  /** Cache directory for the specific model within the HF cache */
-  remoteProjectHfModelDir: string;
-  /** Shared directory for JIT compilation caches */
-  remoteProjectJobCacheDir: string;
-  /** Cached tarball path for compiled model JIT caches */
-  remoteProjectJobCacheFile: string;
-  /** Local machine cache directory (~/.config/ivllm) */
-  localCacheDir: string;
-  /** Local cached copy of the job's vllm.yaml config */
-  localCacheVllmConfigFile: string;
-}
-
 // =================================
 // V3 PATHS (ENGINE DIR STRUCTURE)
 // =================================
@@ -192,27 +107,46 @@ export interface Paths extends SimplePaths {
  * | `jitCacheFile` | Path to the JIT cache tarball |
  */
 export interface EnginePathsV3 {
+  /** Root of the model dir (`$PROJECTDIR/model`) */
+  modelDir: string;
+  /** Root of the hf executable (`$PROJECTDIR/model/venv`) */
+  hfVenvDir: string;
+  /** Root of the HF_HOME directory (`$PROJECTDIR/model/hf`) */
+  hfHomeDir: string;
   /** Root of the engine directory (`$PROJECTDIR/engine`) */
   engineDir: string;
   /** Shared bash libraries (`$PROJECTDIR/engine/lib`) */
   engineLibDir: string;
   /** Root of all job directories (`$PROJECTDIR/engine/jobs`) */
   engineJobsDir: string;
+  /** Glob to select all status files (`$PROJECTDIR/engine/jobs/XX/status.json`) */
+  statusGlob: string;
+}
+
+export interface JobEnginePathsV3 extends EnginePathsV3 {
   /** Per-job working directory (`$PROJECTDIR/engine/jobs/<jobname>`) */
   jobDir: string;
-  /** Path to `status.json` lockfile */
+  /** Path to `status.json` lockfile (`$PROJECTDIR/engine/jobs/<jobname>/status.json`) */
   statusFile: string;
-  /** Path to the generated `slurm.sh` */
+  /** Path to the generated `slurm.sh` (`$PROJECTDIR/engine/jobs/<jobname>/slurm.sh`) */
   scriptFile: string;
-  /** Path to the vllm.yaml on the HPC (raw, with metadata) */
+  /** Path to the vllm.yaml on the HPC (raw, with metadata) (`$PROJECTDIR/engine/jobs/<jobname>/original-vllm.yaml`) */
   vllmConfigFile: string;
-  /** Path to the vllm.yaml stripped of metadata */
+  /** Path to the vllm.yaml stripped of metadata (`$PROJECTDIR/engine/jobs/<jobname>/vllm.yaml`)*/
   strippedConfigFile: string;
-  /** Path to the JIT cache tarball */
+  /** Path to the JIT cache tarball (`$PROJECTDIR/engine/jobs/<jobname>/jit-cache.tar.gz`) */
   jitCacheFile: string;
   /** Glob pattern matching all per-node log files (vllm.<NODEID>.log) */
   logFileGlob: string;
 }
+
+export interface VllmEnginePathsV3 extends EnginePathsV3 {
+  /** Root of the vllm version install dir (`$PROJECTDIR/engine/vllm/<version>/`) */
+  vllmVersionDir: string;
+}
+
+export interface VllmJobEnginePathsV3
+  extends JobEnginePathsV3, VllmEnginePathsV3 {}
 
 /**
  * Parsed vLLM YAML configuration with all serving parameters.
@@ -304,20 +238,16 @@ export class ProcessState {
   /** Remote operations interface for SSH/SCP to the login node */
   ops!: RemoteOps;
   /** File system paths for the project-level directory tree */
-  paths!: SimplePaths;
+  paths!: EnginePathsV3;
   /** vLLM version string (e.g. `'0.22.0'`) */
   vllmVersion!: string;
   /** Remote command string for interactive sessions */
   remoteCommand?: string;
   /** SLURM job ID once the job has been submitted */
   slurmJobId?: string;
-  /** Active srun or SSH process (interactive mode only) */
-  process?: CloseableEventEmitter;
   /** Active SSH tunnel process */
   tunnel?: CloseableEventEmitter;
   /** Interval timer handle for the health-check heartbeat */
-  heartbeatTimer?: Timer;
-  /** Guard to prevent duplicate crash diagnostics output */
   crashDiagnosticsPrinted?: boolean;
   /** Guard to prevent double-shutdown during cleanup */
   shuttingDown?: boolean;
@@ -336,7 +266,7 @@ export class ProcessState {
  */
 export class SessionState extends ProcessState {
   /** Full set of paths including job-scoped entries */
-  declare paths: Paths;
+  declare paths: VllmJobEnginePathsV3;
   /** Local operations (health checks, model queries, port detection) */
   localOps!: LocalOps;
   /** Original parsed CLI arguments and vLLM YAML config */
@@ -351,24 +281,6 @@ export class SessionState extends ProcessState {
 // =================================
 // JOB CONFIGURATION OPTIONS
 // =================================
-
-/**
- * Lifecycle status of a vLLM inference job as tracked in the lockfile.
- *
- * | Status | Meaning |
- * |--------|---------|
- * | `'pending'` | Lockfile created, SLURM job not yet submitted |
- * | `'initialising'` | SLURM job running — model download, venv setup, vLLM startup |
- * | `'running'` | vLLM `/health` returned 2xx, server is accepting requests |
- * | `'failed'` | vLLM exited with a non-zero code or was killed |
- * | `'timeout'` | SLURM job exceeded its time limit |
- */
-export type JobStatus =
-  | 'pending'
-  | 'initialising'
-  | 'running'
-  | 'failed'
-  | 'timeout';
 
 /**
  * Metadata extracted from a locally cached job config file.
@@ -395,41 +307,6 @@ export interface JobConfigEntry {
   tensorParallelSize?: number;
   /** Pipeline parallelism parsed from the YAML, if present */
   pipelineParallelSize?: number;
-}
-
-/**
- * Remote metadata written to `job_details.json` on the HPC login node.
- *
- * Written by the SLURM script on the remote side as the job progresses
- * through states: `pending → initialising → running → (failed|timeout)`.\n* Polling local code reads this file via SSH to track status and extract
- * the compute hostname for SSH tunnel establishment.
- *
- * | Field | Description |
- * |-------|-------------|
- * | `status` | Current {@link JobStatus} |
- * | `job_name` | User-provided job name |
- * | `slurm_job_id` | SLURM-assigned job ID once submitted |
- * | `compute_hostname` | Compute node hostname (extracted for tunneling) |
- * | `model` | HuggingFace model ID |
- * | `server_port` | Port where vLLM listens |
- * | `error` | Error message if the job failed |
- * @see parseJobDetails
- */
-export interface JobDetails {
-  /** Current job {@link JobStatus} */
-  status: JobStatus;
-  /** User-provided job name */
-  job_name: string;
-  /** SLURM-assigned job ID (set once `sbatch` succeeds) */
-  slurm_job_id?: string;
-  /** Compute node hostname (extracted for SSH tunneling) */
-  compute_hostname?: string;
-  /** HuggingFace model ID */
-  model?: string;
-  /** Port where the vLLM server listens */
-  server_port?: number;
-  /** Error message if the job failed */
-  error?: string;
 }
 
 // =================================
@@ -476,92 +353,6 @@ export type RunRemoteResult = {
 };
 
 /**
- * Interface for executing remote operations on the Isambard HPC login node.
- *
- * Implemented by {@link makeRemoteOps} with two modes:
- *
- * - **Real mode**: Actual SSH/SCP execution
- * - **Dry-run mode**: Mock implementations for E2E testing
- *
- * | Method | Description |
- * |--------|-------------|
- * | `runRemote` | Execute a command on the login node |
- * | `streamSrun` | Stream an `srun` command with TTY output |
- * | `copyFile` | SCP a file to the login node |
- * | `tailRemoteLog` | Tail a remote log file via SSH |
- * | `spawnTunnel` | Create an SSH port-forwarding tunnel |
- * | `matchVllmVersion` | Find best installed vLLM version |
- * | `checkSSH` | Verify SSH connectivity to the login node |
- */
-export interface RemoteOps {
-  /**
-   * Execute a command on the login node via SSH.
-   * @param command - Shell command to run
-   * @param options - Execution options (env, silent)
-   * @returns Promise resolving to exit code and stdout
-   */
-  runRemote(
-    command: string,
-    options?: RunRemoteOptions,
-  ): Promise<RunRemoteResult>;
-
-  /**
-   * Execute an `srun` command on the login node with TTY output.
-   * Parses the stderr for a SLURM job ID and stores it in `sessionState`.
-   * @param command - `srun` command to execute
-   * @param sessionState - State whose `slurmJobId` is updated on detection
-   * @param options - Execution options
-   * @returns Closeable event emitter representing the running process
-   */
-  streamSrun(
-    command: string,
-    sessionState: ProcessState,
-    options?: RunRemoteOptions,
-  ): CloseableEventEmitter;
-
-  /**
-   * Copy a local file to the login node via SCP.
-   * @param localPath - Path to the local source file
-   * @param remotePath - Destination path on the login node
-   */
-  copyFile(localPath: string, remotePath: string): Promise<void>;
-
-  /**
-   * Continuously tail a remote file and stream lines to stdout.
-   * @param remotePath - Absolute path to the remote log file
-   * @param prefix - Optional string prepended to every output line
-   * @returns An object with a `stop()` method to close the connection
-   */
-  tailRemoteLog(remotePath: string, prefix?: string): { stop: () => void };
-
-  /**
-   * Spawn a persistent forward SSH tunnel (localPort → remoteHost:remotePort).
-   * @param localPort - Port to listen on locally
-   * @param remoteHost - Remote host (typically a compute node)
-   * @param remotePort - Remote port (e.g. vLLM server port)
-   * @returns Closeable event emitter representing the tunnel process
-   */
-  spawnTunnel(
-    localPort: number,
-    remoteHost: string,
-    remotePort: number,
-  ): CloseableEventEmitter;
-
-  /**
-   * Find the best installed vLLM version meeting a minimum requirement.
-   * @param minVllmVersion - Minimum acceptable version string
-   * @returns The selected version string
-   */
-  matchVllmVersion(minVllmVersion: string): Promise<string>;
-
-  /**
-   * Verify SSH connectivity to the login node.
-   * @returns Promise resolving to true when connectivity is confirmed
-   */
-  checkSSH(): Promise<boolean>;
-}
-
-/**
  * Interface for local operations (health checks, model queries, port detection).
  *
  * Implemented by {@link makeLocalOps} with two modes:
@@ -598,24 +389,6 @@ export interface LocalOps {
   isLocalPortInUse(
     localPort: number,
   ): Promise<{ pid: string; process: string } | null>;
-}
-
-/**
- * Interface for monitoring a remote job's lifecycle.
- *
- * Called after a job is submitted or started to observe progress,
- * check health, and trigger shutdown on failure.
- *
- * | Method | Description |
- * |--------|-------------|
- * | `start` | Begin monitoring the given process state |
- */
-export interface RemoteMonitor {
-  /**
-   * Begin monitoring a remote job.
-   * @param state - The {@link ProcessState} to monitor
-   */
-  start(state: ProcessState): Promise<void>;
 }
 
 /**
@@ -748,82 +521,3 @@ export interface VllmConfigMetadata {
   /** Free-text description of what this config is for */
   description?: string;
 }
-
-// =================================
-
-// Previously used as the input for `renderInferenceScript()` before the
-// project migrated to Handlebars templates (`src/templates/inference.ts`).
-//
-// The old function assembled the SLURM batch script from this object,
-// interpolating values into a string template. After the refactor,
-// {@link makeSimplePaths} and {@link makePaths} build all path information
-// into the {@link Paths} object, and the template engine consumes only
-// the paths, env vars, and control flags — no longer this monolithic
-// options interface.
-//
-// | Field | Description |
-// |-------|-------------|
-// | `jobName` | User-provided session name |
-// | `model` | HuggingFace model ID |
-// | `vllmVersion` | vLLM version string |
-// | `hfHome` | HuggingFace cache directory |
-// | `configFileName` | Name of the local YAML config |
-// | `workDir` | Job working directory on the HPC |
-// | `serverPort` | Port the vLLM server listens on |
-// | `gpuCount` | Total GPUs to allocate |
-// | `nodeCount` | Number of SLURM nodes |
-// | `timeLimit` | SLURM time limit string |
-// | `envVars` | Environment variables to inject |
-// | `isInteractive` | Whether to run via `srun` (TTY) |
-// | `cacheKey` | JIT compilation cache key |
-// | `preCache` | Whether to pre-cache compiled models |
-//
-// export interface InferenceScriptOptions {
-//     jobName: string;
-//     model: string;
-//     vllmVersion: string;
-//     hfHome: string;
-//     configFileName: string;
-//     workDir: string;
-//     serverPort: number;
-//     gpuCount: number;
-//     nodeCount: number;
-//     timeLimit: string;
-//     envVars: EnvVarEntry[];
-//     isInteractive: boolean;
-//     cacheKey: string;
-//     preCache: boolean;
-// }
-
-/**
- * Previously passed to the monitor pipeline inside
- * `runInferenceSession()` before the project migrated to a
- * {@link RemoteMonitor} interface.
- *
- * The old function used this to connect to a running vLLM server,
- * probe health endpoints, and drive the shutdown sequence. After the
- * refactor, {@link SessionState} and {@link ProcessState} carry all the
- * runtime information the monitor needs; the config is no longer
- * forwarded separately.
- *
- * | Field | Description |
- * |-------|-------------|
- * | `localPort` | Local SSH-tunnel port |
- * | `serverPort` | Remote vLLM server port |
- * | `config` | SSH connection credentials |
- * | `model` | Model identifier string |
- * | `maxModelLen` | Maximum context length, if known |
- * | `enableAutoToolChoice` | Auto-tool-choice flag |
- * | `enableReasoning` | Reasoning-mode flag |
- * | `isInteractive` | Interactive-session flag |
- */
-// export interface MonitorRuntimeOpts {
-//     localPort: number;
-//     serverPort: number;
-//     config: Credentials;
-//     model: string;
-//     maxModelLen?: number;
-//     enableAutoToolChoice: boolean;
-//     enableReasoning: boolean;
-//     isInteractive: boolean;
-// }
