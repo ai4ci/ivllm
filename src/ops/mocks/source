@@ -1,0 +1,3 @@
+#!/bin/bash
+# TODO: implement mock
+# TODO: has to not do a source venv/bin/activate but everything else allowed

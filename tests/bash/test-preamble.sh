@@ -1,5 +1,5 @@
 #!/bin/bash
-# tests/bash/test-preamble.sh — Preamble environment validation tests.
+# tests/bash/test-vllm-env.sh — Preamble environment validation tests.
 # shellcheck disable=SC1091,SC2015
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-utils.sh"
@@ -14,17 +14,17 @@ setup() {
 test_preamble_sources() {
     setup
 
-    if source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../src/templates/lib" && pwd)/preamble.sh" 2>&1; then
+    if source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../src/templates/lib" && pwd)/vllm-env.sh" 2>&1; then
         echo "✓ test_preamble_sources"
     else
-        echo "FAIL: preamble.sh failed to source"
+        echo "FAIL: vllm-env.sh failed to source"
         FAIL=1
     fi
 }
 
 test_env_vars_set() {
     setup
-    source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../src/templates/lib" && pwd)/preamble.sh"
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../src/templates/lib" && pwd)/vllm-env.sh"
 
     # Check key env vars
     [ -n "$CUDA_HOME" ] || { echo "FAIL: CUDA_HOME not set"; FAIL=1; return; }

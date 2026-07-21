@@ -2,7 +2,7 @@ import type {
   RunRemoteOptions,
   RunRemoteResult,
   CloseableEventEmitter,
-  EnvVarEntry
+  EnvVarEntry,
 } from '../types';
 
 /**
@@ -34,6 +34,9 @@ export abstract class RemoteOps {
     command: string,
     options?: RunRemoteOptions,
   ): Promise<RunRemoteResult>;
+
+  // TODO: change copyFile to syncDirectory using rsync
+  // will need direction indicator
 
   /**
    * Copy a local file to the login node via SCP.
@@ -92,8 +95,8 @@ export abstract class RemoteOps {
    * @returns The command string with env vars as prefix
    */
   protected makeFullCommand(command: string, env: EnvVarEntry[]): string {
-      const envPrefix = env.map((v) => `${v.key}=${v.value}`).join(' ') + ' ';
-      const fullCommand = (envPrefix + command).trim();
-      return fullCommand;
+    const envPrefix = env.map((v) => `${v.key}=${v.value}`).join(' ') + ' ';
+    const fullCommand = (envPrefix + command).trim();
+    return fullCommand;
   }
 }

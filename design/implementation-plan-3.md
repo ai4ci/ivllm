@@ -8,7 +8,7 @@ to the new bash framework, and `ivllm connect` performs real SSH operations.
 
 ## What we have so far
 
-- **Bash framework**: `src/templates/lib/utils.sh`, `preamble.sh`, `vllm_logs.json`
+- **Bash framework**: `src/templates/lib/utils.sh`, `vllm-env.sh`, `vllm_logs.json`
 - **Bash tests**: 27 tests — all passing
 - **New commands**: `ivllm connect` and `ivllm cancel` scaffolded with `--dry-run`
 - **New types**: `LockfileV3`, `EnginePathsV3`, `VllmConfigMetadata`, `parseV3Lockfile()`
@@ -38,7 +38,7 @@ See `design/testing.md` (Mock Remote Ops section) for the full design.
 
 | Before (v2) | After (v3) |
 |-------------|-----------|
-| `src/templates/inference.ts` generates 300+ line bash as a string | `slurm.sh` is a thin 30-line wrapper that sources `lib/utils.sh` + `lib/preamble.sh` |
+| `src/templates/inference.ts` generates 300+ line bash as a string | `slurm.sh` is a thin 30-line wrapper that sources `lib/utils.sh` + `lib/vllm-env.sh` |
 | `session-helper.ts` orchestrates the 10-step lifecycle | `connect.ts` does pre-flight, lockfile, upload, sbatch, monitor, tunnel |
 | `monitors.ts` polls lockfile from LOCAL | `monitor_head`/`monitor_worker` in bash run on COMPUTE |
 | Job starts via `sbatch` with environment-embedded config | Job starts via `sbatch` with `--export` and config in job directory |
@@ -170,7 +170,7 @@ Create a minimal template at `src/templates/connect-template.sh`:
 #SBATCH --time={{TIME_LIMIT}}
 #SBATCH --output={{LOG_FILE}}
 
-source {{LIB_DIR}}/preamble.sh
+source {{LIB_DIR}}/vllm-env.sh
 source {{LIB_DIR}}/utils.sh
 
 JOB_NAME="{{JOB_NAME}}"
@@ -225,7 +225,7 @@ await ops.runRemote(`chmod +x ${v3paths.scriptFile}`);
 
 - [ ] Template renders without errors (simple string substitution)
 - [ ] Generated script passes `bash -n` (syntax check)
-- [ ] Generated script sources preamble.sh and utils.sh
+- [ ] Generated script sources vllm-env.sh and utils.sh
 - [ ] Dry-run prints the full generated script
 - [ ] Committed
 

@@ -412,7 +412,7 @@ test_handoff_cli_creates_bash_reads() {
     create_status_pending "$job" "test-model" 49153 30
     
     # Simulate bash reading it (as the SLURM script would)
-    local lockfile=$(resolve_lockfile "$job")
+    local lockfile=$(resolve_job_status "$job")
     assert_file_exists "$lockfile"
     assert_json_eq "$lockfile" ".status" '"pending"'
     

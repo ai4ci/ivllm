@@ -24,7 +24,7 @@ vLLM jobs independently of the CLI. This is additive (no existing code changes).
 ```
 src/templates/lib/
 ├── utils.sh          ← Lockfile, monitors, cache, shutdown (from prototype)
-├── preamble.sh       ← NVHPC/NCCL/Slingshot env vars (from inference.ts)
+├── vllm-env.sh       ← NVHPC/NCCL/Slingshot env vars (from inference.ts)
 ├── hf.sh             ← Model download (new)
 ├── vllm_logs.json    ← vLLM logging config (from prototype)
 
@@ -34,7 +34,7 @@ tests/bash/lib/
 ├── test-cache.sh     ← Cache save/restore tests
 ├── test-monitor.sh   ← Monitor startup/head/worker tests
 ├── test-shutdown.sh  ← Exit trap and signal tests
-├── test-preamble.sh  ← Environment validation tests
+├── test-vllm-env.sh  ← Environment validation tests
 └── run.sh            ← Test runner (runs all, exits 0 on pass)
 ```
 
@@ -125,17 +125,17 @@ Refactor `design/prototype/prototype.sh` into a clean library file at
 **Don't change the logic** — the prototype has been manually tested. Just
 clean up: add `set -euo pipefail` guards, validate paths, add comments.
 
-### Step 3: Extract preamble.sh
+### Step 3: Extract vllm-env.sh
 
 Move the NVHPC/NCCL/Slingshot environment from `inference.ts:renderNVHPCPreamble()`
-into a standalone `src/templates/lib/preamble.sh`. This preserves the hard-won
+into a standalone `src/templates/lib/vllm-env.sh`. This preserves the hard-won
 tuning (years of trial and error) in a directly usable bash file.
 
 The preamble should be a bash file that sets all the environment variables
 and can be sourced at the top of any SLURM script:
 
 ```bash
-# src/templates/lib/preamble.sh
+# src/templates/lib/vllm-env.sh
 # Source this at the top of any SLURM script for Isambard GH200 tuning.
 # Contains: NVHPC SDK paths, CUDA forward compat, NCCL/Slingshot tuning,
 # compiler selection, JIT compilation limits, vLLM overrides.
@@ -257,11 +257,11 @@ See `design/prototype/multi-user-structure.md` (log files section) and
 | `test_exit_crash_runtime` | Non-zero during running → failed |
 | `test_tidy_up_kills_vllm` | vLLM PID is killed, scancel is called |
 
-**Test cases for preamble** (`tests/bash/test-preamble.sh`):
+**Test cases for preamble** (`tests/bash/test-vllm-env.sh`):
 
 | Test | What it checks |
 |------|---------------|
-| `test_preamble_sources` | Source preamble.sh without errors |
+| `test_preamble_sources` | Source vllm-env.sh without errors |
 | `test_preamble_nvhpc_root` | NVHPC_ROOT points to existing dir |
 | `test_preamble_cuda_home` | CUDA_HOME contains cuda/12.9 |
 | `test_preamble_ld_library` | compat dir is first in LD_LIBRARY_PATH |
@@ -316,7 +316,7 @@ bash tests/bash/run.sh
 === tests/bash/test-shutdown.sh ===
 ✓ test_exit_0
 ... (all pass)
-=== tests/bash/test-preamble.sh ===
+=== tests/bash/test-vllm-env.sh ===
 ✓ test_preamble_sources
 ... (all pass)
 ```

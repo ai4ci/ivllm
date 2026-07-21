@@ -85,9 +85,9 @@ under `$PROJECTDIR/engine/lib/`:
 | File | Responsibility |
 |------|---------------|
 | `utils.sh` | Lockfile management, cache save/restore, monitor triad, exit trap, diagnostics |
-| `preamble.sh` | NVHPC/NCCL/Slingshot environment setup (hard-won tuning from v2) |
+| `vllm-env.sh` | NVHPC/NCCL/Slingshot environment setup (hard-won tuning from v2) |
 | `hf.sh` | Model download via `srun` on interactive partition |
-| `setup.sh` | vLLM installation (adapted from `src/templates/setup.ts`) |
+| `vllm-setup.sh` | vLLM installation (adapted from `src/templates/setup.ts`) |
 
 SLURM job scripts become thin wrappers that `source` these libraries.
 
@@ -98,7 +98,7 @@ SLURM job scripts become thin wrappers that `source` these libraries.
 - Separation of concerns: TypeScript handles user interaction and SSH;
   bash handles compute-side orchestration
 - The v2 `renderNVHPCPreamble()` function contains years of trial-and-error
-  tuning — moving it to `preamble.sh` preserves it in a directly usable form
+  tuning — moving it to `vllm-env.sh` preserves it in a directly usable form
 
 **Consequences**:
 - Must maintain a `test-vllm.sh` harness that mocks `srun`, `scancel`, and `vllm`
@@ -316,9 +316,9 @@ mixed job artifacts with user home data.
 $PROJECTDIR/engine/
 ├── lib/
 │   ├── utils.sh         ← Lockfile management, monitors, cache, shutdown
-│   ├── preamble.sh      ← NVHPC/NCCL/Slingshot environment
+│   ├── vllm-env.sh      ← NVHPC/NCCL/Slingshot environment
 │   ├── hf.sh            ← Model download
-│   └── setup.sh         ← vLLM installation (one-off, run by `ivllm setup`)
+│   └── vllm-setup.sh         ← vLLM installation (one-off, run by `ivllm setup`)
 ├── jobs/
 │   └── <jobname>/
 │       ├── status.json
@@ -327,7 +327,7 @@ $PROJECTDIR/engine/
 │       ├── vllm.yaml
 │       └── slurm.sh
 ├── vllm/
-│   ├── setup.sh
+│   ├── vllm-setup.sh
 │   ├── vllm_logs.json
 │   ├── plugins/
 │   └── <version>/       ← vLLM venv (from `ivllm setup <version>`)
@@ -576,7 +576,7 @@ Bare-metal and container approaches have complementary strengths:
 | Install time | 10-20 min (pip compile) | ~2 min (`sifter pull`) |
 | CUDA version | 12.9 (NVHPC compat libs) | 13.0.2 (native) |
 | vLLM compile | Wheel (pre-compiled) | Source (aarch64) |
-| Maintenance burden | High (preamble.sh, deps) | Low (pre-built, upstream) |
+| Maintenance burden | High (vllm-env.sh, deps) | Low (pre-built, upstream) |
 | Debugging | Easy (native process) | Harder (inside container) |
 | Proven on Isambard | Yes (extensive testing) | Yes (separate project) |
 

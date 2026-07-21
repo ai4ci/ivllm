@@ -10,20 +10,28 @@
 # the caller controls error handling.
 #
 # Required environment variables:
-#   ENGINE_DIR     — Root of the job engine directory (e.g. $PROJECTDIR/engine)
-#   SLURM_NODEID   — Set by SLURM (0 = head node, >0 = worker)
-#   SLURM_JOB_ID   — Set by SLURM
+#   $PROJECTDIR    — Root of the shared project space
 #
 # Optional environment variables:
-#   VLLM_TIME_FMT         — Date format for log timestamp matching (default: +%Y-%m-%d %H:%M)
-#   CHECK_INTERVAL_SECS   — Monitor polling interval (default: 10)
+#   IVLLM_TIME_FMT         — Date format for log timestamp matching (default: +%Y-%m-%d %H:%M)
+#   IVLLM_CHECK_INTERVAL_SECS   — Monitor polling interval (default: 10)
 #   COMPUTE_HOSTNAME      — Hostname of the compute node (default: $(hostname))
 
 # ── Configurable defaults ───────────────────────────────────────────────────
 
-export VLLM_TIME_FMT="${VLLM_TIME_FMT:-+%Y-%m-%d %H:%M}"
-export CHECK_INTERVAL_SECS="${CHECK_INTERVAL_SECS:-10}"
-export TARGET_ENDPOINTS=(
+# Marker to prevent
+# Include some form of the following 2 lines to prevent the remainder of the script from being executed again. You can include lines before this line if you still want to execute something every time this is called.
+[[ -v IVLLM_UTILS ]] && return
+export IVLLM_UTILS=
+
+if [[ -z ${PROJECTDIR:-} ]]; then
+    echo "CRITICAL ERROR: \$PROJECTDIR is undefined"
+    exit 1
+fi
+
+export IVLLM_TIME_FMT="${IVLLM_TIME_FMT:-+%Y-%m-%d %H:%M}"
+export IVLLM_CHECK_INTERVAL_SECS="${IVLLM_CHECK_INTERVAL_SECS:-10}"
+export IVLLM_TARGET_ENDPOINTS=(
     "/v1/models"
     "/v1/chat"
     "/v1/chat/completions"
@@ -35,53 +43,182 @@ export TARGET_ENDPOINTS=(
 # ── Path helpers ───────────────────────────────────────────────────────────
 
 # Resolve the per-node local working directory (RAM-backed tmpfs).
-# Creates the directory if it doesn't exist.
+# Creates the directory if it doesn't exist. This is per node per user job.
+# exports $LOCALDIR, returns node local dir
 # Usage: local localdir=$(resolve_localdir "$job")
 resolve_localdir() {
     local job="$1"
+    local id=$(id -u)
+
+    unset LOCALDIR
+    export LOCALDIR="/local/user/$id"
+    mkdir -p "$LOCALDIR"
+    chmod 700 "$LOCALDIR"
+
     local node_local
-
-    if [ -z "${LOCALDIR:-}" ]; then
-        export LOCALDIR="/local/user/$UID"
-        mkdir -p "$LOCALDIR" 2>/dev/null || true
-        chmod 700 "$LOCALDIR" 2>/dev/null || true
-    fi
-
     node_local="$LOCALDIR/$(hostname -s)/$job"
     mkdir -p "$node_local"
+    chmod 700 "$node_local"
     echo "$node_local"
 }
 
+# exports $HF_HOME
+# Usage: local modeldir=$(resolve_model_dir)
+resolve_model_dir() {
+    mkdir -p "$PROJECTDIR/model/hf"
+    export HF_HOME="$PROJECTDIR/model/hf"
+    mkdir -p "$PROJECTDIR/model/venv"
+    chmod -R g+rw "$PROJECTDIR/model"
+    echo "$PROJECTDIR/model"
+}
+
+resolve_nvhpc_dir() {
+    mkdir -p "$PROJECTDIR/engine/nvhpc"
+    chmod -R g+rw "$PROJECTDIR/engine/nvhpc"
+    echo "$PROJECTDIR/engine/nvhpc"
+}
+
+resolve_nvhpc_root() {
+    local nvhpcDir=$(resolve_nvhpc_dir)
+    if [[ ! -d "$nvhpcDir/Linux_aarch64/26.3" ]]; then
+      echo "NVHPC SDK version 26.3 is not installed. please run ivllm setup."
+      return 1
+    fi
+    echo "$nvhpcDir/Linux_aarch64/26.3"
+}
+
+# Usage: local localdir=$(resolve_vllm_dir)
+resolve_vllm_dir() {
+    mkdir -p "$PROJECTDIR/engine/vllm"
+    chmod -R g+rw "$PROJECTDIR/engine/vllm"
+    echo "$PROJECTDIR/engine/vllm"
+}
+
+# Usage: local vllmVersionDir=$(resolve_vllm_version_dir "0.19.1")
+resolve_vllm_version_dir() {
+    local version="${1:-}"
+    local vllm_dir=$(resolve_vllm_dir)
+    mkdir -p "$vllm_dir/$version"
+    chmod -R g+rw "$vllm_dir/$version"
+    echo "$vllm_dir/$version"
+}
+
+# Usage: local jobdir=$(resolve_job_root_dir)
+resolve_job_root_dir() {
+    mkdir -p "$PROJECTDIR/engine/jobs"
+    chmod -R g+rw "$PROJECTDIR/engine/jobs"
+    echo "$PROJECTDIR/engine/jobs"
+}
+
 # Resolve the path to a file in a job's directory.
-# Usage: local path=$(resolve_location "$job" "filename")
-resolve_location() {
+# Usage: local path=$(resolve_job_dir "$job" "filename")
+resolve_job_dir() {
     local job="$1"
-    local file="${2:-}"
-    echo "$ENGINE_DIR/jobs/$job/$file"
+    local root=$(resolve_job_root_dir)
+    local out
+    if [[ -z "${2:-}" ]]; then
+        out="$root/$job"
+    else
+        out="$root/$job/$2"
+    fi
+    mkdir -p "$root/$job"
+    chmod -R g+rw "$root/$job"
+    echo "$out"
 }
 
 # Resolve the path to a job's JIT cache tarball.
-resolve_cachetar() {
-    resolve_location "$1" "jit-cache.tar.gz"
+# This must be a user specific location as caches cannot be shared
+# between users due to hard coded paths in cache files and subsequent permissions
+# issues. We'll go with $HOME/.cache/ivllm/<job>/jit-cache.tar.gz
+resolve_job_jit_cache() {
+    echo "$HOME/.cache/ivllm/$1/jit-cache.tar.gz"
 }
 
 # Resolve the path to a job's lockfile (status.json).
-resolve_lockfile() {
-    resolve_location "$1" "status.json"
+# can glob for job: resolve_job_status '*'
+resolve_job_status() {
+    resolve_job_dir "$1" "status.json"
 }
 
 # Resolve the path to a job's log file (per-node).
-resolve_logfile() {
+resolve_job_log() {
     local node="${SLURM_NODEID:-0}"
-    resolve_location "$1" "vllm.$node.log"
+    resolve_job_dir "$1" "vllm.$node.log"
+}
+
+# Resolve the path to a job's log file (per-node).
+resolve_job_config() {
+    resolve_job_dir "$1" "vllm.yaml"
 }
 
 # Read a field from a job's lockfile using jq.
-# Usage: local value=$(resolve_setting "$job" ".fieldName")
-resolve_setting() {
+# must include the leading .
+# Usage: local value=$(get_job_status_setting "$job" ".fieldName")
+get_job_status_setting() {
     local lockfile
-    lockfile=$(resolve_lockfile "$1")
-    jq -r "$2" "$lockfile" 2>/dev/null || echo "null"
+    lockfile=$(resolve_job_status "$1")
+    jq r "$2" "$lockfile" 2>/dev/null || echo ""
+}
+
+get_max_job_time() {
+    local user_time="$1"
+    local max_time="08:00:00"
+    # Convert max_time to total seconds (HH*3600 + MM*60 + SS)
+    local max_secs
+    max_secs=$(echo "$max_time" | awk -F: '{print ($1 * 3600) + ($2 * 60) + $3}')
+
+    # Convert user_time to total seconds
+    local user_secs
+    user_secs=$(echo "$user_time" | awk -F: '{print ($1 * 3600) + ($2 * 60) + $3}')
+
+    # Compare seconds and echo back the correct time string
+    if [ "$user_secs" -gt "$max_secs" ]; then
+        echo "$max_time"
+    else
+        echo "$user_time"
+    fi
+}
+
+}
+
+# Read a field from a job's config file using grep.
+# the field name will be a snake-case identifier including a leading .
+# Usage: local value=$(get_job_config_setting "$job" ".model")
+get_job_config_setting() {
+    local file=$(resolve_job_config "$1")
+    yq r "$2" "$file" 2>/dev/null || echo ""
+}
+
+# Function 1: Extract the top-level 'env:' block as raw bash export lines
+get_job_config_exports() {
+    local file=$(resolve_job_config "$1")
+    # Merges keys and values directly into valid export declarations
+    yq '.env | to_entries | .[] | "export " + .key + "=\"" + .value + "\""' "$file"
+}
+
+# Function 2: Strip specific top-level blocks and save the result
+resolve_stripped_job_config() {
+    local file=$(resolve_job_config "$1")
+    local output_file="$file.clean"
+    # Deletes the three specific blocks cleanly while maintaining valid YAML
+    yq 'del(.env, .min-vllm-version, .ivllm, .idle-timeout)' "$file" > "$output_file"
+    echo "$output_file"
+}
+
+# Exports a set of paths rated to caches into a subdirectory of localdir
+# localdir should be fast node local storage (maybe ram disk)
+# localdir itself is restored fron the jit-cache.tar.gz
+# other caches not specified here will probably go to the users home.
+# This is used in vllm-env.sh
+set_jit_caches() {
+    local localdir=$(resolve_localdir)
+    export VLLM_CACHE_ROOT="$localdir/vllm"
+    export EP_JIT_CACHE_DIR="$localdir/deep_ep_cache"
+    export DG_JIT_CACHE_DIR="$localdir/deep_gemm_cache"
+    export TRITON_CACHE_DIR="$localdir/triton"
+    export FLASHINFER_JIT_CACHE_DIR="$localdir/flashinfer"
+    export VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR="$localdir/flashinfer_auto"
+    export TORCHINDUCTOR_CACHE_DIR="$localdir/torchinductor"
 }
 
 # ── Lockfile state machine ─────────────────────────────────────────────────
@@ -89,6 +226,7 @@ resolve_setting() {
 # Create a lockfile with status "pending". Run on LOGIN node before sbatch.
 # Uses set -C (noclobber) for atomic creation — fails if lockfile exists.
 # Usage: create_status_pending "$job" "$model" "$idle_timeout"
+# exits with code 1 if it cannot get the lock file
 create_status_pending() {
     local job="$1"
     local model="$2"
@@ -96,13 +234,27 @@ create_status_pending() {
     local lockfile
     local server_port
 
-    lockfile=$(resolve_lockfile "$job")
-    mkdir -p "$(resolve_location "$job")"
+    lockfile=$(resolve_job_status "$job")
+    mkdir -p "$(resolve_job_dir "$job")"
 
     # Generate random high port for the vLLM server
     server_port=$(shuf -i 49152-65535 -n 1)
 
     echo "[startup] creating lockfile for job $job (port=$server_port)" >&2
+
+    if [[ -f $lockfile ]]; then
+        if is_status "$job" "failed"; then
+            echo "[startup] restarting failed job $job"
+            rm -f "$lockfile"
+        elif is_status "$job" "stopped"; then
+            echo "[startup] restarting stopped job $job"
+            rm -f "$lockfile"
+        else
+            local status=$(get_job_status_setting "$job" ".status")
+            echo "[startup] WARNING: job $job is already active with status: $status" >&2
+            return 1
+        fi
+    fi
 
     # Atomic create with noclobber
     (
@@ -113,7 +265,8 @@ create_status_pending() {
             --argjson server_port "$server_port" \
             --argjson idle_timeout "$idle_timeout" \
             --arg req_time "$(date -Iseconds)" \
-            '{status: "pending", jobName: $job_name, model: $model, serverPort: $server_port, requestedTime: $req_time, idleTimeout: $idle_timeout}' \
+            --arg user "$(whoami)" \
+            '{status: "pending", jobName: $job_name, model: $model, serverPort: $server_port, requestedTime: $req_time, idleTimeout: $idle_timeout}, user: $user' \
             > "$lockfile"
     ) 2>/dev/null || {
         echo "[startup] ERROR: lockfile already exists for job $job" >&2
@@ -123,18 +276,31 @@ create_status_pending() {
     echo "$server_port"
 }
 
+# Mark slurm job id after sbatch submitted. Run on login node when
+# job submitted.
+# Usage: update_status_slurm_id "$job" "$slurm_id"
+update_status_slurm_id() {
+    local job="$1"
+    local slurm_job_id="${2:-}"
+    local lockfile
+
+    lockfile=$(resolve_job_status "$job")
+
+    if [[ -z "$slurm_job_id" ]]; then
+        jq --arg slurm_job_id "$slurm_job_id" '.slurmJobId = $slurm_job_id' "$lockfile" > "$lockfile.tmp" && mv "$lockfile.tmp" "$lockfile"
+    fi
+
+}
+
 # Update lockfile with SLURM allocation details. Run on head compute node.
 # Usage: update_status_initialise "$job" "$vllm_pid"
 update_status_initialise() {
     local job="$1"
     local vllm_pid="$2"
     local lockfile
-    local log
     local hostname="${COMPUTE_HOSTNAME:-$(hostname)}"
 
-    lockfile=$(resolve_lockfile "$job")
-    log=$(resolve_logfile "$job")
-    touch "$log"
+    lockfile=$(resolve_job_status "$job")
 
     if (( SLURM_NODEID == 0 )); then
         echo "[startup] slurm job allocated for job $job (SLURM_JOB_ID=$SLURM_JOB_ID)"
@@ -150,13 +316,15 @@ update_status_initialise() {
     fi
 }
 
+
+
 # Mark job as running. Run on head compute node when vLLM health check passes.
 # Usage: update_status_running "$job"
 update_status_running() {
     local job="$1"
     local lockfile
 
-    lockfile=$(resolve_lockfile "$job")
+    lockfile=$(resolve_job_status "$job")
 
     if (( SLURM_NODEID == 0 )); then
         echo "[startup] job $job is running."
@@ -165,12 +333,12 @@ update_status_running() {
 }
 
 # Mark job as cleanly stopped. Used by exit trap for user cancel, idle timeout.
-# Usage: update_status_clean_shutdown "$job"
-update_status_clean_shutdown() {
+# Usage: update_status_stopped "$job"
+update_status_stopped() {
     local job="$1"
     local lockfile
 
-    lockfile=$(resolve_lockfile "$job")
+    lockfile=$(resolve_job_status "$job")
 
     if (( SLURM_NODEID == 0 )); then
         echo "[shutdown] clean shutdown for job $job."
@@ -182,14 +350,14 @@ update_status_clean_shutdown() {
 }
 
 # Mark job as failed. Used by exit trap for startup failures and crashes.
-# Usage: update_status_unclean_shutdown "$job" "reason" exit_code
-update_status_unclean_shutdown() {
+# Usage: update_status_failed "$job" "reason" exit_code
+update_status_failed() {
     local job="$1"
     local reason="$2"
     local exit_code="$3"
     local lockfile
 
-    lockfile=$(resolve_lockfile "$job")
+    lockfile=$(resolve_job_status "$job")
 
     if (( SLURM_NODEID == 0 )); then
         echo "[shutdown] unclean shutdown for job $job due to $reason ($exit_code)."
@@ -209,7 +377,7 @@ request_cancel() {
     local job="$1"
     local lockfile
 
-    lockfile=$(resolve_lockfile "$job")
+    lockfile=$(resolve_job_status "$job")
 
     if [ ! -f "$lockfile" ]; then
         echo "[cancel] ERROR: lockfile not found for job $job"
@@ -227,7 +395,7 @@ update_reason() {
     local reason="$2"
     local lockfile
 
-    lockfile=$(resolve_lockfile "$job")
+    lockfile=$(resolve_job_status "$job")
 
     if (( SLURM_NODEID == 0 )); then
         echo "[shutdown] reason for job $job: $reason."
@@ -239,7 +407,7 @@ update_reason() {
 # Usage: if is_status "$job" "running"; then ...
 is_status() {
     local lockfile
-    lockfile=$(resolve_lockfile "$1")
+    lockfile=$(resolve_job_status "$1")
     [ ! -f "$lockfile" ] && return 1
     jq -e --arg test "$2" 'has("status") and .status == $test' "$lockfile" > /dev/null 2>&1
 }
@@ -258,13 +426,13 @@ tidy_up() {
     local pid
     local slurm_job_id
 
-    pid=$(resolve_setting "$job" "vllmPid")
-    slurm_job_id=$(resolve_setting "$job" "slurmJobId")
+    pid=$(get_job_status_setting "$job" "vllmPid")
+    slurm_job_id=$(get_job_status_setting "$job" "slurmJobId")
 
-    echo "[shutdown] shutting down job $job (vllm: $pid, slurm: $slurm_job_id, exit: $exit_code)"
+    echo "[shutdown] shutting down job $job (vllm: ${pid:-unknown}, slurm: ${slurm_job_id:-unknown}, exit: $exit_code)"
 
     # Kill vLLM process if still alive
-    if [ "$pid" != "null" ] && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
         echo "[shutdown] killing vLLM process $pid"
         kill -15 "$pid" 2>/dev/null
         sleep 2
@@ -279,12 +447,12 @@ tidy_up() {
             # SIGUSR1 — SLURM timeout
             echo "[shutdown] received SIGUSR1: SLURM timeout"
             update_reason "$job" "SLURM timeout"
-            update_status_clean_shutdown "$job"
+            update_status_stopped "$job"
             ;;
         201)
             # SIGUSR2 — user cancel or idle timeout
             echo "[shutdown] received SIGUSR2: user cancel or idle timeout"
-            update_status_clean_shutdown "$job"
+            update_status_stopped "$job"
             ;;
         0)
             echo "[shutdown] vLLM terminated normally"
@@ -292,10 +460,10 @@ tidy_up() {
         *)
             if is_status "$job" "initialising"; then
                 echo "[shutdown] exit code $exit_code: vLLM failed to start"
-                update_status_unclean_shutdown "$job" "failed to start" "$exit_code"
+                update_status_failed "$job" "failed to start" "$exit_code"
             else
                 echo "[shutdown] exit code $exit_code: vLLM crashed during inference"
-                update_status_unclean_shutdown "$job" "crashed during inference" "$exit_code"
+                update_status_failed "$job" "crashed during inference" "$exit_code"
             fi
             ;;
     esac
@@ -306,7 +474,7 @@ tidy_up() {
         scancel "$slurm_job_id" 2>/dev/null || true
     fi
 
-    exit 0
+    return 0
 }
 
 # Set up exit traps for the monitor triad.
@@ -343,8 +511,8 @@ monitor_startup() {
     local server_port
     local model
 
-    server_port=$(resolve_setting "$job" "serverPort")
-    model=$(resolve_setting "$job" "model")
+    server_port=$(get_job_status_setting "$job" "serverPort")
+    model=$(get_job_status_setting "$job" "model")
 
     # Only runs on head node
     if (( SLURM_NODEID != 0 )); then
@@ -354,7 +522,7 @@ monitor_startup() {
     while true; do
         if is_status "$job" "pending"; then
             echo "[startup] waiting for job $job to initialise"
-            sleep "$CHECK_INTERVAL_SECS"
+            sleep "$IVLLM_CHECK_INTERVAL_SECS"
             continue
         fi
 
@@ -391,20 +559,20 @@ monitor_startup() {
                 else
                     echo "[startup] ERROR: warmup failed after $max_retries attempts"
                     update_reason "$job" "vLLM warmup failed"
-                    kill -s SIGUSR2 "$vllm_parent" 2>/dev/null || exit 1
-                    exit 1
+                    kill -s SIGUSR2 "$vllm_parent" 2>/dev/null
+                    return 1
                 fi
             else
                 echo "[startup] job $job waiting for vLLM /health"
                 report_memory "$job"
-                sleep "$CHECK_INTERVAL_SECS"
+                sleep "$IVLLM_CHECK_INTERVAL_SECS"
                 continue
             fi
         else
             local status
-            status=$(resolve_setting "$job" "status")
+            status=$(get_job_status_setting "$job" "status")
             echo "[startup] ERROR: job $job is in unexpected state $status"
-            exit 1
+            return 1
         fi
     done
 
@@ -424,14 +592,14 @@ monitor_head() {
     local log
     local idle_timeout
 
-    lockfile=$(resolve_lockfile "$job")
-    log=$(resolve_logfile "$job")
-    idle_timeout=$(resolve_setting "$job" "idleTimeout")
+    lockfile=$(resolve_job_status "$job")
+    log=$(resolve_job_log "$job")
+    idle_timeout=$(get_job_status_setting "$job" "idleTimeout")
 
     if [ ! -f "$lockfile" ]; then
         echo "[head] FATAL: lockfile $lockfile missing on startup"
         kill -s SIGTERM "$vllm_parent" 2>/dev/null
-        exit 1
+        return 1
     fi
 
     echo "[head] starting monitor (idle_timeout=$idle_timeout)..."
@@ -441,7 +609,7 @@ monitor_head() {
         if [ ! -f "$lockfile" ]; then
             echo "[head] lockfile $lockfile has been deleted — shutting down"
             kill -s SIGTERM "$vllm_parent" 2>/dev/null
-            exit 1
+            return 1
         fi
 
         # Terminal states — exit loop
@@ -451,12 +619,12 @@ monitor_head() {
 
         # Still pending — wait for SLURM allocation
         if is_status "$job" "pending"; then
-            sleep "$CHECK_INTERVAL_SECS"
+            sleep "$IVLLM_CHECK_INTERVAL_SECS"
             continue
         fi
 
         local vllm_pid
-        vllm_pid=$(resolve_setting "$job" "vllmPid")
+        vllm_pid=$(get_job_status_setting "$job" "vllmPid")
 
         # vLLM process died
         if [ "$vllm_pid" != "null" ] && ! kill -0 "$vllm_pid" > /dev/null 2>&1; then
@@ -474,7 +642,7 @@ monitor_head() {
 
         # Still initialising — skip idle checks
         if is_status "$job" "initialising"; then
-            sleep "$CHECK_INTERVAL_SECS"
+            sleep "$IVLLM_CHECK_INTERVAL_SECS"
             continue
         fi
 
@@ -489,17 +657,17 @@ monitor_head() {
             # Build time patterns for the idle window
             local time_patterns=()
             for i in $(seq 0 "$idle_timeout"); do
-                time_patterns+=("-e" "$(date -d "$i minutes ago" "$VLLM_TIME_FMT")")
+                time_patterns+=("-e" "$(date -d "$i minutes ago" "$IVLLM_TIME_FMT")")
             done
 
             local endpoint_patterns=()
-            for endpoint in "${TARGET_ENDPOINTS[@]}"; do
+            for endpoint in "${IVLLM_TARGET_ENDPOINTS[@]}"; do
                 endpoint_patterns+=("-e" "$endpoint")
             done
 
             # Check for recent API requests (not /health)
             if tail -n 5000 "$log" 2>/dev/null | grep -F "${time_patterns[@]}" | grep -q -F "${endpoint_patterns[@]}"; then
-                sleep "$CHECK_INTERVAL_SECS"
+                sleep "$IVLLM_CHECK_INTERVAL_SECS"
                 continue
             fi
 
@@ -508,7 +676,7 @@ monitor_head() {
             break
         fi
 
-        sleep "$CHECK_INTERVAL_SECS"
+        sleep "$IVLLM_CHECK_INTERVAL_SECS"
     done
 
     # Signal shutdown to parent
@@ -521,7 +689,7 @@ monitor_head() {
 
     clear_localdir "$job"
     echo "[head] monitor shutting down for job $job."
-    exit 0
+    return 0
 }
 
 # ── Monitor: worker node (background) ─────────────────────────────────────
@@ -529,27 +697,27 @@ monitor_head() {
 # Background monitor for worker nodes in multi-node jobs. Watches the lockfile
 # and shuts down the local vLLM process if the job is no longer in a valid
 # state.
-# Usage: monitor_worker "$job" "$vllm_parent_pid" &
+# Usage: monitor_worker "$job" "$vllm_worker_pid" &
 monitor_worker() {
     local job="$1"
-    local vllm_parent="$2"
+    local vllm_worker="$2"
     local lockfile
     local node
 
-    lockfile=$(resolve_lockfile "$job")
+    lockfile=$(resolve_job_status "$job")
     node=${SLURM_NODEID:-0}
 
     # This monitor is for worker nodes only
     if [ "$node" -eq 0 ]; then
         echo "[worker] ERROR: worker monitor started on head node"
-        kill -s SIGTERM "$vllm_parent" 2>/dev/null
-        exit 1
+        kill -s SIGTERM "$vllm_worker" 2>/dev/null
+        return 1
     fi
 
     if [ ! -f "$lockfile" ]; then
         echo "[worker $node] FATAL: lockfile $lockfile missing on startup"
-        kill -s SIGTERM "$vllm_parent" 2>/dev/null
-        exit 1
+        kill -s SIGTERM "$vllm_worker" 2>/dev/null
+        return 1
     fi
 
     echo "[worker $node] starting lockfile monitor..."
@@ -557,41 +725,73 @@ monitor_worker() {
     while true; do
         if [ ! -f "$lockfile" ]; then
             echo "[worker $node] lockfile deleted — shutting down"
-            kill -s SIGTERM "$vllm_parent" 2>/dev/null
+            kill -s SIGTERM "$vllm_worker" 2>/dev/null
             exit 1
         fi
 
         if is_status "$job" "pending"; then
-            sleep "$CHECK_INTERVAL_SECS"
+            sleep "$IVLLM_CHECK_INTERVAL_SECS"
             continue
         fi
 
         if is_status "$job" "initialising"; then
             report_memory "$job"
-            sleep "$CHECK_INTERVAL_SECS"
+            sleep "$IVLLM_CHECK_INTERVAL_SECS"
             continue
         fi
 
         if ! is_status "$job" "running"; then
-            echo "[worker $node] job is not running (status=$(resolve_setting "$job" ".status")) — shutting down"
+            echo "[worker $node] job is not running (status=$(get_job_status_setting "$job" ".status")) — shutting down"
             break
         fi
 
-        sleep "$CHECK_INTERVAL_SECS"
+        sleep "$IVLLM_CHECK_INTERVAL_SECS"
     done
 
-    kill -s SIGTERM "$vllm_parent" 2>/dev/null
+    kill -s SIGTERM "$vllm_worker" 2>/dev/null
 
-    while kill -0 "$vllm_parent" 2>/dev/null; do
+    while kill -0 "$vllm_worker" 2>/dev/null; do
         sleep 2
     done
 
     clear_localdir "$job"
     echo "[worker $node] monitor shutting down."
-    exit 0
+    return 0
 }
 
 # ── Resource monitoring ───────────────────────────────────────────────────
+
+report_setup() {
+echo "=== Python & Library Extension Environment ==="
+python -c "
+import os, sys, torch, deep_gemm, deep_ep
+
+print(f'Python Interpreter: {sys.executable}')
+print(f'PyTorch Source CUDA: {torch.version.cuda}')
+print(f'Device 0 Target Name: {torch.cuda.get_device_name(0)}')
+print(f'Device Compute Capability: {torch.cuda.get_device_capability(0)}')
+
+print('\n--- Extension Library Status ---')
+# Crash-proof DeepGEMM Check
+try:
+    import deep_gemm
+    print(f'DeepGEMM Package Version: {deep_gemm.__version__}')
+except ImportError as e:
+    print(f'❌ DeepGEMM Status: NOT AVAILABLE ({e})')
+
+# Crash-proof DeepEP Check
+try:
+    import deep_ep
+    print(f'DeepEP Package Version:  {deep_ep.__version__}')
+except ImportError as e:
+    print(f'❌ DeepEP Status:  NOT AVAILABLE ({e})')
+"
+echo "=== Final Environment Variables for vLLM ==="
+# Expanded search to capture your critical NVSHMEM, EP, DG, and GLOO runtime flags
+env | grep -E "^(VLLM_|RAY_|NCCL_|FI_|NVHPC|CUDA_|LD_CONFIG|CPATH|PATH|SLURM_|TRITON|NVSHMEM_|EP_|DG_|GLOO_)" | sort
+echo "============================================"
+}
+
 
 # Report memory and JIT cache usage for the current node.
 # Usage: report_memory "$job"
@@ -628,7 +828,7 @@ restore_cache() {
     local cachetar
     local localdir
 
-    cachetar=$(resolve_cachetar "$job")
+    cachetar=$(resolve_job_jit_cache "$job")
     localdir=$(resolve_localdir "$job")
 
     if [ -f "$cachetar" ]; then
@@ -647,7 +847,7 @@ save_cache() {
     local cachetar
     local localdir
 
-    cachetar=$(resolve_cachetar "$job")
+    cachetar=$(resolve_job_jit_cache "$job")
     localdir=$(resolve_localdir "$job")
 
     if (( SLURM_NODEID == 0 )); then
@@ -664,4 +864,75 @@ save_cache() {
             echo "[cache] saved: $(du -sh "$cachetar" | cut -f1)" || \
             echo "[cache] failed to save JIT cache"
     fi
+}
+
+# ── VLLM versioning utils ──────────────────────────────────────────────────
+
+# Helper: Parse version string into components, defaulting missing/invalid parts to 0
+_parse_semver() {
+    local IFS='.'
+    local -a parts=($1)
+    # Ensure non-integers or empty values become 0
+    echo $((parts[0] + 0)) $((parts[1] + 0)) $((parts[2] + 0))
+}
+
+# Compare two semantic version strings: a < b
+# Returns 0 (true) if a < b, otherwise returns 1 (false)
+semver_lt() {
+    read -r a1 a2 a3 <<< "$(_parse_semver "$1")"
+    read -r b1 b2 b3 <<< "$(_parse_semver "$2")"
+
+    if (( a1 != b1 )); then return $(( a1 >= b1 )); fi
+    if (( a2 != b2 )); then return $(( a2 >= b2 )); fi
+    return $(( a3 >= b3 ))
+}
+
+# Compare two semantic version strings: a >= b
+# Returns 0 (true) if a >= b, otherwise returns 1 (false)
+semver_gte() {
+    semver_lt "$1" "$2"
+    # Invert the boolean return status (0 becomes 1, 1 becomes 0)
+    return $(( ! $? ))
+}
+
+# Sort an array of semantic version strings in descending order
+# Expects versions as separate arguments. Outputs sorted list to stdout.
+semver_sort() {
+    printf '%s\n' "$@" | sort -V -r
+}
+
+# Sort an array of semantic version strings in ascending order
+# Expects versions as separate arguments. Outputs sorted list to stdout.
+rev_semver_sort() {
+    printf '%s\n' "$@" | sort -V
+}
+
+# Find the LOWEST installed version directory that satisfies a minimum version constraint.
+# Expects minimum vllm version to match
+select_closest_version() {
+    local install_dir="$(resolve_vllm_dir)"
+    local min_version="$1"
+    local candidate
+    local -a valid_candidates=()
+
+    if [[ ! -d "$install_dir" ]]; then
+        return 1
+    fi
+
+    # 1. Discover and filter subdirectories
+    while IFS= read -r -d '' dir; do
+        candidate=$(basename "$dir")
+
+        # Filter: Must be >= min_version
+        if semver_gte "$candidate" "$min_version"; then
+            valid_candidates+=("$candidate")
+        fi
+    done < <(find "$install_dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+
+    if (( ${#valid_candidates[@]} == 0 )); then
+        return 0
+    fi
+
+    # 2. Sort ASCENDING and pick the first one (the lowest valid version)
+    rev_semver_sort "${valid_candidates[@]}" | head -n 1
 }

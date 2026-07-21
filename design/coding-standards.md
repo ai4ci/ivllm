@@ -229,12 +229,12 @@ some_function() {
 | File-scope constants | `UPPER_SNAKE_CASE` | `CHECK_INTERVAL_SECS` |
 | Local variables | `snake_case` | `local lockfile`, `local vllm_pid` |
 | Environment variables | `UPPER_SNAKE_CASE` | `VLLM_PID`, `SLURM_JOB_ID` |
-| Script files | `kebab-case.sh` | `utils.sh`, `preamble.sh` |
+| Script files | `kebab-case.sh` | `utils.sh`, `vllm-env.sh` |
 
 ### Error Handling
 
 - Use `set -euo pipefail` in every SLURM script
-- Do NOT `set -e` in library files (`utils.sh`, `preamble.sh`) — let the
+- Do NOT `set -e` in library files (`utils.sh`, `vllm-env.sh`) — let the
   caller decide error handling
 - Check exit codes explicitly with `||` or `if` rather than relying on `set -e`
 - Use `trap` for cleanup — every SLURM script must have an EXIT trap

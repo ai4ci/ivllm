@@ -9,7 +9,12 @@ import {
 import { join } from 'path';
 import { tmpdir, homedir } from 'os';
 import yaml from 'js-yaml';
-import type { JobConfigEntry, ServeOptions, EnvVarEntry, VllmConfigMetadata } from './types';
+import type {
+  JobConfigEntry,
+  ServeOptions,
+  EnvVarEntry,
+  VllmConfigMetadata,
+} from './types';
 
 /** Keys that are ivllm-specific and must be stripped before passing the config to `vllm serve`. */
 // nnodes is stripped because it is not used in ray. It is translated into a number of gpus and then recalculated
@@ -22,6 +27,7 @@ export const IVLLM_ONLY_KEYS = new Set([
   'metadata',
   'idle-timeout',
 ]);
+
 export const JOB_CONFIG_DIR = join(homedir(), '.config', 'ivllm');
 
 /** Lists all stored job configs in the job config directory. */
@@ -157,9 +163,7 @@ export function parseVllmConfig(filePath: string): ServeOptions {
  * @param filePath — Path to the YAML config file
  * @returns Parsed config and optional metadata
  */
-export function parseVllmConfigWithMetadata(
-  filePath: string,
-): {
+export function parseVllmConfigWithMetadata(filePath: string): {
   config: ServeOptions;
   metadata: VllmConfigMetadata | null;
 } {

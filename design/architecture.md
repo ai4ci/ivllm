@@ -64,11 +64,11 @@ freely — any project member can connect to a running instance.
 │  │ utils.sh      - Lockfile management, cache, monitors,       │ │
 │  │                  shutdown, diagnostics                       │ │
 │  ├─────────────────────────────────────────────────────────────┤ │
-│  │ preamble.sh   - NVHPC/NCCL/Slingshot environment (tuning)   │ │
+│  │ vllm-env.sh   - NVHPC/NCCL/Slingshot environment (tuning)   │ │
 │  ├─────────────────────────────────────────────────────────────┤ │
 │  │ hf.sh         - Model download (shared HF cache)            │ │
 │  ├─────────────────────────────────────────────────────────────┤ │
-│  │ setup.sh      - vLLM installation (versioned venvs)         │ │
+│  │ vllm-setup.sh      - vLLM installation (versioned venvs)         │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 │                                                                  │
 │  Job Directory ($PROJECTDIR/engine/jobs/<job>/):                 │
@@ -233,7 +233,7 @@ Reconnect:
 | Local port/health ops | `src/local-ops.ts` | Preserved |
 | Version matching | `src/semver.ts` | Preserved |
 | Assistant launcher | `src/assistant.ts`, `src/commands/agent.ts` | Preserved |
-| NVHPC/NCCL tuning env vars | `src/templates/inference.ts` → `renderNVHPCPreamble()` | Move to `preamble.sh` |
+| NVHPC/NCCL tuning env vars | `src/templates/inference.ts` → `renderNVHPCPreamble()` | Move to `vllm-env.sh` |
 | JIT cache management | `src/templates/inference.ts` → `renderWorkDirSetup()` | Move to `utils.sh` |
 | Dry-run mock infrastructure | `src/remote-ops.ts` | Preserved |
 | Test framework | `tests/*.ts` | Preserved — add tests for new commands |
@@ -491,7 +491,7 @@ module for multi-node support.
 An Apptainer-based installation path (as described in the now-on-hold ADR-010)
 would be simpler to maintain and could reuse the existing build infrastructure.
 The `isambard_containers` project already maintains vLLM containers we could
-consume directly. Our Phase M1 bash framework's `setup.sh` could optionally
+consume directly. Our Phase M1 bash framework's `vllm-setup.sh` could optionally
 pull a pre-built container instead of running `pip install`.
 
 #### Build comparison: our bare-metal vs their container

@@ -27,7 +27,7 @@ already provides a starting point (`design/prototype/prototype.sh`).
 | File | Source | Description |
 |------|--------|-------------|
 | `src/templates/lib/utils.sh` | `design/prototype/prototype.sh` + `templates/inference.ts` | Lockfile management, cache functions, monitor triad, exit trap, diagnostics |
-| `src/templates/lib/preamble.sh` | `templates/inference.ts:renderNVHPCPreamble()` | NVHPC/NCCL/Slingshot environment variables |
+| `src/templates/lib/vllm-env.sh` | `templates/inference.ts:renderNVHPCPreamble()` | NVHPC/NCCL/Slingshot environment variables |
 | `src/templates/lib/hf.sh` | New | Model download via `srun` on interactive partition |
 | `src/templates/lib/vllm_logs.json` | `design/prototype/vllm_logs.json` | vLLM logging config for timestamped access logs |
 | `src/templates/lib/README.md` | New | Documentation for the bash framework |
@@ -38,7 +38,7 @@ already provides a starting point (`design/prototype/prototype.sh`).
 
 The current `src/templates/inference.ts` (1,176 lines) contains:
 
-- `renderNVHPCPreamble()` → `lib/preamble.sh` — 120 lines of hard-won NCCL/Slingshot tuning
+- `renderNVHPCPreamble()` → `lib/vllm-env.sh` — 120 lines of hard-won NCCL/Slingshot tuning
 - `renderExitDiagnostics()` → `lib/utils.sh` — SLURM accounting persist
 - `renderWorkDirSetup()` → `lib/utils.sh` — JIT cache restore, workdir creation
 - `renderMonitor()` → `lib/utils.sh` — memory/cache monitoring
@@ -51,13 +51,13 @@ The current `src/templates/inference.ts` (1,176 lines) contains:
 The `design/prototype/prototype.sh` already has:
 
 - Lockfile functions: `create_status_pending`, `update_status_initialise`,
-  `update_status_running`, `update_status_clean_shutdown`,
-  `update_status_unclean_shutdown`, `request_cancel`, `is_status`
+  `update_status_running`, `update_status_stopped`,
+  `update_status_failed`, `request_cancel`, `is_status`
 - Monitor functions: `monitor_startup`, `monitor_head`, `monitor_worker`
 - Cache functions: `restore_cache`, `save_cache`
 - Shutdown: `tidy_up` (exit trap), `setup_traps`
-- Path helpers: `resolve_localdir`, `resolve_location`, `resolve_lockfile`,
-  `resolve_logfile`, `resolve_setting`, `resolve_cachetar`
+- Path helpers: `resolve_localdir`, `resolve_job_dir`, `resolve_job_status`,
+  `resolve_job_log`, `get_job_status_setting`, `resolve_job_jit_cache`
 - Utility: `report_memory`, `clear_localdir`
 
 ### Test criteria
@@ -69,7 +69,7 @@ The `design/prototype/prototype.sh` already has:
 - [ ] `monitor_worker` detects non-running lockfile status and shuts down
 - [ ] `tidy_up` handles all exit codes correctly (0, 200=SIGUSR1, 201=SIGUSR2, other)
 - [ ] Cache save/restore round-trips correctly
-- [ ] `preamble.sh` sourced without errors on GH200
+- [ ] `vllm-env.sh` sourced without errors on GH200
 
 ### What remains unchanged
 
@@ -79,7 +79,7 @@ All TypeScript code. All existing tests continue to pass.
 
 - [-] `bash tests/templates/lib/` passes all tests
 - [ ] The bash framework is deployed on Isambard alongside `ivllm setup`
-- [ ] Manual test: SSH to login node, `source lib/preamble.sh && source lib/utils.sh`,
+- [ ] Manual test: SSH to login node, `source lib/vllm-env.sh && source lib/utils.sh`,
       run through a mock lifecycle end-to-end
 - [ ] Committed, version bumped
 
@@ -199,7 +199,7 @@ the compute node can run without the client.
 
 | File | Changes |
 |------|---------|
-| `src/templates/inference.ts` (1,176 lines) | **Drastically reduced** — generate thin wrappers that `source lib/utils.sh` and `source lib/preamble.sh` |
+| `src/templates/inference.ts` (1,176 lines) | **Drastically reduced** — generate thin wrappers that `source lib/utils.sh` and `source lib/vllm-env.sh` |
 | `src/session-helper.ts` (~500 lines) | **Removed** — logic moves to `connect.ts` + bash |
 | `src/commands/connect.ts` | Replace `runInferenceSession()` with lockfile-monitoring loop |
 | `src/slurm.ts` | Simplify `submitJob`/`runInteractive` — no longer need to pass monitors |
@@ -248,7 +248,7 @@ diagnostics. This works for both MP and Ray backends.
 #SBATCH --gpus=1
 #SBATCH --time=4:00:00
 
-source $PROJECTDIR/engine/lib/preamble.sh
+source $PROJECTDIR/engine/lib/vllm-env.sh
 source $PROJECTDIR/engine/lib/utils.sh
 
 WORK_DIR="$PROJECTDIR/engine/jobs/qwen2"
@@ -382,7 +382,7 @@ becomes essential — users will inevitably forget about running jobs.
 | File | Changes |
 |------|---------|
 | `src/templates/lib/utils.sh` | `monitor_head` already has idle timeout logic — needs hooking up |
-| `src/templates/lib/preamble.sh` | Set `VLLM_LOGGING_CONFIG_PATH` to `vllm_logs.json` |
+| `src/templates/lib/vllm-env.sh` | Set `VLLM_LOGGING_CONFIG_PATH` to `vllm_logs.json` |
 | `src/templates/lib/vllm_logs.json` | Deploy alongside libs (verify format with latest vLLM) |
 | `src/vllm-config.ts` | Add `idleTimeout` field (default 30, -1 = never) |
 | `src/job.ts` | Pass `idleTimeout` into lockfile on creation |
@@ -439,7 +439,7 @@ onward, but proper hardening is needed before it's reliable for a team.
 | `src/commands/connect.ts` | `ivllm list --all` shows jobs from all users |
 | `src/templates/lib/utils.sh` | Verify all `umask 0002` and `chmod g+w` calls are correct |
 | `src/templates/lib/utils.sh` | Wrap `scancel` in `--uid` fallback for non-owners |
-| `src/templates/lib/preamble.sh` | Verify `umask 0002` at start of every SLURM script |
+| `src/templates/lib/vllm-env.sh` | Verify `umask 0002` at start of every SLURM script |
 | `src/templates/lib/hf.sh` | Verify shared HF cache permissions |
 | `src/templates/setup.ts` | Verify `$PROJECTDIR/engine/` created with group write |
 

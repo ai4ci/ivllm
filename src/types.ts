@@ -353,45 +353,6 @@ export type RunRemoteResult = {
 };
 
 /**
- * Interface for local operations (health checks, model queries, port detection).
- *
- * Implemented by {@link makeLocalOps} with two modes:
- *
- * - **Real mode**: HTTP requests to localhost + `lsof`/`ps` on the local machine
- * - **Dry-run mode**: Mock implementations returning synthetic data
- *
- * | Method | Description |
- * |--------|-------------|
- * | `checkLocalHealth` | Probe the `/health` endpoint |
- * | `queryModels` | GET `/v1/models` from the vLLM server |
- * | `isLocalPortInUse` | Check if a local port is occupied |
- */
-export interface LocalOps {
-  /**
-   * Probe the vLLM `/health` endpoint and return whether it responds 2xx.
-   * @param localPort - Local port of the SSH tunnel
-   * @returns Promise resolving to true when the endpoint responds 2xx
-   */
-  checkLocalHealth(localPort: number): Promise<boolean>;
-
-  /**
-   * Query the OpenAI-compatible `/v1/models` endpoint for available models.
-   * @param localPort - Local port of the SSH tunnel
-   * @returns Promise resolving to the models response
-   */
-  queryModels(localPort: number): Promise<V1ModelsResponse>;
-
-  /**
-   * Check whether a local port is occupied by another process.
-   * @param localPort - Port number to check
-   * @returns Promise resolving to { pid, process } if occupied, or null
-   */
-  isLocalPortInUse(
-    localPort: number,
-  ): Promise<{ pid: string; process: string } | null>;
-}
-
-/**
  * An {@link EventEmitter} that can be forcefully terminated.
  *
  * Used to represent long-running child processes (SSH tunnels, srun commands)

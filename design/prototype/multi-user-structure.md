@@ -39,7 +39,7 @@ slurm scripts.
 * $PROJECTDIR/engine/jobs/
     * utils.sh - shared shell scipt utilities (see prototype.sh) - lockfile management, caching, diagnostics, etc.
     * hf.sh - model download slurm script (using interactive reservation).
-    * preamble.sh - isambard specific shared environment variables
+    * vllm-env.sh - isambard specific shared environment variables
     * <jobname>/
         * status.json - the main lock file
         * jit-cache.tar.gz - the complilation cache
@@ -47,7 +47,7 @@ slurm scripts.
         * vllm.yaml - the configuration for this job
         * slurm.sh - slurm script to launch the job. will be multinode or single node and reuse the utils.sh functions - see test-vllm.sh for skeleton.
 * $PROJECTDIR/engine/vllm/
-    * setup.sh - slurm script to install a specific vllm version
+    * vllm-setup.sh - slurm script to install a specific vllm version
     * vllm_logs.yaml - log configuration to ensure correctly timestamped vllm output.
     * <version>/ - vllm version installation directory
 * $PROJECTDIR/engine/diagnostics

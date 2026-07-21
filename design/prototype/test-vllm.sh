@@ -153,13 +153,13 @@ create_status_pending "$JOBNAME" test_model 1
 # slurm sbatch job:
 if is_status "$JOBNAME" "pending"; then
 
-    PORT=$(resolve_setting $JOBNAME "serverPort")
-    MODEL=$(resolve_setting $JOBNAME "model")
+    PORT=$(get_job_status_setting $JOBNAME "serverPort")
+    MODEL=$(get_job_status_setting $JOBNAME "model")
 
     # launch and background long running process
     (
 
-        LOG=$(resolve_logfile $JOBNAME)
+        LOG=$(resolve_job_log $JOBNAME)
 
 
         # The long running process

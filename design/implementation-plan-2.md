@@ -7,7 +7,7 @@ finishing M1 integration and starting Phase M2 (new CLI commands).
 
 ## What we have so far
 
-- **Bash framework**: `src/templates/lib/utils.sh`, `preamble.sh`, `vllm_logs.json`
+- **Bash framework**: `src/templates/lib/utils.sh`, `vllm-env.sh`, `vllm_logs.json`
 - **Bash tests**: 27 tests across 3 files (lockfile, cache, preamble) — all passing
 - **Status**: `bash tests/bash/run.sh` passes, `bun test` still shows 336/364 passing (28 pre-existing failures in stale v2 template tests)
 
@@ -279,7 +279,7 @@ ivllm connect qwen2 --config examples/qwen2.5-instruct.yaml --dry-run
 
 - [ ] `ivllm connect --help` shows proper usage
 - [ ] `ivllm connect job --config file.yaml --dry-run` prints details and exits 0
-- [ ] Dry-run generates a valid SLURM script (sources utils.sh + preamble.sh)
+- [ ] Dry-run generates a valid SLURM script (sources utils.sh + vllm-env.sh)
 - [ ] Dry-run writes lockfile-format JSON to preview
 - [ ] Missing `--config` errors with clear message for first-time use
 - [ ] All existing tests still pass

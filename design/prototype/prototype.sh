@@ -25,13 +25,14 @@ export ENGINE_DIR="$PROJECTDIR/engine"
 resolve_localdir() {
 
     local job=$1
+    local current_uid=$(id -u)
 
     # Detect and handle missing LOCALDIR in interactive srun allocations
-    if [ -z "${LOCALDIR:-}" ]; then
-        export LOCALDIR="/local/user/$UID"
-        mkdir -p "$LOCALDIR"
-        chmod 700 "$LOCALDIR"
-    fi
+    # try to never use LOCALDIR directly
+    unset LOCALDIR
+    export LOCALDIR="/local/user/$current_uid"
+    mkdir -p "$LOCALDIR"
+    chmod 700 "$LOCALDIR"
 
     # Isolate node workspaces by true kernel hostname to prevent cross-node
     # collisions on shared interactive loopbacks
@@ -48,7 +49,7 @@ resolve_localdir() {
 
 # resolve the location of a file in the job directory
 # expects job and optionally the file path.
-resolve_location() {
+resolve_job_dir() {
     local job=$1
     local file=${2:-}
     local dir="$ENGINE_DIR/jobs/$job"
@@ -57,35 +58,35 @@ resolve_location() {
 
 # resolve the location of the jit cache tar for a specific job
 # expects job
-resolve_cachetar() {
-    resolve_location "$1" "jit-cache.tar.gz"
+resolve_job_jit_cache() {
+    resolve_job_dir "$1" "jit-cache.tar.gz"
 }
 
 # resolve the location of the lockfile for a specific job
 # expects job
-resolve_lockfile() {
-    resolve_location "$1" "status.json"
+resolve_job_status() {
+    resolve_job_dir "$1" "status.json"
 }
 
 # resolve the location of the log for a specific job
 # expects job
-resolve_logfile() {
+resolve_job_log() {
     local node=${SLURM_NODEID:-0}
-    resolve_location "$1" "vllm.$node.log"
+    resolve_job_dir "$1" "vllm.$node.log"
 }
 
 # resolve a setting from the lockfile
 # expects job and the setting name
-resolve_setting() {
-    local lockfile=$(resolve_lockfile "$1")
+get_job_status_setting() {
+    local lockfile=$(resolve_job_status "$1")
     jq ".$2" "$lockfile"
 }
 
 # Runs on login node. Creates a lockfile.
 # Expects job, model, server port, idle_timeout.
 create_status_pending() {
-    local lockfile=$(resolve_lockfile "$1")
-    mkdir -p "$(resolve_location "$1")"
+    local lockfile=$(resolve_job_status "$1")
+    mkdir -p "$(resolve_job_dir "$1")"
     local serverPort=$(shuf -i 49152-65535 -n 1)
     echo "[startup] creating lockfile for job $1"
     if ((${SLURM_NODEID:-0} == 0)); then
@@ -105,8 +106,8 @@ create_status_pending() {
 # initialising status implies resources have been assigned and vllm is starting up.
 # Expects job, and vllm PID.
 update_status_initialise() {
-    local lockfile=$(resolve_lockfile "$1")
-    local log=$(resolve_logfile "$1")
+    local lockfile=$(resolve_job_status "$1")
+    local log=$(resolve_job_log "$1")
 
     touch "$log"
 
@@ -130,7 +131,7 @@ update_status_initialise() {
 # running status implies vllm has started and is serving requests
 # Expects job.
 update_status_running() {
-    local lockfile=$(resolve_lockfile "$1")
+    local lockfile=$(resolve_job_status "$1")
 
     if ((${SLURM_NODEID:-0} == 0)); then
         echo "[startup] job $1 is running."
@@ -146,7 +147,7 @@ update_status_running() {
 # running status implies vllm has started and is serving requests
 # Expects job.
 request_cancel() {
-    local lockfile=$(resolve_lockfile "$1")
+    local lockfile=$(resolve_job_status "$1")
     if ((${SLURM_NODEID:-0} == 0)); then
         echo "[shutdown] requesting cancel for job $1."
         jq \
@@ -162,8 +163,8 @@ request_cancel() {
 # Expects a description of the failure reason
 # and an error code.
 # Expects job. reason for error, and exit code
-update_status_unclean_shutdown() {
-    local lockfile=$(resolve_lockfile "$1")
+update_status_failed() {
+    local lockfile=$(resolve_job_status "$1")
     if ((${SLURM_NODEID:-0} == 0)); then
         echo "[shutdown] unclean shutdown for job $1 due to $2 ($3)."
         jq \
@@ -181,8 +182,8 @@ update_status_unclean_shutdown() {
 # triggered by end of job, user cancel, idle timeout
 # reason must be set separately
 # Expects job.
-update_status_clean_shutdown() {
-    local lockfile=$(resolve_lockfile "$1")
+update_status_stopped() {
+    local lockfile=$(resolve_job_status "$1")
     if ((${SLURM_NODEID:-0} == 0)); then
         echo "[shutdown] clean shutdown for job $1."
         jq \
@@ -198,7 +199,7 @@ update_status_clean_shutdown() {
 # expects lockfile and reason for shutdown
 # Expects job, and shutdown reason.
 update_reason() {
-    local lockfile=$(resolve_lockfile "$1")
+    local lockfile=$(resolve_job_status "$1")
     if ((${SLURM_NODEID:-0} == 0)); then
         echo "[shutdown] reason for shutdown for job $1: $2."
         jq \
@@ -213,7 +214,7 @@ update_reason() {
 # checks whether job has a given status
 # expects job and status to check
 is_status() {
-    local lockfile=$(resolve_lockfile "$1")
+    local lockfile=$(resolve_job_status "$1")
     jq \
     --arg test "$2" \
     -e 'has("status") and .status == $test' "$lockfile" > /dev/null
@@ -229,8 +230,8 @@ is_status() {
 # expects job, and exit code, everything else is read from the status.
 tidy_up() {
     local job=$1
-    local pid=$(resolve_setting "$job" "vllmPid")
-    local slurmJobId=$(resolve_setting "$job" "slurmJobId")
+    local pid=$(get_job_status_setting "$job" "vllmPid")
+    local slurmJobId=$(get_job_status_setting "$job" "slurmJobId")
     local exit_code=$2
 
     echo "[shutdown] shutting down job $1 (vllm: $pid, slurm: $slurmJobId, exit: $exit_code)."
@@ -254,13 +255,13 @@ tidy_up() {
             # SIGUSR1 - slurm timeout - no reason will have been given yet
             echo "[shutdown] received SIGUSR1: slurm timeout"
             update_reason "$job" "SLURM timeout"
-            update_status_clean_shutdown "$job"
+            update_status_stopped "$job"
             ;;
         201)
             # SIGUSR2 - other reasons
             echo "[shutdown] received SIGUSR2: idle shutdown or user cancel"
             # reason for shutdown has already been recorded
-            update_status_clean_shutdown "$job"
+            update_status_stopped "$job"
             ;;
         0)
             echo "[shutdown] vllm parent terminated normally"
@@ -268,11 +269,11 @@ tidy_up() {
         *)
             if is_status "$job" "initialising"; then
                 echo "[shutdown] exit code $exit_code: vllm error on startup"
-                update_status_unclean_shutdown "$job" "failed to start" "$exit_code"
+                update_status_failed "$job" "failed to start" "$exit_code"
                 # recover logs?
             else
                 echo "[shutdown] exit code $exit_code: vllm error during inference"
-                update_status_unclean_shutdown "$job" "crashed during inference" "$exit_code"
+                update_status_failed "$job" "crashed during inference" "$exit_code"
             fi
             ;;
     esac
@@ -336,8 +337,8 @@ report_memory() {
 monitor_startup() {
     local job=$1
     local vllm_parent=$2
-    local serverPort=$(resolve_setting "$job" "serverPort")
-    local model=$(resolve_setting "$job" "model")
+    local serverPort=$(get_job_status_setting "$job" "serverPort")
+    local model=$(get_job_status_setting "$job" "model")
 
     if ((${SLURM_NODEID:-0} == 0)); then
 
@@ -403,7 +404,7 @@ monitor_startup() {
 
             else
 
-                local status=$(resolve_setting "$job" "status")
+                local status=$(get_job_status_setting "$job" "status")
                 echo "[startup] failed to detect vllm start. job $job is in status $status."
                 exit 1
 
@@ -424,10 +425,10 @@ monitor_startup() {
 # a recent query to a supported endpoint expects job, vllm parent pid
 monitor_head() {
     local job=$1
-    local lockfile=$(resolve_lockfile "$job")
+    local lockfile=$(resolve_job_status "$job")
     local vllm_parent=$2
-    local log=$(resolve_logfile "$job")
-    local idle_timeout=$(resolve_setting "$job" "idleTimeout")
+    local log=$(resolve_job_log "$job")
+    local idle_timeout=$(get_job_status_setting "$job" "idleTimeout")
 
     if [[ ! -f "$lockfile" ]]; then
         # If the lockfile is missing we panic shutdown vllm.
@@ -463,7 +464,7 @@ monitor_head() {
                 break
             fi
 
-            local vllm_pid=$(resolve_setting "$job" "vllmPid")
+            local vllm_pid=$(get_job_status_setting "$job" "vllmPid")
 
             # 0. check vllm process is still active
             if ! kill -0 "$vllm_pid" > /dev/null 2>&1; then
@@ -550,9 +551,9 @@ monitor_head() {
 # expects lockfile, vllm parent pid, and jit cachedir localdir
 monitor_worker() {
     local job=$1
-    local lockfile=$(resolve_lockfile "$job")
+    local lockfile=$(resolve_job_status "$job")
     local vllm_parent=$2
-    local log=$(resolve_logfile "$job")
+    local log=$(resolve_job_log "$job")
     local node=${SLURM_NODEID:-0}
 
     # designed for worker nodes. Does not update lockfile. purely tracks lockfile.
@@ -639,7 +640,7 @@ restore_cache() {
 
     # Archive the tmpfs $HOME to shared storage for next cold start.
     local job=$1
-    local cachetar=$(resolve_cachetar "$job")
+    local cachetar=$(resolve_job_jit_cache "$job")
     local localdir=$(resolve_localdir "$job")
 
     # 3. Try to restore cached JIT compilations
@@ -661,7 +662,7 @@ save_cache() {
 
     # Archive the tmpfs $HOME to shared storage for next cold start.
     local job=$1
-    local cachetar=$(resolve_cachetar "$job")
+    local cachetar=$(resolve_job_jit_cache "$job")
     local localdir=$(resolve_localdir "$job")
 
     if ((${SLURM_NODEID:-0} == 0)); then

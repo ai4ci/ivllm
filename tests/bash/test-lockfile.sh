@@ -42,7 +42,7 @@ test_create_pending_basic() {
 
     # Verify port is a valid high port
     local lockfile_port
-    lockfile_port=$(resolve_setting "test-job" ".serverPort")
+    lockfile_port=$(get_job_status_setting "test-job" ".serverPort")
     if [ "$lockfile_port" -ge 49152 ] 2>/dev/null && [ "$lockfile_port" -le 65535 ] 2>/dev/null; then
         [ "$port" = "$lockfile_port" ] || { echo "FAIL: port mismatch $port vs $lockfile_port"; FAIL=1; teardown; return; }
     else
@@ -54,7 +54,7 @@ test_create_pending_basic() {
 
     # Verify requestedTime is an ISO timestamp
     local req_time
-    req_time=$(resolve_setting "test-job" ".requestedTime")
+    req_time=$(get_job_status_setting "test-job" ".requestedTime")
     [[ "$req_time" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo "FAIL: invalid timestamp $req_time"; FAIL=1; teardown; return; }
 
     echo "✓ test_create_pending_basic"
@@ -104,7 +104,7 @@ test_update_initialise_basic() {
 
     # computeHostname should be set
     local hostname
-    hostname=$(resolve_setting "init-job" ".computeHostname")
+    hostname=$(get_job_status_setting "init-job" ".computeHostname")
     [ -n "$hostname" ] && [ "$hostname" != "null" ] || { echo "FAIL: computeHostname not set"; FAIL=1; teardown; return; }
 
     echo "✓ test_update_initialise_basic"
@@ -171,7 +171,7 @@ test_update_running_worker_only() {
     teardown
 }
 
-# ── Test: update_status_clean_shutdown ───────────────────────────────────────
+# ── Test: update_status_stopped ───────────────────────────────────────
 
 test_clean_shutdown() {
     setup
@@ -179,7 +179,7 @@ test_clean_shutdown() {
     create_status_pending "clean-job" "model" 30 > /dev/null 2>&1
     update_status_initialise "clean-job" 12345
     update_status_running "clean-job"
-    update_status_clean_shutdown "clean-job"
+    update_status_stopped "clean-job"
 
     local lockfile="$ENGINE_DIR/jobs/clean-job/status.json"
     assert_status "$lockfile" "stopped" || { FAIL=1; teardown; return; }
@@ -187,21 +187,21 @@ test_clean_shutdown() {
 
     # stopTime should be set
     local stop_time
-    stop_time=$(resolve_setting "clean-job" ".stopTime")
+    stop_time=$(get_job_status_setting "clean-job" ".stopTime")
     [[ "$stop_time" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo "FAIL: invalid stopTime $stop_time"; FAIL=1; teardown; return; }
 
     echo "✓ test_clean_shutdown"
     teardown
 }
 
-# ── Test: update_status_unclean_shutdown ─────────────────────────────────────
+# ── Test: update_status_failed ─────────────────────────────────────
 
 test_unclean_shutdown() {
     setup
 
     create_status_pending "fail-job" "model" 30 > /dev/null 2>&1
     update_status_initialise "fail-job" 12345
-    update_status_unclean_shutdown "fail-job" "GPU error" 42
+    update_status_failed "fail-job" "GPU error" 42
 
     local lockfile="$ENGINE_DIR/jobs/fail-job/status.json"
     assert_status "$lockfile" "failed" || { FAIL=1; teardown; return; }
@@ -310,31 +310,31 @@ test_update_reason() {
     teardown
 }
 
-# ── Test: resolve_setting ───────────────────────────────────────────────────
+# ── Test: get_job_status_setting ───────────────────────────────────────────────────
 
-test_resolve_setting() {
+test_get_job_status_setting() {
     setup
 
     create_status_pending "resolve-job" "my-model" 15 > /dev/null 2>&1
 
     local name
-    name=$(resolve_setting "resolve-job" ".jobName")
+    name=$(get_job_status_setting "resolve-job" ".jobName")
     [ "$name" = "resolve-job" ] || { echo "FAIL: jobName=$name"; FAIL=1; teardown; return; }
 
     local model
-    model=$(resolve_setting "resolve-job" ".model")
+    model=$(get_job_status_setting "resolve-job" ".model")
     [ "$model" = "my-model" ] || { echo "FAIL: model=$model"; FAIL=1; teardown; return; }
 
     local timeout
-    timeout=$(resolve_setting "resolve-job" ".idleTimeout")
+    timeout=$(get_job_status_setting "resolve-job" ".idleTimeout")
     [ "$timeout" = "15" ] || { echo "FAIL: idleTimeout=$timeout"; FAIL=1; teardown; return; }
 
     # Missing field
     local missing
-    missing=$(resolve_setting "resolve-job" ".nonexistent")
+    missing=$(get_job_status_setting "resolve-job" ".nonexistent")
     [ "$missing" = "null" ] || { echo "FAIL: missing field should return null, got $missing"; FAIL=1; teardown; return; }
 
-    echo "✓ test_resolve_setting"
+    echo "✓ test_get_job_status_setting"
     teardown
 }
 
@@ -352,7 +352,7 @@ test_full_lifecycle() {
     update_status_running "lifecycle-job"
     is_status "lifecycle-job" "running" || { echo "FAIL: not running"; FAIL=1; teardown; return; }
 
-    update_status_clean_shutdown "lifecycle-job"
+    update_status_stopped "lifecycle-job"
     is_status "lifecycle-job" "stopped" || { echo "FAIL: not stopped"; FAIL=1; teardown; return; }
 
     # Verify all fields preserved
@@ -379,7 +379,7 @@ test_lifecycle_cancel() {
 
     # Simulate what tidy_up does on SIGUSR2
     update_reason "cancel-lifecycle" "user cancel"
-    update_status_clean_shutdown "cancel-lifecycle"
+    update_status_stopped "cancel-lifecycle"
 
     local lockfile="$ENGINE_DIR/jobs/cancel-lifecycle/status.json"
     assert_status "$lockfile" "stopped" || { FAIL=1; teardown; return; }
@@ -396,7 +396,7 @@ test_lifecycle_fail_during_startup() {
     update_status_initialise "fail-startup" 12345
 
     # Simulate vLLM crash with exit code 1 during initialising
-    update_status_unclean_shutdown "fail-startup" "failed to start" 1
+    update_status_failed "fail-startup" "failed to start" 1
 
     local lockfile="$ENGINE_DIR/jobs/fail-startup/status.json"
     assert_status "$lockfile" "failed" || { FAIL=1; teardown; return; }
@@ -425,7 +425,7 @@ test_request_cancel_from_worker
 test_is_status
 test_is_status_missing_lockfile
 test_update_reason
-test_resolve_setting
+test_get_job_status_setting
 test_full_lifecycle
 test_lifecycle_cancel
 test_lifecycle_fail_during_startup

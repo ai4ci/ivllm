@@ -9,6 +9,7 @@ import type {
 } from './types';
 import { jobConfigPath, parseVllmConfig, saveJobConfig } from './vllm-config';
 import crypto from 'crypto';
+import fs from 'fs';
 
 /**
  *
@@ -129,7 +130,7 @@ function generateRandomHighPort(): number {
  * @returns EnginePathsV3 object
  */
 export function makeV3Paths(projectDir: string): EnginePathsV3 {
-  const modelDir = `${projectDir.replace(/\/+$/, '')}/mdoel`;
+  const modelDir = `${projectDir.replace(/\/+$/, '')}/model`;
   const engineDir = `${projectDir.replace(/\/+$/, '')}/engine`;
   const engineLibDir = `${engineDir}/lib`;
   const engineJobsDir = `${engineDir}/jobs`;
