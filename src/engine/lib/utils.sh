@@ -151,6 +151,15 @@ resolve_job_config() {
     resolve_job_dir "$1" "vllm.yaml"
 }
 
+# Function 2: Strip specific top-level blocks and save the result
+resolve_stripped_job_config() {
+    local file=$(resolve_job_config "$1")
+    local output_file="$file.clean"
+    # Deletes the specific blocks cleanly while maintaining valid YAML
+    yq 'del(.env, .min-vllm-version, .ivllm, .idle-timeout)' "$file" > "$output_file"
+    echo "$output_file"
+}
+
 # Read a field from a job's lockfile using jq.
 # must include the leading .
 # Usage: local value=$(get_job_status_setting "$job" ".fieldName")
@@ -196,14 +205,7 @@ get_job_config_exports() {
     yq '.env | to_entries | .[] | "export " + .key + "=\"" + .value + "\""' "$file"
 }
 
-# Function 2: Strip specific top-level blocks and save the result
-resolve_stripped_job_config() {
-    local file=$(resolve_job_config "$1")
-    local output_file="$file.clean"
-    # Deletes the three specific blocks cleanly while maintaining valid YAML
-    yq 'del(.env, .min-vllm-version, .ivllm, .idle-timeout)' "$file" > "$output_file"
-    echo "$output_file"
-}
+
 
 # Exports a set of paths rated to caches into a subdirectory of localdir
 # localdir should be fast node local storage (maybe ram disk)
@@ -266,7 +268,7 @@ create_status_pending() {
             --argjson idle_timeout "$idle_timeout" \
             --arg req_time "$(date -Iseconds)" \
             --arg user "$(whoami)" \
-            '{status: "pending", jobName: $job_name, model: $model, serverPort: $server_port, requestedTime: $req_time, idleTimeout: $idle_timeout}, user: $user' \
+            '{status: "pending", jobName: $job_name, model: $model, serverPort: $server_port, requestedTime: $req_time, idleTimeout: $idle_timeout, user: $user}' \
             > "$lockfile"
     ) 2>/dev/null || {
         echo "[startup] ERROR: lockfile already exists for job $job" >&2
