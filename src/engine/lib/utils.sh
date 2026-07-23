@@ -518,6 +518,7 @@ update_status_failed() {
 # Usage: request_cancel "$job"
 request_cancel() {
     # Write "cancel" to the lockfile to request graceful shutdown.
+    # Sets .status to "cancel" (for monitor to detect). Exits 1 if lockfile missing.
     # Usage: request_cancel "$job"
     local job="$1"
     local lockfile
