@@ -646,11 +646,15 @@ tidy_up() {
     return 0
 }
 
-# Set up exit traps for the monitor triad.
+# Register exit traps for graceful shutdown via tidy_up().
+# Args: $1 — job name.
+# Sets 4 traps:
+#   SIGUSR1 (SLURM timeout) → tidy_up with exit code 200
+#   SIGUSR2 (user cancel/idle) → tidy_up with exit code 201
+#   ERR → tidy_up with captured $?
+#   EXIT → tidy_up with captured $?
 # Usage: setup_traps "$job"
 setup_traps() {
-    # Register EXIT/SIGUSR1/SIGUSR2 traps for graceful shutdown.
-    # Usage: setup_traps "$job" "$vllm_pid" "$slurm_id"
     local job="$1"
     trap 'tidy_up "'"$job"'" 200' SIGUSR1   # SLURM timeout
     trap 'tidy_up "'"$job"'" 201' SIGUSR2   # user cancel or idle timeout
