@@ -305,12 +305,12 @@ get_job_config_setting() {
     yq r "$file" "$expr" 2>/dev/null || echo ""
 }
 
-# Extract the top-level 'env:' block from a config as raw bash export lines.
-# throws error if the config is not there.
-# returns empty value is the config is there but the value is missing.
+# Extract the top-level 'env:' block from vllm.yaml as bash export lines.
+# Args: $1 — job name.
+# Uses yq v3 to read key-value pairs and converts them to 'export KEY="VALUE"' lines.
+# Returns: export lines via stdout. Returns nothing (exit 0) if config file is missing.
+# Usage: eval "$(get_job_config_exports "$job")"
 get_job_config_exports() {
-    # Produce export lines from the env: block in vllm.yaml.
-    # Usage: eval "$(get_job_config_exports "$yaml")"
     local file=$(resolve_job_config "$1")
     # For a config without an env: block, emit nothing.
     if [[ ! -f "$file" ]]; then
