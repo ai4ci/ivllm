@@ -447,11 +447,11 @@ update_status_initialise() {
 
 
 
-# Mark job as running. Run on head compute node when vLLM health check passes.
+# Mark job as running when vLLM health check passes.
+# Args: $1 — job name.
+# Run on head compute node (SLURM_NODEID==0). Sets .status to "running" via jq.
 # Usage: update_status_running "$job"
 update_status_running() {
-    # Transition lockfile: initialising → running.
-    # Usage: update_status_running "$job"
     local job="$1"
     local lockfile
 
