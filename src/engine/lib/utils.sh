@@ -149,13 +149,14 @@ resolve_job_root_dir() {
     echo "$IVLLM_PROJECTDIR/engine/jobs"
 }
 
-# creates directories if not present
-# Resolve the path to a file in a job's directory or to the directory itself.
-# Does not check file exists.
+# Resolve a path within a job's directory, creating the directory if needed.
+# Args: $1 — job name (required); $2 — optional file/dir name within job dir.
+# Returns: path via stdout — $root/$job if no 2nd arg, or $root/$job/$2 otherwise.
+# Does not check whether the returned path exists.
 # Usage: local path=$(resolve_job_dir "$job" "filename")
 resolve_job_dir() {
-    # Resolve the specific job directory.
-    # Usage: local dir=$(resolve_job_dir "$job")
+    # Resolve a path within a job's directory, creating the directory if needed.
+    # Returns: path via stdout — $root/$job if no 2nd arg, or $root/$job/$2 otherwise.
     local job="$1"
     local root=$(resolve_job_root_dir)
     local out
