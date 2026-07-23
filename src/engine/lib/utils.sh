@@ -245,12 +245,15 @@ resolve_stripped_job_config() {
 # throws error if the lockfile is not there.
 # returns empty value is the lockfile is there but the value is missing.
 get_job_status_setting() {
-    # Read a field from the lockfile using jq.
-    # Usage: local val=$(get_job_status_setting "$job" ".fieldName")
+    # Read a field from the lockfile (status.json) using jq.
+    # Args: $1 — job name; $2 — jq filter (must include leading dot, e.g. ".status").
+    # Exits with code 1 if the lockfile does not exist.
+    # Returns empty string if the lockfile exists but the field is missing.
+    # Usage: local val=$(get_job_status_setting "$job" ".status")
     local lockfile
     lockfile=$(resolve_job_status "$1")
     if [[ ! -f $lockfile ]]; then
-        echo "ERROR: no status file found for job $job" >&2
+        echo "ERROR: no status file found for job $1" >&2
         exit 1
     fi
     jq -r "$2" "$lockfile" 2>/dev/null || echo ""
