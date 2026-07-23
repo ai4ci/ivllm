@@ -2,6 +2,25 @@
 
 This directory contains the architectural design for the v3 migration.
 
+## ** CURRENT STATE **
+
+The current implementation has been rewritten from V2 by hand. The binary has
+been renamed `ivllm2` in this branch. Eventually we will decide whether to keep
+original as old `ivllm`
+
+It has not been tested, and the test framework has not been setup. Code in test directory is LEGACY and will need to be rewritten,
+
+Design decisions were made during refactoring that will invalidate existing tests and may not be properly documented.
+
+Key next steps:
+
+- [ ] Review existing code. Identify obvious defects and inconsistent documentation. Record in design/issues.md.
+- [ ] Setup bash bubblewrap testing enviroment with shims for mocking HPC login and compute nodes.
+- [ ] Unit tests for bash utilities (refactor existing)
+- [ ] Bash lockfile lifecycle test and monitor tests using shims.
+- [ ] Refactor DryRunRemoteOps and create MockBackend to decouple CLI testing from backend
+- [ ] Typescript tests (refactor existing ro write from scratch).
+
 ## Active documents
 
 | Document | Description |
@@ -11,10 +30,6 @@ This directory contains the architectural design for the v3 migration.
 | `roadmap.md` | Step-by-step migration plan with 7 phases (M1–M7) |
 | `coding-standards.md` | Coding conventions: TypeScript OptionParser, object-oriented patterns, bash function design |
 | `testing.md` | Test architecture: 4 layers, mock infrastructure, handoff testing, scenario matrix, phase-by-phase plan |
-| `implementation-plan.md` | **Day 1** — Phase M1 bash framework (foundation, additive) |
-| `implementation-plan-2.md` | **Day 2** — Phase M2 new CLI commands (types, paths, metadata, connect/cancel scaffold) |
-| `implementation-plan-3.md` | **Day 3** — Phase M3 self-managed lifecycle (SSH ops, real connect/cancel, remove old code) |
-| `implementation-plan-4.md` | **Day 4** — Remaining steps to MVP (script gen, sbatch, monitor, tunnel, detach, idle timeout, multi-user) |
 
 ## Reference and support
 

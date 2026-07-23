@@ -19,6 +19,13 @@ In v3, the COMPUTE node runs a self-sufficient bash framework that manages its
 own lifecycle. The LOCAL client is a thin orchestrator that can come and go
 freely — any project member can connect to a running instance.
 
+The orchestration is expected to be handled from client side but login node
+bash framework is sufficient to perform most model related from login node.
+
+The `jobName` is unique. No 2 jobs with the same name can be running at the
+same time. Jobs are shared between users within the same project, up to the
+limits of slurm permissions.
+
 ---
 
 ## The three layers
@@ -29,10 +36,9 @@ freely — any project member can connect to a running instance.
 │                                                                  │
 │  ivllm connect <job>     Start or attach to a running job        │
 │  ivllm cancel <job>      Request graceful shutdown               │
-│  ivllm list              List all jobs with status                │
-│  ivllm config            Show/set connection details              │
+│  ivllm status [job]      List all jobs with status               │
+│  ivllm config            Show/set connection details             │
 │  ivllm setup <version>   Install vLLM on HPC (one-off)           │
-│  ivllm agent             Launch AI assistant connected to vLLM    │
 │                                                                  │
 │  ┌─────────────────────────────────────────────────────────────┐ │
 │  │ SSH/SCP layer (preserved from v2)                           │ │
@@ -48,7 +54,8 @@ freely — any project member can connect to a running instance.
 ┌──────────────────────────────────────────────────────────────────┐
 │  LOGIN NODE (HPC login)                                          │
 │                                                                  │
-│  • Accepts CLI commands (sbatch, scancel, file ops)              │
+│  Bash Framework ($PROJECTDIR/engine/ivllm-*.sh                   │
+│  • Handles lifecycle of running jobs and sbatch submission       │
 │  • Model downloads via srun on interactive partition             │
 │  • Status.json files visible on parallel filesystem              │
 │  • No long-lived processes (scripts forward to COMPUTE)          │
@@ -62,22 +69,28 @@ freely — any project member can connect to a running instance.
 │  Bash Framework ($PROJECTDIR/engine/lib/)                        │
 │  ┌─────────────────────────────────────────────────────────────┐ │
 │  │ utils.sh      - Lockfile management, cache, monitors,       │ │
-│  │                  shutdown, diagnostics                       │ │
+│  │                  shutdown, diagnostics, file locations      │ │
 │  ├─────────────────────────────────────────────────────────────┤ │
-│  │ vllm-env.sh   - NVHPC/NCCL/Slingshot environment (tuning)   │ │
+│  │ common-env.sh   - NVHPC/NCCL/Slingshot environment (tuning) │ │
+│  │ vllm-env.sh     - vllm specific variables                   │ │
 │  ├─────────────────────────────────────────────────────────────┤ │
-│  │ hf.sh         - Model download (shared HF cache)            │ │
-│  ├─────────────────────────────────────────────────────────────┤ │
-│  │ vllm-setup.sh      - vLLM installation (versioned venvs)         │ │
+│  │ slurm-hf-download.sh  - Model download (shared HF cache)    │ │
+│  │ slurm-vllm-setup.sh   - Setup vllm version including plugins| │
+│  │ slurm-vllm-serve.sh   - Run a model on one or more nodes    │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 │                                                                  │
 │  Job Directory ($PROJECTDIR/engine/jobs/<job>/):                 │
 │  ┌─────────────────────────────────────────────────────────────┐ │
 │  │ status.json       - Lockfile (lifecycle state machine)      │ │
 │  │ jit-cache.tar.gz  - Compiled JIT kernels (shared storage)   │ │
-│  │ vllm.<N>.log      - vLLM output logs (one per node)        │ │
-│  │ vllm.yaml         - Model configuration                     │ │
+│  │ vllm.<N>.log      - vLLM output logs (one per node)         │ │
+│  │ vllm.yaml         - Model configuration inc. metadata       │ │
+│  │ vllm.yaml.clean   - Vllm serve cli specific options         │ │
 │  │ slurm.sh          - SLURM batch script                      │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│  Cache Directory ($HOME/.cache/ivllm/<job>/):                    │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │ jit-cache.tar.gz  - Compiled JIT kernels (user specific)    │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -106,8 +119,8 @@ It lives on the parallel filesystem, visible to all nodes. All parties
   ┌───────────┐
   │  RUNNING  │  ← vLLM is serving requests
   └─────┬─────┘
-         │ (a trigger condition arises)
-         ▼
+        │ (a trigger condition arises)
+        ▼
   ┌───────────┐      ┌──────────┐
   │  STOPPED  │      │  FAILED  │  ← terminal states
   └───────────┘      └──────────┘
@@ -129,6 +142,7 @@ It lives on the parallel filesystem, visible to all nodes. All parties
   "status": "pending | initialising | running | failed | stopped | cancel",
   "jobName": "qwen36",
   "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+  "user": "testuser",
   "serverPort": 49153,
   "requestedTime": "2026-07-14T12:00:00+00:00",
   "idleTimeout": 30,
@@ -143,7 +157,8 @@ It lives on the parallel filesystem, visible to all nodes. All parties
 ```
 
 Notes:
-
+serverPort, computeHostname, startTime, stopTime, slurmJobId, vllmPid, reason
+and exitCode are responsibility of the server to populate.
 
 ### Lockfile lifecycle rules
 
@@ -219,34 +234,6 @@ Reconnect:
   → If "stopped" or "failed": restart the job
   → Monitor lockfile, tail logs during startup
 ```
-
----
-
-## What we preserve from v2
-
-| Component | v2 file | Status |
-|-----------|---------|--------|
-| CLI entry & command routing | `src/index.ts` | Preserved — add new commands |
-| Config management | `src/config.ts` | Preserved as-is |
-| YAML config parsing | `src/vllm-config.ts` | Preserved — add `idleTimeout` field, metadata block, and `targetVllmVersion` replacing `minVllmVersion` |
-| SSH/SCP operations | `src/remote-ops.ts` | Preserved — refactor interface slightly |
-| Local port/health ops | `src/local-ops.ts` | Preserved |
-| Version matching | `src/semver.ts` | Preserved |
-| Assistant launcher | `src/assistant.ts`, `src/commands/agent.ts` | Preserved |
-| NVHPC/NCCL tuning env vars | `src/templates/inference.ts` → `renderNVHPCPreamble()` | Move to `vllm-env.sh` |
-| JIT cache management | `src/templates/inference.ts` → `renderWorkDirSetup()` | Move to `utils.sh` |
-| Dry-run mock infrastructure | `src/remote-ops.ts` | Preserved |
-| Test framework | `tests/*.ts` | Preserved — add tests for new commands |
-
-| Component | v2 file | Status |
-|-----------|---------|--------|
-| Session lifecycle pipeline | `src/session-helper.ts` | **Replace** — logic moves to bash |
-| Monitoring loop | `src/monitors.ts` | **Replace** — monitoring moves to bash `monitor_*` |
-| Bash templates | `src/templates/inference.ts` (1,176 lines) | **Replace** — extract to `lib/*.sh` |
-| `ivllm start` / `ivllm interactive` | `src/commands/start.ts`, `interactive.ts` | **Replace** with `ivllm connect` |
-| `ivllm stop` | `src/commands/stop.ts` | **Replace** with `ivllm cancel` |
-| Lockfile schema | `job_details.json` | **Replace** with `status.json` |
-| Old design docs | `design/` → `design/old/` | **Archived** |
 
 ---
 
@@ -351,7 +338,8 @@ router process dies, restarting it rediscovers all running models from
 
 ### 3. Multiple models on a single node
 
-Running e.g. Qwen3.6 and Gemma4 simultaneously on one Isambard node:
+Running e.g. Qwen3.6 and Gemma4 simultaneously on one Isambard node. Cheaper
+to run on a single node:
 
 - **Each model is an independent job** with its own `status.json`, port,
   vLLM process, and GPU allocation
@@ -386,20 +374,7 @@ interactive reservation only accepted `srun` jobs. This is incorrect —
 - Dedicated pool of nodes for interactive work
 - 8-hour limit (vs standard partitions)
 - 50% premium billing (1.5 NHR per NHR used)
-- Per-user limits (typically 1 node)
-
-**Implication for `ivllm connect`**: The `--interactive` flag is still
-useful as a shorthand for `--partition=interactive --reservation=interactive`,
-but it should use `sbatch` by default, not `srun`. The `srun` TTY-binding
-mode is deprecated. Tailing the log file over ssh is the only way to follow the
-progress of the .
-The default behaviour (`sbatch` to interactive partition) is cleaner.
-
-```bash
-# These are now equivalent:
-ivllm connect qwen2 --partition=interactive --reservation=interactive
-ivllm connect qwen2 --interactive  # shorthand for the above, uses sbatch
-```
+- Per-user limits - only 1 sbatch job allowed
 
 ### 5. Scheduling vLLM starts with SLURM
 
@@ -553,14 +528,7 @@ The `isambard_containers` project uses `--distributed-executor-backend mp`
 for multi-node vLLM — the vLLM-native multiprocessing backend. This is
 what `--nnodes` defaults to when no backend is explicitly specified.
 
-Our own codebase already has **both approaches**:
-
-| Template | Backend | Notes |
-|----------|---------|-------|
-| Interactive multi-node | MP (default) | Sets `--nnodes`, `--node-rank`, `--master-addr` only. Dead Ray env vars present but unused. |
-| Batch multi-node | Ray (explicit) | Uses `--distributed-executor-backend ray` with full Ray startup/teardown. |
-
-Both approaches have trade-offs:
+Ray is an alternative backend for mulitprocessing. Both approaches have trade-offs:
 
 | Concern | MP | Ray |
 |---------|----|-----|
@@ -577,15 +545,6 @@ change the NCCL data path. However, MP may have different timing, connection
 setup, or collective algorithm selection that interacts differently with
 Slingshot's CXI fabric. This is an empirical question that needs benchmarking.
 
-**Implication for our design**: Our batch template currently uses Ray while
-the interactive template (which is used more often) uses MP. We should:
-1. Clean up the interactive template (remove dead Ray env vars)
-2. Keep both paths — MP for interactive/simple multi-node, Ray for
-   production batch jobs where failure handling matters
-3. Benchmark MP vs Ray on Slingshot before making a final decision
-4. The `isambard_containers` project uses MP exclusively and has validated
-   it for multi-node — this is an option we can adopt
-
 ### 3. Model recipe database
 
 The `isambard_containers` project has a YAML recipe file
@@ -600,19 +559,10 @@ recipe database like `model_recipes.yaml` would let `ivllm connect`
 auto-configure any supported model. Users would only need to type:
 `ivllm connect deepseek-ai/DeepSeek-R1` without any config file.
 
-### 4. Static SLURM template with --export
+However specific per model tested configuration has a benefit to control the
+models we support.
 
-Their SLURM template (`serve_vllm_mp.slurm`) is a static file, not a
-generated template. All dynamic values are passed via `sbatch --export`
-as environment variables. The Python CLI builds the `--export` string from
-a dict of key-value pairs.
-
-**Implication for our design**: This aligns with our Phase M3 goal of
-replacing the generated TypeScript templates with static files that source
-shared libs. Passing job parameters via `--export` instead of inline
-substitution is cleaner and matches typical SLURM patterns.
-
-### 5. Clean worker coordination pattern
+### 4. Clean worker coordination pattern
 
 The SLURM template coordinates head and worker nodes using marker files
 in a shared tmp directory:
@@ -621,8 +571,7 @@ in a shared tmp directory:
 - Workers write `$JOB_TMP/markers/worker_done_<rank>` to confirm TCPStore
 disconnection before head exits
 
-This avoids race conditions in PyTorch distributed teardown and is simpler
-than our current Ray-based approach.
+This is similar to our lockfile based approach but simpler.
 
 ### 6. Debug mode with nvidia-smi monitoring
 
@@ -645,11 +594,7 @@ SSH tunnel**, not part of the core lifecycle.
 
 | Pattern | From | Benefit |
 |---------|------|--------|
-| DeepEP installation | `vllm.def` | Support for DeepEP |
-| MP backend (not Ray) | `serve_vllm_mp.slurm` | Simpler multi-node, fewer bugs |
 | Model recipe YAML | `model_recipes.yaml` | Auto-config for 100+ models |
-| Static SLURM templates | `serve_vllm_mp.slurm` | Cleaner than generated templates |
-| `--export` for job params | `serve.py` | Standard SLURM pattern |
 | Worker coordination markers | `serve_vllm_mp.slurm` | Clean multi-node teardown |
 | Pre-built containers | `vllm.def` + sifter registry | Avoids pip install maintenance |
 | Debug mode | `serve_vllm_mp.slurm` | Easier multi-node diagnostics |

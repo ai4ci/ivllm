@@ -22,7 +22,7 @@ area) but not tactical (covering behaviour under realistic conditions).
 ```
 ┌──────────────────────┐
 │   Unit tests         │  Fast, isolated. Test one function/module.
-│   (TypeScript + Bash)│  Bash tests use mock harness.
+│   (TypeScript + Bash)│  Bash tests to use mock harness with bubblewrap to simulate HPC.
 ├──────────────────────┤
 │   Integration tests  │  Test interactions between layers without
 │   (Mock E2E)         │  real HPC. Full lifecycle with mock vLLM.

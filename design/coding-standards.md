@@ -1,5 +1,7 @@
 # Coding Standards — isambard-vllm
 
+TODO: These are out of date and need updating to match current code:
+
 This document defines coding conventions and patterns for the isambard-vllm
 codebase, covering both TypeScript (CLI layer) and Bash (HPC runtime layer).
 
@@ -39,16 +41,7 @@ program
 // See src/job.ts:parseStartArgs for what NOT to do
 ```
 
-**Migration path**: Each command file (connect.ts, cancel.ts, setup.ts,
-config.ts, agent.ts) defines its own `Command` and registers options. The
-root `index.ts` is just the program definition with subcommand registration.
-
 ### Object-Oriented Patterns: Prefer Classes over Interface Proliferation
-
-The current `src/types.ts` defines many standalone interfaces for data
-that travels through different layers (e.g. `Credentials`, `Paths`,
-`InferenceJobOptions`, `ServeOptions`, `JobDetails`, `EnvVarEntry`).
-These are often replicated or extended across files.
 
 **Prefer classes with methods** over bags-of-interfaces when the data has
 behaviour. Use inheritance for lifecycle state.
@@ -112,7 +105,7 @@ export interface Backend {
 }
 
 // src/backends/isambard-vllm.ts
-export class IsambardVllmBackend implements Backend {
+export class IsambardBareMetalBackend implements Backend {
   readonly name = 'isambard-vllm';
   // ... implementation wrapping SSH ops + bash framework
 }
@@ -289,6 +282,7 @@ printf "[%s-node %s] RAM: %s\n" "$(date +%H:%M:%S)" "$SLURM_NODEID" "$mem_summar
 
 - Use `design/prototype/test-vllm.sh` as the template
 - Mock `srun`, `scancel`, and `vllm` with local implementations
+- test bash in a bubblewrap environment mocking HPC login or compute nodes.
 - Test with `set -x` for debugging, but do not commit with `set -x` enabled
 - Each bash function in `lib/` should have a corresponding test function
 - Tests should pass with `bash tests/templates/lib/*.sh`
@@ -303,9 +297,8 @@ printf "[%s-node %s] RAM: %s\n" "$(date +%H:%M:%S)" "$SLURM_NODEID" "$mem_summar
 | Cache save/restore | Bash | tar + filesystem ops |
 | CLI user interaction | TypeScript | Rich I/O, readline, error handling |
 | SSH operations | TypeScript | Multiplexing, tunnel lifecycle |
-| Config parsing | TypeScript | YAML support, validation |
-| Version comparison | TypeScript | Semver parsing, sorting |
-| Assistant launcher | TypeScript | Terminal UI, process spawning |
+| vLLM config parsing | Bash | On login node. yq support, validation |
+| Version comparison | Bash | On login node. Semver parsing, sorting |
 
 ---
 

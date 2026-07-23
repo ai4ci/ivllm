@@ -1,5 +1,7 @@
 # isambard-vllm (`ivllm`)
 
+TODO: **this is old content and needs updating**
+
 A CLI tool for managing vLLM inference jobs on [Isambard AI](https://www.isambard.ac.uk/) HPC from your local machine. It submits SLURM jobs, downloads models on the login node, establishes a forward SSH tunnel, and exposes an OpenAI-compatible API on `localhost` — so you can point any agent harness (e.g. OpenCode) straight at your HPC GPU allocation.
 
 ```

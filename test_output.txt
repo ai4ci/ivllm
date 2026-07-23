@@ -1,7 +1,0 @@
-bun test v1.3.14 (0d9b296a)
-  [dry-run] Would run remotely:
-    echo hello
-  [dry-run] Would scp: /tmp/ivllm-ops-test-D0e6Wm/source.sh → /remote/workdir/source.sh
-           (preview: /tmp/ivllm-dest-test-awiUaa/source.sh)
-  [dry-run] Would scp: /tmp/ivllm-ops-test-tuXJgW/local-name.sh → /remote/work/remote-name.slurm.sh
-           (preview: /tmp/ivllm-dest-test-ZYagrV/remote-name.slurm.sh)
