@@ -1076,8 +1076,9 @@ save_cache() {
 
 # Helper: Parse version string into components, defaulting missing/invalid parts to 0
 _parse_semver() {
-    # Internal: parse semver string into MAJOR.MINOR.PATCH.
-    # Usage: _parse_semver "0.19.1" → sets _MAJOR _MINOR _PATCH
+    # Internal: parse semver string into MAJOR MINOR PATCH integers.
+    # Splits on '.', defaults missing/non-numeric parts to 0.
+    # Usage: _parse_semver "0.19.1" → echoes "0 19 1" to stdout
     local IFS='.'
     local -a parts
     read -r -a parts <<< "$1"
@@ -1111,7 +1112,8 @@ semver_gte() {
 # Sort an array of semantic version strings in descending order
 # Expects versions as separate arguments. Outputs sorted list to stdout.
 semver_sort() {
-    # Internal: sort semver strings in ascending order.
+    # Internal: sort semver strings in descending (reverse) order.
+    # Expects versions as separate arguments. Outputs sorted list to stdout.
     # Usage: semver_sort "0.19.0" "0.21.0" "0.20.0"
     printf '%s\n' "$@" | sort -V -r
 }
@@ -1119,7 +1121,8 @@ semver_sort() {
 # Sort an array of semantic version strings in ascending order
 # Expects versions as separate arguments. Outputs sorted list to stdout.
 rev_semver_sort() {
-    # Internal: sort semver strings in descending order.
+    # Internal: sort semver strings in ascending order.
+    # Expects versions as separate arguments. Outputs sorted list to stdout.
     # Usage: rev_semver_sort "0.19.0" "0.21.0" "0.20.0"
     printf '%s\n' "$@" | sort -V
 }
