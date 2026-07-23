@@ -207,11 +207,13 @@ resolve_job_log() {
     resolve_job_dir "$1" "vllm.$node.log"
 }
 
-# Resolve the path to a job's yaml config file.
-# does not check the file exists
+# Resolve the path to a job's vllm.yaml config file.
+# Args: $1 — job name.
+# Returns: path to vllm.yaml via stdout. Does not check if the file exists.
+# Usage: local config=$(resolve_job_config "$job")
 resolve_job_config() {
-    # Resolve the vllm.yaml config file path for a job.
-    # Usage: local config=$(resolve_job_config "$job")
+    # Resolve the path to a job's vllm.yaml config file.
+    # Returns: path to vllm.yaml via stdout.
     resolve_job_dir "$1" "vllm.yaml"
 }
 
