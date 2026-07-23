@@ -8,18 +8,22 @@ The current implementation has been rewritten from V2 by hand. The binary has
 been renamed `ivllm2` in this branch. Eventually we will decide whether to keep
 original as old `ivllm`
 
-It has not been tested, and the test framework has not been setup. Code in test directory is LEGACY and will need to be rewritten,
+A bubblewrap sandbox test harness is now in place, running bash tests in
+isolated environments with real subprocess/signal semantics against the real
+installed yq 3.4.1 and jq 1.7 binaries. All 13 documented implementation
+issues (design/issues.md) have been identified and resolved. Test status:
+40/40 individual assertions pass across 5 test files (lockfile, cache,
+config, vllm-env, monitor-head). Zero failures.
 
-Design decisions were made during refactoring that will invalidate existing tests and may not be properly documented.
-
-Key next steps:
+Key next steps (tomorrow):
 
 - [X] Review existing code. Identify obvious defects and inconsistent documentation. Record in design/issues.md.
-- [ ] Setup bash bubblewrap testing enviroment with shims for mocking HPC login and compute nodes.
-- [ ] Unit tests for bash utilities (refactor existing)
-- [ ] Bash lockfile lifecycle test and monitor tests using shims.
+- [X] Setup bash bubblewrap testing environment with shims for mocking HPC login and compute nodes.
+- [X] Unit tests for bash utilities (refactor existing).
+- [X] Bash lockfile lifecycle test and monitor tests using shims.
+- [ ] Expand bash test coverage: monitor_startup, monitor_worker, exit trap/signal tests, login-node handoff tests against shim call log.
 - [ ] Refactor DryRunRemoteOps and create MockBackend to decouple CLI testing from backend
-- [ ] Typescript tests (refactor existing ro write from scratch).
+- [ ] Typescript tests (refactor or write from scratch)
 
 ## Active documents
 
