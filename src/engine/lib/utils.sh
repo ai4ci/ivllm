@@ -93,13 +93,15 @@ resolve_nvhpc_dir() {
     echo "$IVLLM_PROJECTDIR/engine/nvhpc"
 }
 
-# checks if contents present
-# exists with status 1 if not present
-# TODO: rename
+# Resolve the NVHPC root directory with a version check (26.3).
+# Exits with status 1 and prints an error if the expected NVHPC version is not found.
+# Calls resolve_nvhpc_dir() to determine the base path.
+# Returns: path to the NVHPC versioned directory via stdout, or exit 1 on failure.
+# Usage: local root=$(resolve_nvhpc_root)
 resolve_nvhpc_root() {
-    # Resolve the NVHPC root with version check.
-    # Returns the full path to the NVHPC version directory.
-    # Usage: local root=$(resolve_nvhpc_root)
+    # Resolve the NVHPC root directory with a version check (26.3).
+    # Calls resolve_nvhpc_dir() to determine the base path.
+    # Returns: path to the NVHPC versioned directory via stdout, or exit 1 on failure.
     local nvhpcDir=$(resolve_nvhpc_dir)
     if [[ ! -d "$nvhpcDir/Linux_aarch64/26.3" ]]; then
       echo "NVHPC SDK version 26.3 is not installed. please run ivllm setup." >&2
