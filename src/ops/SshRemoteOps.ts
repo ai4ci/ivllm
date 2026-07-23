@@ -47,20 +47,17 @@ export class SshRemoteOps extends RemoteOps {
     }
 
     /**
-     * Execute a command on the Isambard login node via SSH and capture its
-     * standard output.
+     * Execute a command on the login node via SSH and capture stdout.
      *
-     * Spawns ssh with batch mode (BatchMode=yes) for passwordless
-     * execution, and SSH multiplexing via {@link SSH_MUX_OPTS}. When
-     * options.silent is false, stdout/stderr are forwarded directly to the
-     * local terminal; otherwise output is captured and returned.
+     * Spawns ssh with batch mode and multiplexing via {@link SSH_MUX_OPTS}.
+     * When `options.silent` is `false`, stdout/stderr are forwarded to
+     * the local terminal; otherwise output is captured and returned.
      *
-     * @param config - SSH {@link Credentials}
-     * @param command - Shell command to execute on the login node
-     * @param options - Execution options
-     * @param options.env - Environment variables to prefix the command
-     * @param options.silent - When false stream stdout to terminal
-     * @returns A promise resolving to the exit code and captured stdout
+     * @param command — Shell command to execute on the login node
+     * @param options — Execution options
+     * @param options.env — Environment variables to prefix the command
+     * @param options.silent — When `false` stream stdout to terminal
+     * @returns Exit code and captured stdout
      */
     async runRemote(
         command: string,
@@ -93,13 +90,12 @@ export class SshRemoteOps extends RemoteOps {
     }
 
     /**
-     * Copy a local file to a path on the Isambard login node via SCP.
+     * Copy a local file to the login node via SCP.
      *
-     * Spawns scp with batch mode and SSH multiplexing via {@link SSH_MUX_OPTS}
-     * for efficient bulk transfers.
-     * @param config - SSH {@link Credentials}
-     * @param localPath - Path to the local source file
-     * @param remotePath - Destination path on the login node
+     * Spawns scp with batch mode and multiplexing via {@link SSH_MUX_OPTS}.
+     *
+     * @param localPath — Path to the local source file
+     * @param remotePath — Destination path on the login node
      * @throws Error with the SCP exit code if the transfer fails
      */
     async copyFile(localPath: string, remotePath: string): Promise<void> {
@@ -170,16 +166,14 @@ export class SshRemoteOps extends RemoteOps {
     }
 
     /**
-     * Execute a command on the Isambard login node via SSH and stream output.
+     * Execute a command on the login node via SSH and stream output.
      *
-     * Spawns ssh with batch mode (BatchMode=yes) for passwordless
-     * execution, and SSH multiplexing via {@link SSH_MUX_OPTS}. When
-     * options.silent is false, stdout/stderr are forwarded directly to the
-     * local terminal; otherwise output is captured and returned.
+     * Spawns ssh with batch mode and multiplexing via {@link SSH_MUX_OPTS}.
+     * Stdout and stderr are forwarded directly to the local terminal.
      *
-     * @param config - SSH {@link Credentials}
-     * @param env - Environment variables to prefix the command
-     * @returns An event emitter that can be closed with `.kill()`
+     * @param command — Shell command to execute
+     * @param env — Environment variables to prefix the command
+     * @returns A process that can be terminated with `.kill()`
      */
     runRemoteSync(command: string, env: EnvVarEntry[]): CloseableEventEmitter {
         const target = `${this.config.username}@${this.config.loginHost}`;
@@ -198,18 +192,16 @@ export class SshRemoteOps extends RemoteOps {
     }
 
     /**
-     * Spawn a persistent forward SSH tunnel that maps a local port to a
-     * remote host:port through the Isambard login node.
+     * Spawn a persistent SSH port-forwarding tunnel.
      *
-     * The tunnel is created with ssh -N -L and **must not use multiplexing**
-     * (ControlMaster=no) — multiplexing would cause the master to exit when
-     * the last connection closes, triggering a false shutdown in callers.
+     * Maps `localhost:<localPort>` → `<remoteHost>:<remotePort>` through
+     * the login node. Uses `ServerAliveInterval`/`ServerAliveCountMax` for
+     * keepalive and `ExitOnForwardFailure` to detect bad hostnames.
      *
-     * @param config - SSH {@link Credentials}
-     * @param localPort - Port to listen on locally
-     * @param remoteHost - Remote host (typically a compute node, e.g. 'gh200-1')
-     * @param remotePort - Remote port (e.g. the vLLM server port 8000)
-     * @returns An event emitter that can be closed with `.kill()`
+     * @param localPort — Port to listen on locally
+     * @param remoteHost — Remote host (e.g. compute node hostname)
+     * @param remotePort — Remote port (e.g. vLLM server port)
+     * @returns A process that can be terminated with `.kill()`
      */
     spawnTunnel(
         localPort: number,
@@ -241,18 +233,12 @@ export class SshRemoteOps extends RemoteOps {
     }
 
     /**
-     * Verify that an SSH connection to the login node works.
+     * Verify SSH connectivity to the login node.
      *
-     * Executes echo ok on the login node via {@link runRemote} and checks
-     * the exit code. Logs status messages to the console.
+     * Runs `echo ok` via {@link runRemote} and checks the exit code.
+     * On failure, logs an error and calls `process.exit(1)`.
      *
-     * **Side effects**
-     *
-     * - On failure: logs Error: Cannot connect to login node. and calls
-     *   process.exit(1) (this function does not throw on its own)
-     * - On success: logs ✓ SSH connectivity OK
-     * @param credentials
-     * @returns true when connectivity is confirmed
+     * @returns `true` when connectivity is confirmed
      */
     async checkSSH(): Promise<boolean> {
         console.log('Checking SSH connectivity...');
