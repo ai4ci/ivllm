@@ -556,6 +556,8 @@ update_reason() {
 # Usage: if is_status "$job" "running"; then ...
 is_status() {
     # Check if lockfile status matches expected value.
+    # Args: $1 — job name; $2 — status string (e.g. "running").
+    # Returns 0 (true) if lockfile exists and .status == $2, 1 otherwise.
     # Usage: is_status "$job" "running" → returns 0 if true
     local lockfile
     lockfile=$(resolve_job_status "${1}")
