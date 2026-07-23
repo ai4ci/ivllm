@@ -989,10 +989,11 @@ echo "============================================"
 
 
 # Report memory and JIT cache usage for the current node.
+# Args: $1 — job name (used to resolve localdir via resolve_localdir()).
+# Reads SLURM_NODEID from env (defaults to 0). Prints formatted line:
+#   [HH:MM:SS-node N] Cache: XK | RAM: YM | Top: proc1=ZM proc2=WK ...
 # Usage: report_memory "$job"
 report_memory() {
-    # Report memory usage to the log.
-    # Usage: report_memory
     local localdir
     local node
 
