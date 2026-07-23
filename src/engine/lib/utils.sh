@@ -344,14 +344,14 @@ set_jit_caches() {
 
 # ── Lockfile state machine ─────────────────────────────────────────────────
 
-# Create a lockfile with status "pending". Run on LOGIN node before sbatch.
-# Uses set -C (noclobber) for atomic creation — fails if lockfile exists.
+# Create a lockfile with pending status on the login node before sbatch.
+# Args: $1 — job name; $2 — model identifier; $3 — idle timeout (default: 30).
+# Generates a random high port (49152-65535) for the vLLM server internally.
+# Removes existing lockfile if job is in failed/stopped state (restart logic).
+# Exits with code 1 if the job is already active.
+# Uses set -C (noclobber) for atomic file creation.
 # Usage: create_status_pending "$job" "$model" "$idle_timeout"
-# exits with code 1 if it cannot get the lock file
 create_status_pending() {
-    # Create a lockfile with pending status.
-    # Uses set -C for atomic create (fails if exists).
-    # Usage: create_status_pending "$job" "$model" "$port" "$timeout"
     local job="$1"
     local model="$2"
     local idle_timeout="${3:-30}"
