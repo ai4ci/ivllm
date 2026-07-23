@@ -1,22 +1,31 @@
 #!/bin/bash
+# Mock sbatch — records the invocation and returns a fake job id.
+#
+# Does NOT execute the submitted job script. Real sbatch submission is
+# asynchronous (the job runs later, elsewhere, on compute nodes); testing
+# what happens once the job actually runs is done separately, in the
+# "compute" sandbox profile, by invoking the compute-side scripts
+# (slurm-vllm-serve.sh, run_head_vllm.sh, ...) directly — see
+# tests/bash/sandboxed/. This shim only validates that the LOGIN-side
+# orchestration script (ivllm-serve.sh) builds the expected sbatch
+# invocation and correctly handles its result (job id / exit code).
+#
+# Configure via:
+#   MOCK_SBATCH_JOB_ID   fake numeric job id to return (default: 424242)
+#   MOCK_SBATCH_EXIT      exit code to return (default: 0)
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
 
-script_path=""
+shim_log sbatch "$*"
 
-# Find the last positional argument (the script path)
-for arg in "$@"; do
-    if [[ "$arg" != -* ]]; then
-        script_path="$arg"
-    fi
-done
+job_id="${MOCK_SBATCH_JOB_ID:-424242}"
+exit_code="${MOCK_SBATCH_EXIT:-0}"
 
-local fake_job_id="${MOCK_SBATCH_JOB_ID:-99999}"
-echo "[mock] sbatch: submitted batch job $fake_job_id ($script_path)"
-echo "Submitted batch job $fake_job_id"
+if [[ "$exit_code" -eq 0 ]]; then
+    # Real sbatch --parsable prints only the bare job id to stdout — every
+    # call site in this codebase uses --parsable, so that's all we emit.
+    echo "$job_id"
+else
+    echo "sbatch: error: mock failure (MOCK_SBATCH_EXIT=$exit_code)" >&2
+fi
 
-export SLURM_JOB_ID=${MOCK_SBATCH_JOB_ID}
-export SLURM_NODEID=0
-export COMPUTE_HOSTNAME="nid1234"
-export SLURM_JOB_START_TIME="$(date +%s)"
-export SLURM_JOB_END_TIME="$(date +%s)"
-
-bash -c $script_path
+exit "$exit_code"

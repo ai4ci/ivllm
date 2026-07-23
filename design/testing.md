@@ -2,18 +2,21 @@
 
 ## Current state
 
-The existing tests (~3,000 lines across 18 files) are **template-centric**:
-they verify that generated bash scripts contain specific strings (e.g.
-`"NVHPC_ROOT"`, `"cuda/12.9/compat"`) and that TypeScript functions parse
-arguments correctly. They do not test:
+This document originally described a state where all existing tests were
+**template-centric** (verifying generated bash scripts contained specific
+strings) rather than testing real behaviour. That gap has now been
+substantially closed for the bash layer: bash tests run inside a bubblewrap
+sandbox against real subprocess/signal semantics and the real `jq`/`yq`
+binaries — see "Bubblewrap (bwrap) sandbox architecture" below. Building
+that harness and writing the first real tests against it immediately found
+several genuine bugs (see `design/issues.md`, issues 7–13), which is the
+intended outcome of testing tactically rather than just for surface area.
 
-- Whether the generated bash actually **works** correctly
-- Whether the lockfile state machine transitions reliably
-- Whether the handoff between CLI and compute-side handles edge cases
-- Whether timeouts, cancellations, and failure paths behave correctly
-
-The user's observation is correct: the tests are strategic (covering surface
-area) but not tactical (covering behaviour under realistic conditions).
+The TypeScript layers (Layer 1 unit tests, the `mock` RemoteOps mode, Layer
+3 integration, Layer 4 E2E) described below have **not** been reviewed as
+part of this bash-testing pass and may still reflect the original
+template-centric/aspirational state — treat that content as a plan, not a
+status report, until it gets the same treatment.
 
 ---
 
@@ -22,7 +25,9 @@ area) but not tactical (covering behaviour under realistic conditions).
 ```
 ┌──────────────────────┐
 │   Unit tests         │  Fast, isolated. Test one function/module.
-│   (TypeScript + Bash)│  Bash tests to use mock harness with bubblewrap to simulate HPC.
+│   (TypeScript + Bash)│  Bash unit tests (unit/) run directly; anything
+│                      │  touching external commands runs sandboxed
+│                      │  (sandboxed/, via bubblewrap) instead — see below.
 ├──────────────────────┤
 │   Integration tests  │  Test interactions between layers without
 │   (Mock E2E)         │  real HPC. Full lifecycle with mock vLLM.
@@ -37,7 +42,8 @@ area) but not tactical (covering behaviour under realistic conditions).
 | Layer | Location | Runner | Speed |
 |-------|----------|--------|-------|
 | TypeScript unit | `tests/cli/*.test.ts` | `bun test` | ms |
-| Bash unit | `tests/bash/test-*.sh` | `bash tests/bash/run.sh` | ms–s |
+| Bash unit (plain) | `tests/bash/unit/test-*.sh` | `bash tests/bash/run.sh unit` | ms |
+| Bash unit (sandboxed) | `tests/bash/sandboxed/test-*.sh` | `bash tests/bash/run.sh sandboxed` | s (bwrap overhead per test) |
 | Integration | `tests/integration/*.test.ts` | `bun test` | s |
 | E2E | `tests/e2e/smoke.sh` | Manual / CI on Isambard | 5–30 min |
 
@@ -147,171 +153,155 @@ test('connect creates lockfile, submits sbatch, transitions to running', async (
 4. Update existing tests that pass `dryRun: true` → pass `'dry-run'`
 5. Add new integration tests using `'mock'` mode
 
-The bash framework must be tested without an HPC connection. All tests use
-the mock harness (`tests/bash/lib/test-utils.sh`) which provides:
+The bash framework must be tested without an HPC connection, but the old
+"mock harness" approach (overriding `srun`/`sbatch`/`scancel`/`vllm` as bash
+**functions** sourced into the same shell as the code under test) had real
+gaps: it never exercised actual subprocess/exec semantics, background
+processes could leak onto the host if a test crashed before its trap fired,
+and there was no isolation from whatever HPC tools happened to be on the
+test runner's own PATH.
 
-| Mock | What it replaces | Behaviour |
-|------|-----------------|-----------|
-| `mock_srun` | `srun` | Spawns the real command in background, captures PID |
-| `mock_srun_fail` | `srun` | Exits immediately with a configurable exit code |
-| `mock_scancel` | `scancel` | Logs the cancel request, no-ops |
-| `mock_vllm` | `vllm serve` | Lightweight Python HTTP server serving `/health`, `/v1/models`, `/v1/chat/completions`. Configurable startup delay, configurable failure mode. |
-| `mock_vllm_slow` | `vllm serve` | Same as mock_vllm but with configurable delay before `/health` responds (for testing startup monitor timing) |
-| `mock_vllm_crash` | `vllm serve` | Starts healthy, then crashes after N requests (for testing head monitor) |
+### Bubblewrap (bwrap) sandbox architecture
 
-### Test scenarios by bash function
+Bash tests now run inside a [bubblewrap](https://github.com/containers/bubblewrap)
+sandbox (`tests/bash/lib/sandbox.sh`), which:
 
-#### Lockfile operations (`lib/utils.sh`)
+- Intercepts external commands via **PATH shims** (`tests/bash/shims/*`) —
+  each a standalone executable, not a sourced bash function, so real
+  argument-passing and exit-code semantics get exercised.
+- Binds in **real system tools we are not trying to mock** (`bash`, `jq`,
+  `yq`, `tar`, `awk`, `python3`, `curl`, coreutils, ...) read-only from the
+  host, so tests run against actual tool behaviour rather than an idealised
+  stand-in. This is deliberate and already paid off: it is how issues 7–9
+  and 13 in `design/issues.md` were found — `utils.sh` was written assuming
+  `yq` v4's jq-style filter syntax, but the HPC (and this sandbox) has the
+  real `yq 3.4.1`, which has a completely different CLI.
+- Uses `--unshare-net` to block all real network access (loopback still
+  works, so a mock vLLM HTTP server on `localhost` is reachable) — it is
+  physically impossible for a test to accidentally hit a real HPC,
+  HuggingFace, or NVIDIA download URL.
+- Uses `--unshare-pid` + `--die-with-parent`, giving each test its own PID
+  namespace with bwrap itself as the reaper (PID 1). When the sandboxed
+  script exits, **every** process it spawned — monitors, mock vLLM servers,
+  backgrounded mock `srun` children — is killed automatically, even if the
+  test crashed. No leaked background processes, no trap-based cleanup
+  required in every test.
+- Provides two **profiles**, matching where a script actually runs:
 
-| Test | Scenario | Expected |
-|------|----------|----------|
-| `test_create_pending` | Create lockfile for new job | File exists with `status: "pending"`, correct fields |
-| `test_create_pending_existing` | Create lockfile when one exists | `set -C` causes failure, script reports error |
-| `test_update_initialise` | Update from pending to initialising | SLURM job ID, hostname, PID written correctly |
-| `test_update_running` | Update from initialising to running | Status changes to `running` |
-| `test_update_clean_shutdown` | Update to stopped | Status changes to `stopped` with stop time |
-| `test_update_unclean_shutdown` | Update to failed | Status changes to `failed` with reason and exit code |
-| `test_request_cancel` | Write cancel to lockfile | Status changes to `cancel` |
-| `test_is_status` | Check lockfile status | Returns true/false correctly |
-| `test_is_status_missing_file` | Check status on missing lockfile | Returns false, no crash |
-| `test_is_status_malformed` | Check status on corrupt JSON | Handles gracefully |
+  | Profile | Env | Used for |
+  |---------|-----|----------|
+  | `login` | No `SLURM_*` vars | Top-level `ivllm-*.sh` wrapper scripts that run on the LOGIN node and submit work (`sbatch`/`srun`) to the scheduler |
+  | `compute` | `SLURM_JOB_ID`/`SLURM_NODEID`/`SLURM_NNODES`/`SLURM_JOB_NODELIST`/`COMPUTE_HOSTNAME` set | Code that runs *inside* a SLURM allocation: lockfile state transitions, the monitor triad, exit traps/signals, `run_head_vllm.sh`/`run_worker_vllm.sh` |
 
-#### Cache functions (`lib/utils.sh`)
+See the full design rationale and implementation notes in the header
+comment of `tests/bash/lib/sandbox.sh`.
 
-| Test | Scenario | Expected |
-|------|----------|----------|
-| `test_cache_save_restore` | Save cache, verify tar exists, restore to new dir | Files match original |
-| `test_cache_restore_missing` | Restore from non-existent tar | Graceful message, no crash |
-| `test_cache_save_empty` | Save empty directory | Tar created with zero-size content |
-| `test_cache_permissions` | Saved tar has group-read permissions | `chmod 664` verified |
+### Two-tier test layout
 
-#### Monitor startup (`lib/utils.sh:monitor_startup`)
-
-| Test | Scenario | Expected |
-|------|----------|----------|
-| `test_startup_normal` | Start mock vLLM, wait for /health, warmup succeeds | Status transitions to `running`, cache saved twice (pre + post warmup) |
-| `test_startup_delayed` | Mock vLLM takes 30s to respond | Monitor waits, eventually succeeds |
-| `test_startup_fail_health` | Mock vLLM never responds to /health | Monitor times out, status → `failed` |
-| `test_startup_fail_warmup` | /health responds but warmup fails | After 5 retries, status → `failed` |
-| `test_startup_process_dies` | vLLM process dies during startup | Monitor detects, status → `failed` |
-| `test_startup_cancel_during` | User writes cancel during startup | Monitor detects cancel, triggers shutdown |
-
-#### Monitor head (`lib/utils.sh:monitor_head`)
-
-| Test | Scenario | Expected |
-|------|----------|----------|
-| `test_head_no_lockfile` | Lockfile deleted during runtime | Shutdown with reason "lockfile deleted" |
-| `test_head_cancel_request` | User writes cancel | SIGUSR2 sent to parent, shutdown initiated |
-| `test_head_process_death` | vLLM process dies | Detected in 10s, shutdown initiated |
-| `test_head_idle_timeout` | No API requests within idle window | Shutdown with reason "idle timeout" |
-| `test_head_active_traffic` | API requests keep coming | No shutdown |
-| `test_head_idle_timeout_edge` | Request just inside timeout window | No shutdown |
-| `test_head_idle_timeout_disabled` | `idleTimeout: -1` | Never shuts down, even with no traffic |
-| `test_head_missing_log` | Log file deleted during runtime | Shutdown with reason "missing log file" |
-
-#### Monitor worker (`lib/utils.sh:monitor_worker`)
-
-| Test | Scenario | Expected |
-|------|----------|----------|
-| `test_worker_normal` | Lockfile stays in running | No action |
-| `test_worker_cancel` | Lockfile transitions to cancel | Worker shuts down local process |
-| `test_worker_failed` | Lockfile transitions to failed | Worker shuts down |
-| `test_worker_lockfile_deleted` | Lockfile disappears | Worker shuts down |
-| `test_worker_head_node` | Accidentally run on head node | Error, kills immediately |
-| `test_worker_stopped` | Lockfile transitions to stopped | Worker shuts down |
-
-#### Exit trap and signals (`lib/utils.sh:tidy_up`)
-
-| Test | Scenario | Expected |
-|------|----------|----------|
-| `test_exit_0` | vLLM exits normally (code 0) | Clean shutdown, status set appropriately |
-| `test_exit_sigusr1` | SIGUSR1 received (SLURM timeout) | Status → `stopped`, reason "SLURM timeout" |
-| `test_exit_sigusr2` | SIGUSR2 received (idle/cancel) | Status → `stopped`, reason preserved |
-| `test_exit_crash_startup` | Non-zero exit during initialising | Status → `failed`, reason "failed to start" |
-| `test_exit_crash_runtime` | Non-zero exit during running | Status → `failed`, reason "crashed during inference" |
-| `test_exit_tidy_up` | vLLM PID killed, scancel called | Process is killed, slurm cancelled |
-| `test_exit_scancel_after_kill` | tidy_up kills vLLM, then scancel | Both happen in order |
-
-#### Environment preamble (`lib/vllm-env.sh`)
-
-| Test | Scenario | Expected |
-|------|----------|----------|
-| `test_preamble_sources` | Source vllm-env.sh | No errors, env vars set |
-| `test_preamble_nvhpc_root` | NVHPC_ROOT correctly set | Points to existing directory |
-| `test_preamble_cuda_home` | CUDA_HOME correctly set | Contains `cuda/12.9/` |
-| `test_preamble_path` | PATH includes CUDA bin | `which nvcc` works after source |
-| `test_preamble_ld_library` | LD_LIBRARY_PATH includes compat libs | compat dir comes first |
-| `test_preamble_cc_cxx` | CC and CXX set to gcc | `gcc` and `g++` are the compilers |
-
-### Mock test runner structure
-
-```bash
-# tests/bash/run.sh — runs all bash tests
-#!/bin/bash
-set -euo pipefail
-FAIL=0
-
-for test in tests/bash/test-*.sh; do
-    echo "=== Running $test ==="
-    if bash "$test"; then
-        echo "✓ $test"
-    else
-        echo "✗ $test"
-        FAIL=1
-    fi
-done
-
-exit $FAIL
+```
+tests/bash/
+├── run.sh              — runs unit/ then sandboxed/ (or a single scope)
+├── lib/
+│   ├── sandbox.sh        — bwrap harness: sandbox_run(), sandbox_run_test()
+│   ├── assertions.sh      — assert_* helpers (file/json/status/shim-called)
+│   └── test-utils.sh      — setup_test_env/cleanup_test_env for unit/ tests
+├── shims/                — PATH-shim executables (see table below)
+├── fixtures/              — sample vllm.yaml configs (minimal/with-env/multi-node)
+├── unit/                  — fast, non-sandboxed: pure bash logic only
+└── sandboxed/             — bwrap-sandboxed: real yq/jq, mocked SLURM/vLLM,
+                             process/signal isolation
 ```
 
-Each test file sources the shared mock utilities and then runs individual
-test functions:
+`unit/` is for logic that touches no external command needing a mock (e.g.
+semver comparison) — it runs directly on the host for fast iteration.
+Anything that shells out to `jq`/`yq`/`srun`/`sbatch`/`scancel`/`vllm`, or
+needs real process/signal behaviour (the monitor triad, exit traps), belongs
+in `sandboxed/`.
 
-```bash
-#!/bin/bash
-# tests/bash/test-lockfile.sh
+### Shim inventory
 
-source tests/bash/lib/test-utils.sh
-source src/templates/lib/utils.sh
+| Shim | Replaces | Behaviour |
+|------|----------|-----------|
+| `sbatch` | `sbatch` | Logs the call, returns a fake job id (`MOCK_SBATCH_JOB_ID`). Does not execute the submitted script — see "Fidelity tiers" below. |
+| `srun` | `srun` | Two modes via `MOCK_SRUN_MODE`: `log-only` (default; records the call, returns `MOCK_SRUN_EXIT`) or `exec` (actually backgrounds the wrapped command and forwards TERM/INT/USR1/USR2 to it) |
+| `scancel` | `scancel` | Logs the call, returns `MOCK_SCANCEL_EXIT` |
+| `squeue` | `squeue` | Returns a job id if it's listed in `MOCK_SQUEUE_ACTIVE_JOBS` |
+| `scontrol` | `scontrol show hostnames` | Expands a comma/whitespace-separated nodelist |
+| `dig` | `dig +short` | Returns `MOCK_DIG_IP` (default `10.0.0.1`) |
+| `module` | `module load/purge` | No-op (logged) — NVHPC_ROOT/CC/CXX are resolved independently, not via module side effects |
+| `gcc` / `g++` | compilers | Exist and are resolvable via `which`, so `CC`/`CXX` are non-empty |
+| `hf` | `hf cache ls` / `hf download` | Configurable via `MOCK_HF_CACHED_MODELS` / `MOCK_HF_DOWNLOAD_EXIT` |
+| `uv` | `uv venv` / `uv pip *` | Creates a fake venv (`bin/activate`, `bin/pip`); configurable pip list/show/install results |
+| `vllm` | `vllm serve` | Real Python HTTP server: `/health`, `/v1/models`, `/v1/chat/completions`; configurable startup delay (`MOCK_VLLM_DELAY`), crash-after-N-requests (`MOCK_VLLM_CRASH_AFTER`); honours SIGUSR1/SIGUSR2 (exit 200/201, matching `tidy_up`'s contract); access-log lines are timestamped to match `IVLLM_TIME_FMT` for idle-timeout tests |
+| `wget`, `git` | real downloads/clones | Hard-fail with a clear message — real network installs (NVHPC SDK, DeepGEMM/DeepEP) are out of scope for the bash test suite (see "Fidelity tiers") |
 
-test_create_pending() {
-    local job="test-job"
-    local work_dir=$(mktemp -d)
-    
-    ENGINE_DIR="$work_dir/engine"
-    create_status_pending "$job" "test-model" 8000 30
-    
-    local lockfile="$ENGINE_DIR/jobs/$job/status.json"
-    assert_file_exists "$lockfile"
-    assert_json_eq "$lockfile" ".status" '"pending"'
-    assert_json_eq "$lockfile" ".jobName" '"test-job"'
-    assert_json_eq "$lockfile" ".idleTimeout" '30'
-    
-    rm -rf "$work_dir"
-    echo "✓ test_create_pending"
-}
+`curl` is deliberately **not** shimmed — the sandbox's `--unshare-net`
+already makes real external URLs unreachable, while `http://localhost/...`
+(used for real vLLM health checks against the `vllm` shim's mock server)
+still works via loopback. This gives faithful behaviour for free.
 
-test_create_pending_existing() {
-    local job="test-job"
-    local work_dir=$(mktemp -d)
-    
-    ENGINE_DIR="$work_dir/engine"
-    create_status_pending "$job" "test-model" 8000 30
-    # Second create must fail (set -C)
-    if create_status_pending "$job" "test-model" 8000 30 2>/dev/null; then
-        echo "✗ Should have failed on duplicate"
-        return 1
-    fi
-    
-    rm -rf "$work_dir"
-    echo "✓ test_create_pending_existing"
-}
+### Fidelity tiers (why `sbatch`/`srun` don't execute the real job)
 
-# Run all tests
-test_create_pending
-test_create_pending_existing
-# ... etc
-```
+Testing the full chain "CLI submits sbatch → SLURM eventually runs the job
+on a compute node" end-to-end would require nested sandboxes with different
+env profiles (login vs compute) for the *same* invocation, which isn't
+practical. Instead there are two deliberately separate tiers:
+
+1. **Login-side handoff tests** (`login` profile): verify that
+   `ivllm-serve.sh`/`ivllm-setup.sh`/`ivllm-cancel.sh`/etc. build the correct
+   `sbatch`/`srun` invocation and handle its result (job id, exit code)
+   correctly. The `sbatch`/`srun` shims just record the call — they do not
+   execute the wrapped script.
+2. **Compute-side execution tests** (`compute` profile): invoke the
+   compute-side scripts/functions directly (`slurm-vllm-serve.sh`,
+   `run_head_vllm.sh`, `monitor_head`, ...) as if already inside a SLURM
+   allocation. Here `MOCK_SRUN_MODE=exec` makes the `srun` shim actually
+   background the wrapped command, matching what `srun` does when it's
+   simply launching a task step on already-allocated resources.
+
+Real network installation (`slurm-vllm-setup.sh` downloading the NVHPC SDK,
+compiling DeepGEMM/DeepEP from git) is out of scope for the bash test suite
+— the `wget`/`git` shims fail loudly if anything tries to reach them, so an
+unexpected call surfaces as a clear test failure rather than a silent no-op.
+
+### Current sandboxed test files
+
+| File | Covers | Status |
+|------|--------|--------|
+| `sandboxed/test-lockfile.sh` | Lockfile state machine (`create_status_pending`, `update_status_*`, `request_cancel`, `is_status`) | All passing |
+| `sandboxed/test-cache.sh` | JIT cache save/restore, permissions, node gating | All passing |
+| `sandboxed/test-vllm-env.sh` | `common-env.sh`/`vllm-env.sh` preamble sourcing and env vars | Mostly passing; one intentional red test for Issue 12 |
+| `sandboxed/test-config.sh` | `get_job_config_setting`/`resolve_stripped_job_config`/`get_job_config_exports` against the real `yq 3.4.1` binary | Mostly **red** — demonstrates issues 7–9 |
+| `sandboxed/test-monitor-head.sh` | `monitor_head()`: cancel detection, vLLM process death, lockfile deletion, idle timeout, active-traffic | Mostly **red** — demonstrates issue 13 |
+
+Red tests here are the correct TDD starting state (AGENTS.md: "all tests
+must be proven to fail before starting development of a feature") — they
+were written first, found real bugs, and are left failing until those bugs
+are fixed as a dedicated follow-up.
+
+### Still to be written
+
+The following scenarios from the original test-scenario tables below remain
+to be implemented as sandboxed tests (contributions should follow the same
+`sandbox_run_test` pattern):
+
+- `monitor_startup` — health-check polling, warmup request, cache save
+  timing, startup failure paths
+- `monitor_worker` — worker-node lockfile watching, shutdown on
+  cancel/failed/stopped, head-node misuse guard
+- Exit trap / signals (`tidy_up`) — SIGUSR1 (SLURM timeout), SIGUSR2
+  (cancel/idle), crash-during-startup vs crash-during-runtime, scancel
+  ordering
+- Login-node handoff tests for `ivllm-serve.sh`/`ivllm-cancel.sh`/
+  `ivllm-status.sh`/`ivllm-setup.sh` (asserting on `calls.log` via
+  `assert_shim_called`)
+- Multi-node: `scontrol`/`dig` head/worker node resolution in
+  `slurm-vllm-serve.sh`
+
+The scenario tables below (by bash function) describe the intended
+coverage; they predate the bwrap rewrite and use the old `test_*` naming
+convention, but the scenarios themselves are still the right target list.
+
 
 ---
 
@@ -662,30 +652,35 @@ Focus: All tests pass, no regressions.
 ### During development
 
 ```bash
-# Bash framework changes (fast)
-bash tests/bash/test-lockfile.sh         # Single test file
-bash tests/bash/run.sh                   # All bash tests
+# A single test file (works for both unit/ and sandboxed/)
+bash tests/bash/sandboxed/test-lockfile.sh
+bash tests/bash/sandboxed/test-config.sh
 
-# TypeScript changes (fast)
-bun test tests/cli/connect.test.ts       # Single test file
-bun test                                  # All TypeScript tests
+# One test scope (faster than running everything)
+bash tests/bash/run.sh unit          # ~ms — pure bash logic
+bash tests/bash/run.sh sandboxed     # ~15s — bwrap-sandboxed, real jq/yq
 
-# Integration tests (moderate)
-bash tests/integration/test-handoff.sh   # Bash integration
-bun test tests/integration/              # TypeScript integration
+# TypeScript unit tests (legacy tests, not yet rewritten; may have failures)
+bun test tests/cli/<file>.test.ts
 ```
 
 ### Before commit
 
 ```bash
-bash tests/bash/run.sh && bun test       # ~30s
+bash tests/bash/run.sh sandboxed     # ~15s, currently 5 intentional red tests
 ```
+
+Currently 10 individual red tests are intentional (they demonstrate open
+issues in `design/issues.md`, issues 7–9, 12 and 13 — see
+`test-config.sh`, `test-vllm-env.sh` and `test-monitor-head.sh` headers).
+Passing: lockfile (20/20), cache (5/5), vllm-env (3/4), config (1/6),
+monitor-head (1/5) — 30 of 40 individual assertions pass.
 
 ### Before release
 
 ```bash
-# Full test suite
-bash tests/bash/run.sh && bun test
+# All bash: both scopes pass, no red tests
+bash tests/bash/run.sh
 
 # E2E smoke test (requires HPC access)
 bash tests/e2e/smoke.sh 0.22.0

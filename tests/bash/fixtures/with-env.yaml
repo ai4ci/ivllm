@@ -1,0 +1,13 @@
+model: test-org/test-model-with-env
+tensor-parallel-size: 2
+max-model-len: 16384
+dtype: bfloat16
+idle-timeout: 15
+min-vllm-version: "0.19.1"
+env:
+  FOO: bar
+  BAZ: qux
+metadata:
+  version: "1"
+  author: test-suite
+  lifecycle: experimental

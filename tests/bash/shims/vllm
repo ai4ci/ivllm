@@ -1,39 +1,47 @@
 #!/bin/bash
+# Mock `vllm serve`. Starts a lightweight Python HTTP server responding to
+# /health, /v1/models, /v1/chat/completions, closely enough for
+# monitor_startup/monitor_head/tidy_up tests:
+#   - Configurable startup delay before /health responds (MOCK_VLLM_DELAY)
+#   - Configurable crash after N requests (MOCK_VLLM_CRASH_AFTER)
+#   - Responds to SIGUSR1/SIGUSR2 by exiting 200/201, matching tidy_up's
+#     exit-code contract in utils.sh (SLURM timeout / cancel-idle signals).
+#   - Access-log lines are timestamped to match IVLLM_TIME_FMT
+#     ("+%Y-%m-%d %H:%M"), so monitor_head's idle-timeout log scan can find
+#     them (see design/architecture.md ADR-105).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
+
+shim_log vllm "$*"
 
 delay="${MOCK_VLLM_DELAY:-0}"
 crash_after="${MOCK_VLLM_CRASH_AFTER:-0}"
 
-# Extract --model and --port from arguments
-local model="test-model"
-local port="8000"
+model="test-model"
+port="8000"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --model) model="$2"; shift 2 ;;
         --port) port="$2"; shift 2 ;;
-        --config) shift 2 ;;  # skip vllm config file
-        --host) shift 2 ;;    # skip host
-        --served-model-name) shift 2 ;;  # skip served model names
-        --) shift; break ;;
+        --config) shift 2 ;;
+        --host) shift 2 ;;
+        serve) shift ;;
         *) shift ;;
     esac
 done
 
-# Inject delay and crash config into the Python script
 exec python3 -c "
-import http.server, json, os, sys, atexit, signal
+import http.server, json, sys, atexit, signal, time
 from datetime import datetime
 
 delay = $delay
 crash_after = $crash_after
 request_count = 0
 
-# Handle signals from parent srun mock
 signal.signal(signal.SIGUSR1, lambda *_: sys.exit(200))
 signal.signal(signal.SIGUSR2, lambda *_: sys.exit(201))
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
-# Simulate startup delay
 if delay > 0:
-    import time
     time.sleep(delay)
 
 def handle_exit():
@@ -41,20 +49,23 @@ def handle_exit():
     sys.stderr.flush()
 atexit.register(handle_exit)
 
-class MockHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        global request_count
-        timestamp = datetime.now().strftime('%m-%d %H:%M:%S')
-        request_count += 1
+def access_log(path):
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    sys.stderr.write(f'[{ts}] INFO:     127.0.0.1:0 - \"{path}\" 200 OK\n')
+    sys.stderr.flush()
 
+class MockHandler(http.server.BaseHTTPRequestHandler):
+    def _maybe_crash(self):
+        global request_count
+        request_count += 1
         if crash_after > 0 and request_count > crash_after:
-            sys.stderr.write('Mock vLLM: crashing after $crash_after requests\n')
+            sys.stderr.write(f'Mock vLLM: crashing after {crash_after} requests\n')
             sys.stderr.flush()
             sys.exit(1)
 
-        sys.stderr.write(f'[{timestamp}] api call {self.path}\\n')
-        sys.stderr.flush()
-
+    def do_GET(self):
+        self._maybe_crash()
+        access_log(self.path)
         if self.path == '/health':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -71,18 +82,9 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
-        global request_count
-        timestamp = datetime.now().strftime('%m-%d %H:%M:%S')
-        request_count += 1
-
-        if crash_after > 0 and request_count > crash_after:
-            sys.stderr.write('Mock vLLM: crashing after $crash_after requests\\n')
-            sys.stderr.flush()
-            sys.exit(1)
-
+        self._maybe_crash()
+        access_log(self.path)
         if self.path == '/v1/chat/completions':
-            sys.stderr.write(f'[{timestamp}] api call /v1/chat/completions\\n')
-            sys.stderr.flush()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -93,7 +95,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
     def log_message(self, fmt, *args):
-        pass
+        pass  # access_log() handles our own timestamped logging above
 
 print(f'Mock vLLM listening on port $port, model=$model, delay={delay}s, crash_after={crash_after}', flush=True)
 try:

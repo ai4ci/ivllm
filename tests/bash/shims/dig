@@ -1,0 +1,8 @@
+#!/bin/bash
+# Mock dig — used as: dig +short "$IVLLM_HEAD_NODE"
+# Always prints a fixed fake IP (configurable via MOCK_DIG_IP).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
+
+shim_log dig "$*"
+echo "${MOCK_DIG_IP:-10.0.0.1}"
+exit 0

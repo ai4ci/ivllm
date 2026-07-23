@@ -1,0 +1,19 @@
+#!/bin/bash
+# Mock scontrol — only supports the one invocation this codebase uses:
+#   scontrol show hostnames "$SLURM_JOB_NODELIST"
+# Splits the given (already-expanded, comma/whitespace separated) nodelist
+# into one hostname per line. Does not implement real SLURM hostlist
+# compression syntax (e.g. "nid[001-004]") — test fixtures should provide
+# SLURM_JOB_NODELIST already expanded, e.g. "nid001,nid002".
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
+
+shim_log scontrol "$*"
+
+if [[ "${1:-}" == "show" && "${2:-}" == "hostnames" ]]; then
+    list="${3:-}"
+    echo "$list" | tr ',' '\n' | tr -s ' \t' '\n' | sed '/^$/d'
+    exit 0
+fi
+
+echo "[mock scontrol] unsupported invocation: $*" >&2
+exit 1

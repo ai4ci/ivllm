@@ -1,2 +1,41 @@
 #!/bin/bash
-# TODO: implement mock
+# Mock hf CLI (huggingface_hub). Supports the two invocations this codebase
+# uses:
+#   hf cache ls                — lists cached models (grep'd for
+#                                 "^model/${HF_MODEL}\b")
+#   hf download <model>         — downloads a model
+#
+# Configure via:
+#   MOCK_HF_CACHED_MODELS    space-separated model ids already "cached"
+#                             (default: none)
+#   MOCK_HF_DOWNLOAD_EXIT     exit code for `hf download` (default: 0)
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
+
+shim_log hf "$*"
+
+sub="${1:-}"
+shift || true
+
+case "$sub" in
+    cache)
+        # hf cache ls
+        for m in ${MOCK_HF_CACHED_MODELS:-}; do
+            echo "model/$m  (mock cached entry)"
+        done
+        exit 0
+        ;;
+    download)
+        model="${1:-}"
+        exit_code="${MOCK_HF_DOWNLOAD_EXIT:-0}"
+        if [[ "$exit_code" -eq 0 ]]; then
+            echo "[mock hf] downloaded $model"
+        else
+            echo "[mock hf] download failed for $model" >&2
+        fi
+        exit "$exit_code"
+        ;;
+    *)
+        echo "[mock hf] unsupported subcommand: $sub" >&2
+        exit 1
+        ;;
+esac

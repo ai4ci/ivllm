@@ -1,0 +1,8 @@
+model: test-org/test-model-multinode
+tensor-parallel-size: 4
+pipeline-parallel-size: 2
+data-parallel-size: 1
+max-model-len: 32768
+dtype: bfloat16
+idle-timeout: 30
+min-vllm-version: "0.19.1"

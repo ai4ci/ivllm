@@ -1,0 +1,23 @@
+#!/bin/bash
+# Mock squeue — used by is_cancellable() as:
+#   squeue -j "$id" -u "$(whoami)" -h -o "%i" | grep -q .
+#
+# Configure via: MOCK_SQUEUE_ACTIVE_JOBS (space-separated job ids considered
+# still present in the queue; default: none, i.e. every job looks finished)
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
+
+shim_log squeue "$*"
+
+job_id=""
+args=("$@")
+for i in "${!args[@]}"; do
+    if [[ "${args[$i]}" == "-j" ]]; then
+        job_id="${args[$((i + 1))]:-}"
+    fi
+done
+
+active=" ${MOCK_SQUEUE_ACTIVE_JOBS:-} "
+if [[ -n "$job_id" && "$active" == *" $job_id "* ]]; then
+    echo "$job_id"
+fi
+exit 0

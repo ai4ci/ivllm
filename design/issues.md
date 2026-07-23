@@ -252,4 +252,364 @@ async bootstrap(): Promise<void> {
     if (!this.bootstrapped) {
 ```
 
+---
+
+## Issues Discovered While Building the Bash Mock Test Environment
+
+The following were found while designing the bubblewrap sandbox and tracing
+real external-tool call semantics (real `yq 3.4.1` binary, as confirmed
+installed to match the HPC). Not yet fixed — flagged here per the "document
+verified issues" convention. These will surface as failing (red) tests once
+the sandbox/config tests are written, which is the correct TDD starting state.
+
+### Issue 7: `get_job_config_setting()` passes yq arguments in the wrong order (CRITICAL)
+
+**Location**: `src/engine/lib/utils.sh` — `get_job_config_setting()`  
+**Severity**: CRITICAL — every config value read returns empty  
+**Status**: Verified
+
+**Problem**:
+The HPC has **yq 3.4.1** (mikefarah/yq v3, confirmed against
+https://github.com/mikefarah/yq/releases/tag/3.4.1). Its `read`/`r` subcommand
+takes the file first, then the path expression:
+
+```
+Usage:
+  yq read [yaml_file] [path_expression] [flags]
+```
+
+But `get_job_config_setting()` calls it with the arguments reversed:
+
+```bash
+yq r "$2" "$file" 2>/dev/null || echo ""
+#    ^path  ^file   ← swapped
+```
+
+Verified directly:
+```bash
+$ yq r ".model" test.yaml   # wrong order (current code) → exit 1
+$ yq r test.yaml ".model"   # correct order → prints the value
+```
+
+Because the call is wrapped in `|| echo ""`, the failure is swallowed
+silently — every call to `get_job_config_setting` (model, idle-timeout,
+min-vllm-version, tensor/pipeline/data-parallel-size, etc.) always returns an
+empty string instead of the real value.
+
+**Fix**: swap the argument order to `yq r "$file" "$2"`.
+
+---
+
+### Issue 8: `resolve_stripped_job_config()` uses yq v4 jq-style syntax against yq v3 (CRITICAL)
+
+**Location**: `src/engine/lib/utils.sh` — `resolve_stripped_job_config()`  
+**Severity**: CRITICAL — vllm.yaml.clean is never generated  
+**Status**: Verified
+
+**Problem**:
+```bash
+yq 'del(.env, .nnodes, .min-vllm-version, .ivllm, .idle-timeout, .metadata)' "$file" > "$output_file"
+```
+
+This bare jq-filter-style invocation (`del(...)` piping) is yq **v4**
+syntax. yq v3.4.1 has no bare-filter mode and no multi-path `del`; it only
+has a `delete`/`d` subcommand taking exactly one path per invocation:
+
+```
+yq delete [yaml_file] [path_expression]
+```
+
+Verified directly — the v4-style call fails outright:
+```
+$ yq 'del(.env, .nnodes, .min-vllm-version, .ivllm, .idle-timeout, .metadata)' test.yaml
+Error: unknown command "del(...)" for "yq"
+```
+
+and even the single-path form only deletes the first path listed, silently
+ignoring the rest:
+```
+$ yq d test.yaml env nnodes min-vllm-version idle-timeout
+# only 'env' is removed; nnodes/min-vllm-version/idle-timeout remain
+```
+
+This breaks `vllm.yaml.clean`, which is passed directly to `vllm serve
+--config`, meaning `env`, `nnodes`, `min-vllm-version`, `ivllm`,
+`idle-timeout`, and `metadata` blocks are never stripped and would reach
+`vllm serve` as unrecognised keys.
+
+**Fix** (v3-compatible): chain single-path deletes through stdin, e.g.
+```bash
+yq d "$file" env | yq d - nnodes | yq d - min-vllm-version | yq d - idle-timeout | yq d - metadata | yq d - ivllm > "$output_file"
+```
+
+---
+
+### Issue 9: `get_job_config_exports()` uses yq v4 jq-style syntax against yq v3 (CRITICAL)
+
+**Location**: `src/engine/lib/utils.sh` — `get_job_config_exports()`  
+**Severity**: CRITICAL — `env:` block from vllm.yaml is never exported  
+**Status**: Verified
+
+**Problem**:
+```bash
+yq '( .env // {} ) | to_entries | .[] | "export " + .key + "=\"" + .value + "\""' "$file"
+```
+
+Same root cause as Issue 8 — `// {}`, `to_entries`, and filter piping are yq
+v4 syntax, unsupported by the installed yq v3.4.1:
+```
+$ yq '( .env // {} ) | to_entries | .[] | ...' test.yaml
+Error: unknown command "( .env // {} ) | to_entries | ..." for "yq"
+```
+
+This means any user-supplied `env:` block in `vllm.yaml` (used to pass
+custom environment variables into the SLURM job) is silently never applied.
+
+**Fix** (v3-compatible): use `-p pv` (path+value) read mode over `env.*` and
+build export lines in bash, e.g.
+```bash
+yq r -p pv "$file" 'env.*' 2>/dev/null | sed -E 's/^env\.([^ ]+) (.*)$/export \1="\2"/'
+```
+
+---
+
+### Issue 10: `ivllm-serve.sh` calls `ivllm-get-model.sh` without the required `-m` flag (CRITICAL)
+
+**Location**: `src/engine/ivllm-serve.sh` line 52  
+**Severity**: CRITICAL — model download is always skipped/broken  
+**Status**: Verified
+
+**Problem**:
+```bash
+(source $here/ivllm-get-model.sh "$model") || exit 1
+```
+
+`$model` is passed as a bare positional argument. But `ivllm-get-model.sh`
+only parses its model name via `getopts "m:t:l:h"` and the `-m` flag:
+
+```bash
+export HF_MODEL=""
+while getopts "m:t:l:h" opt; do
+    case $opt in
+        m) HF_MODEL="$OPTARG" ;;
+```
+
+Since `$model` (e.g. `Qwen/Qwen2.5-7B-Instruct`) does not start with `-`,
+`getopts` terminates immediately without consuming it, leaving
+`HF_MODEL=""`. The script then proceeds to check/download an **empty**
+model name against the HuggingFace cache.
+
+**Fix**:
+```bash
+(source $here/ivllm-get-model.sh -m "$model") || exit 1
+```
+
+---
+
+### Issue 11: `common-env.sh` references `$NVSHMEM_DIR` before it is defined (MEDIUM)
+
+**Location**: `src/engine/lib/common-env.sh` lines 58 and 67  
+**Severity**: MEDIUM — latent bug, currently masked because these scripts are sourced without `set -u`  
+**Status**: Verified
+
+**Problem**:
+```bash
+# line 58:
+export CMAKE_PREFIX_PATH="$NVSHMEM_DIR/lib/cmake:${CMAKE_PREFIX_PATH:-}"
+# ...
+# line 67:
+export NVSHMEM_DIR="$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nvshmem"
+```
+
+`$NVSHMEM_DIR` is read on line 58, nine lines before it is ever assigned on
+line 67. In the real system this is silently tolerated (bash treats an
+unset variable as empty when `set -u`/`nounset` is not active, so
+`CMAKE_PREFIX_PATH` ends up as `/lib/cmake:...` — a malformed, effectively
+unusable path, but not a crash). It was caught while building the bash
+sandbox test harness (`tests/bash/lib/sandbox.sh`), which runs test bodies
+under `set -uo pipefail` — sourcing `common-env.sh` there fails hard with
+`NVSHMEM_DIR: unbound variable`.
+
+**Fix**: move the `NVSHMEM_DIR` assignment (line 67) above its first use
+(line 58).
+
+**Note**: the sandboxed preamble tests
+(`tests/bash/sandboxed/test-vllm-env.sh`) deliberately run with `set +u`
+around the `source` calls to match the *actual* invocation context used by
+`run_head_vllm.sh`/`run_worker_vllm.sh` (which do not set `-u`), so this
+latent bug does not block those tests. It is recorded here rather than
+silently worked around.
+
+---
+
+### Issue 12: `resolve_nvhpc_root()` writes its error message to stdout, corrupting the captured value (HIGH)
+
+**Location**: `src/engine/lib/utils.sh` — `resolve_nvhpc_root()` line 89  
+**Severity**: HIGH — `NVHPC_ROOT`/`CUDA_HOME`/`PATH`/`LD_LIBRARY_PATH` become garbage instead of empty when the NVHPC SDK isn't installed  
+**Status**: Verified
+
+**Problem**:
+```bash
+resolve_nvhpc_root() {
+    local nvhpcDir=$(resolve_nvhpc_dir)
+    if [[ ! -d "$nvhpcDir/Linux_aarch64/26.3" ]]; then
+      echo "NVHPC SDK version 26.3 is not installed. please run ivllm setup."
+      return 1
+    fi
+    echo "$nvhpcDir/Linux_aarch64/26.3"
+}
+```
+
+The diagnostic message on line 89 is written with a plain `echo` (stdout),
+not `echo ... >&2` (stderr). `common-env.sh` calls this via command
+substitution:
+```bash
+export NVHPC_ROOT=$(resolve_nvhpc_root)
+```
+
+Command substitution captures **stdout only** — so when the SDK isn't
+installed, `NVHPC_ROOT` does not end up empty; it ends up literally
+containing the sentence `"NVHPC SDK version 26.3 is not installed. please
+run ivllm setup."`. Every downstream path built from it is then silently
+corrupted:
+```bash
+export CUDA_HOME="$NVHPC_ROOT/cuda/$CUDA_VERSION"
+# → "NVHPC SDK version 26.3 is not installed. please run ivllm setup./cuda/12.9"
+export PATH="$CUDA_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="...:$NVHPC_ROOT/cuda/$CUDA_VERSION/compat:..."
+```
+
+Because none of these library files use `set -e` (by design — see
+`design/coding-standards.md`), nothing stops the script here; it proceeds
+with a thoroughly broken environment instead of failing fast or leaving
+variables genuinely empty.
+
+**Fix**: redirect the diagnostic to stderr:
+```bash
+echo "NVHPC SDK version 26.3 is not installed. please run ivllm setup." >&2
+```
+
+**Verified via the sandboxed test suite** —
+`tests/bash/sandboxed/test-vllm-env.sh`'s
+`common_env_missing_nvhpc_falls_through_empty` test currently fails,
+showing `NVHPC_ROOT` containing the error sentence instead of being empty.
+This is an intentional red test (see design/issues.md conventions / AGENTS.md
+TDD requirement) left failing until the fix above lands.
+
+---
+
+### Issue 13: `get_job_status_setting()` called without the leading `.` in `tidy_up`, `monitor_startup`, `monitor_head` (CRITICAL — most severe finding)
+
+**Location**: `src/engine/lib/utils.sh` — lines 469, 470, 555, 556, 617, 672  
+**Severity**: CRITICAL — the entire monitor triad and shutdown trap are non-functional as written  
+**Status**: Verified
+
+**Problem**:
+`get_job_status_setting()` is documented as requiring a leading `.` (it is a
+jq filter):
+```bash
+# Usage: local value=$(get_job_status_setting "$job" ".fieldName")
+```
+and most call sites follow this (`.status` at lines 289 and 789). But
+several critical call sites omit the leading dot:
+
+| Line | Call | Function |
+|------|------|----------|
+| 469 | `get_job_status_setting "$job" "vllmPid"` | `tidy_up()` |
+| 470 | `get_job_status_setting "$job" "slurmJobId"` | `tidy_up()` |
+| 555 | `get_job_status_setting "$job" "serverPort"` | `monitor_startup()` |
+| 556 | `get_job_status_setting "$job" "model"` | `monitor_startup()` |
+| 617 | `get_job_status_setting "$job" "status"` | `monitor_startup()` (error branch) |
+| 642 | `get_job_status_setting "$job" "idleTimeout"` | `monitor_head()` |
+| 672 | `get_job_status_setting "$job" "vllmPid"` | `monitor_head()` |
+
+A bare identifier like `vllmPid` is not valid jq syntax on its own — jq
+tries to interpret it as a function call:
+```
+$ echo '{"vllmPid": 12345}' | jq -r "vllmPid"
+jq: error: vllmPid/0 is not defined at <top-level>, line 1:
+vllmPid
+jq: 1 compile error
+
+$ echo '{"vllmPid": 12345}' | jq -r ".vllmPid"
+12345
+```
+
+Because `get_job_status_setting` wraps the call in `|| echo ""`, this jq
+compile error is silently swallowed and the function returns an **empty
+string** for every one of these fields, every time.
+
+**Impact** (each confirmed empirically via the sandboxed test suite —
+`tests/bash/sandboxed/test-monitor-head.sh`):
+
+- **`monitor_head()`**: `vllm_pid` is always `""`. The very first loop
+  iteration hits `kill -0 ""` (always fails/false), so monitor_head
+  **always immediately reports "lost contact with vLLM process" and
+  shuts the job down**, regardless of whether vLLM is actually running.
+  The real idle-timeout and cancel-detection logic further down the loop
+  is never reached in practice because this check fires first, every
+  cycle. `idle_timeout` is also always `""`, which would separately break
+  the idle-timeout branch's `[ "$idle_timeout" -ge 0 ]` check even if
+  execution reached it.
+- **`monitor_startup()`**: `server_port` and `model` are always `""`, so
+  the `/health` and warmup `/v1/chat/completions` requests target a
+  malformed URL (`http://localhost:/health`, no port) and an empty model
+  name — startup monitoring cannot work.
+- **`tidy_up()`**: `pid` and `slurm_job_id` are always `""`, so the exit
+  trap can never `kill` the real vLLM process or `scancel` the real SLURM
+  job — cleanup silently does nothing on these two fronts.
+
+**This was found directly through the new bash sandbox test suite** —
+writing a real test for `monitor_head` (background a real "vLLM pid"
+stand-in process, run `monitor_head` in the background, kill/cancel/wait on
+it for real) surfaced this immediately: 4 of 5
+`tests/bash/sandboxed/test-monitor-head.sh` tests currently fail with the
+same symptom ("vLLM process () has gone away" fires on the very first
+check, before the test's actual scenario — cancel, idle timeout, active
+traffic — ever gets evaluated). This is exactly the class of bug the
+design's mock-harness-based (bash function override) approach could not
+have caught, since it never exercised the real jq compile-error path.
+
+**Fix**: add the missing leading `.` at all six call sites, e.g.:
+```bash
+pid=$(get_job_status_setting "$job" ".vllmPid")
+slurm_job_id=$(get_job_status_setting "$job" ".slurmJobId")
+...
+server_port=$(get_job_status_setting "$job" ".serverPort")
+model=$(get_job_status_setting "$job" ".model")
+...
+idle_timeout=$(get_job_status_setting "$job" ".idleTimeout")
+...
+vllm_pid=$(get_job_status_setting "$job" ".vllmPid")
+```
+
+**Left open intentionally** (red tests, per the project's TDD requirement)
+so the fix can be made and verified to turn these tests green.
+
+---
+
+## Summary Table (updated)
+
+| Issue | File | Line | Severity | Type | Status |
+|-------|------|------|----------|------|--------|
+| 1. Commander.js param mismatch | src/index.ts | multiple | CRITICAL | Type mismatch | Closed |
+| 2. Missing awaits (cmd handlers) | src/index.ts | 111, 129 | HIGH | Async bug | Closed |
+| 3. Wrong setup option flag | src/backends/IsambardBareMetalBackend.ts | 49 | HIGH | Option mismatch | Closed |
+| 4. jq typo in lockfile reader | src/engine/lib/utils.sh | 192 | CRITICAL | Syntax error | Closed |
+| 5. Missing awaits (bootstrap) | src/backends/IsambardBareMetalBackend.ts | 47, 64, 101, 119, 148, 180 | HIGH | Async bug | Closed |
+| 6. Missing await (checkSSH) | src/backends/IsambardBareMetalBackend.ts | 33 | HIGH | Async bug | Closed |
+| 7. yq arg order reversed | src/engine/lib/utils.sh | `get_job_config_setting` | CRITICAL | Argument order | Verified |
+| 8. yq v4 syntax vs v3 binary (del) | src/engine/lib/utils.sh | `resolve_stripped_job_config` | CRITICAL | Version incompatibility | Verified |
+| 9. yq v4 syntax vs v3 binary (to_entries) | src/engine/lib/utils.sh | `get_job_config_exports` | CRITICAL | Version incompatibility | Verified |
+| 10. Missing `-m` flag calling ivllm-get-model.sh | src/engine/ivllm-serve.sh | 52 | CRITICAL | Missing CLI flag | Verified |
+| 11. `$NVSHMEM_DIR` used before defined | src/engine/lib/common-env.sh | 58 (used), 67 (defined) | MEDIUM | Ordering bug | Verified |
+| 12. `resolve_nvhpc_root` error goes to stdout | src/engine/lib/utils.sh | 89 | HIGH | Wrong stream | Verified |
+| 13. Missing leading `.` in jq filter (tidy_up/monitor_startup/monitor_head) | src/engine/lib/utils.sh | 469,470,555,556,617,642,672 | CRITICAL | Argument/syntax bug | Verified |
+
+Issues 7–13 were all discovered while building the bash sandbox test
+harness and writing real tests against it (see design/testing.md). They are
+left **open** intentionally: the harness is designed so failing (red) tests
+demonstrate each bug against the real `yq`/`jq` binaries and real
+subprocess/signal behaviour, to be fixed as a dedicated follow-up task.
+
 

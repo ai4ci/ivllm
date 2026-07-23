@@ -1,0 +1,11 @@
+#!/bin/bash
+# Mock gcc — just needs to exist and be resolvable via `which gcc` so
+# common-env.sh's `export CC=$(which gcc)` gets a non-empty path.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
+
+shim_log gcc "$*"
+
+if [[ "${1:-}" == "--version" ]]; then
+    echo "mock-gcc (bash test shim) 0.0.0"
+fi
+exit 0

@@ -1,0 +1,10 @@
+#!/bin/bash
+# Mock `module` (Lmod / environment-modules). No-ops — our tests do not
+# depend on module's real side effects (PATH/LD_LIBRARY_PATH mutation);
+# NVHPC_ROOT/CUDA_HOME/CC/CXX are resolved independently in common-env.sh via
+# resolve_nvhpc_root() and `which gcc`/`which g++` (see the gcc/g++ shims),
+# so a logging no-op is sufficient fidelity for what we currently test.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
+
+shim_log module "$*"
+exit 0

@@ -1,0 +1,11 @@
+#!/bin/bash
+# Mock g++ — just needs to exist and be resolvable via `which g++` so
+# common-env.sh's `export CXX=$(which g++)` gets a non-empty path.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
+
+shim_log 'g++' "$*"
+
+if [[ "${1:-}" == "--version" ]]; then
+    echo "mock-g++ (bash test shim) 0.0.0"
+fi
+exit 0

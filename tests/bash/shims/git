@@ -1,0 +1,11 @@
+#!/bin/bash
+# Mock git — real clones are out of scope for sandboxed tests.
+# slurm-vllm-setup.sh clones/builds DeepGEMM and DeepEP from source; that
+# heavyweight, real-network build step is not exercised by the bash test
+# suite (see design/testing.md). This shim fails loudly rather than
+# silently no-oping, so an unexpected call surfaces as a clear test failure.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
+
+shim_log git "$*"
+echo "[mock git] real git operations are out of scope for sandboxed tests — refusing: git $*" >&2
+exit 99
