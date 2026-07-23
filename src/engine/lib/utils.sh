@@ -217,12 +217,15 @@ resolve_job_config() {
     resolve_job_dir "$1" "vllm.yaml"
 }
 
-# Strip specific top-level blocks from job yaml config and save the result as "vllm.yaml.clean"
-# TODO: rename this
+# Strip non-vllm keys from a job's vllm.yaml config and write a clean copy.
+# Args: $1 — job name (or path to config file).
+# Strips top-level keys: env, nnodes, min-vllm-version, ivllm, idle-timeout, metadata.
+# Output: writes $config.clean (e.g. vllm.yaml.clean).
+# Calls resolve_job_config() internally to find the config file.
+# Returns: path to the cleaned config file via stdout.
+# Usage: resolve_stripped_job_config "$job"
 resolve_stripped_job_config() {
-    # Strip env/metadata blocks from vllm.yaml and write clean version.
-    # Removes keys not understood by vllm serve.
-    # Usage: resolve_stripped_job_config "$input_yaml" "$output_yaml"
+    # Strip non-vllm keys from a job's vllm.yaml config and write a clean copy.
     local file=$(resolve_job_config "$1")
     local output_file="$file.clean"
     # v3-compatible: chain single-path deletes (v3's `delete`/`d` subcommand
