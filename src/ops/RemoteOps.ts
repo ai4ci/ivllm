@@ -7,21 +7,18 @@ import type {
 } from '../types';
 
 /**
- * Interface for executing remote operations on the Isambard HPC login node.
+ * Abstract interface for executing remote operations on the HPC login node.
  *
- * Implemented by {@link makeRemoteOps} with two modes:
- *
- * - **Real mode**: Actual SSH/SCP execution
- * - **Dry-run mode**: Mock implementations for E2E testing
+ * Implemented by {@link SshRemoteOps} for the Isambard backend.
+ * Provides SSH exec, SCP transfer, tunnel spawning, and sync command support.
  *
  * | Method | Description |
  * |--------|-------------|
- * | `runRemote` | Execute a command on the login node |
- * | `streamSrun` | Stream an `srun` command with TTY output |
+ * | `runRemote` | Execute a command on the login node via SSH |
+ * | `runRemoteSync` | Execute a command and stream output |
  * | `copyFile` | SCP a file to the login node |
- * | `tailRemoteLog` | Tail a remote log file via SSH |
+ * | `copyDirectory` | Rsync a directory up or down |
  * | `spawnTunnel` | Create an SSH port-forwarding tunnel |
- * | `matchVllmVersion` | Find best installed vLLM version |
  * | `checkSSH` | Verify SSH connectivity to the login node |
  */
 export abstract class RemoteOps {
