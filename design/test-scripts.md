@@ -230,14 +230,13 @@ shims that record calls to `/work/calls.log` but do not execute the wrapped
 commands. The test assertions check the calls.log for correct arguments.
 
 | Test | What it does | What it verifies |
-|------|-------------|-----------------|
-| `login_serves_with_minimal_config` | `ivllm-serve.sh job1 model1` with minimal.yaml | sbatch called with correct job name, partition, model, config path |
-| `login_serves_with_explicit_config` | `ivllm-serve.sh job1 model1 -c with-env.yaml` | Config path passed to sbatch |
-| `login_serves_multi_node` | `ivllm-serve.sh job1 model1 -p 2` | sbatch with nnodes=2, partition=gpu |
-| `login_cancels_job` | `ivllm-cancel.sh job1` | scancel called with correct job id from lockfile |
-| `login_cancels_missing_job` | `ivllm-cancel.sh nonexistent` | Fails with error, scancel NOT called |
-| `login_shows_status` | `ivllm-status.sh job1` | squeue called with correct job id |
-| `login_setup_runs` | `ivllm-setup.sh model1` | srun called with setup script, model flag |
+|------|-------------|------------------|
+| `login_serves_with_minimal_config` | `ivllm-serve.sh -j serve-job` with a stopped lockfile | sbatch called with correct job name, partition, gpus, mem |
+| `login_cancels_existing` | `ivllm-cancel.sh -j cancel-job` (non-force) | request_cancel sets status to cancel, scancel NOT called |
+| `login_cancels_missing_job` | `ivllm-cancel.sh -j nonexistent` | Fails with error, scancel NOT called |
+| `login_shows_status` | `ivllm-status.sh -j status-job` | Returns JSON with correct jobName |
+| `login_setup_runs` | `ivllm-setup.sh -v 0.8.0` | srun called with setup script, version flag |
+| `login_force_cancel` | `ivllm-cancel.sh -j fcancel-job -f` | scancel called with correct slurmJobId |
 
 **How it works:** Each test runs inside a bwrap `login` profile sandbox
 (no SLURM_* env vars). The login wrapper scripts execute end-to-end, calling
