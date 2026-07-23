@@ -283,6 +283,13 @@ SCRIPT
     else
         rm -rf "$work_dir"
     fi
+
+    # Allow the kernel to release namespaces created by the previous bwrap
+    # instance (--unshare-net, --unshare-pid, --new-session).  Without this
+    # delay, running > ~7 sandboxed tests in quick succession can hit kernel
+    # namespace allocation limits (ENOSPC / "setenv failed"), especially in
+    # unprivileged sandbox environments.
+    sleep 0.2
 }
 
 # Assert a shim was invoked with a matching substring, reading calls.log from
