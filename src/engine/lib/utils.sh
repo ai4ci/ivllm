@@ -110,11 +110,13 @@ resolve_nvhpc_root() {
     echo "$nvhpcDir/Linux_aarch64/26.3"
 }
 
-# creates directories if not present
-# Usage: local localdir=$(resolve_vllm_dir)
+# Create the vLLM virtual environment base directory with group-write permissions.
+# Creates $IVLLM_PROJECTDIR/engine/vllm if it doesn't exist.
+# Returns: path to the vLLM directory via stdout.
+# Usage: local dir=$(resolve_vllm_dir)
 resolve_vllm_dir() {
-    # Resolve the vLLM virtual environment directory.
-    # Usage: local dir=$(resolve_vllm_dir "$version")
+    # Create the vLLM virtual environment base directory with group-write permissions.
+    # Returns: path to the vLLM directory via stdout.
     mkdir -p "$IVLLM_PROJECTDIR/engine/vllm"
     chmod -R g+rw "$IVLLM_PROJECTDIR/engine/vllm"
     echo "$IVLLM_PROJECTDIR/engine/vllm"
