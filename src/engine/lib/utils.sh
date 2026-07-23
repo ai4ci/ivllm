@@ -581,11 +581,15 @@ is_cancellable() {
 #   201 = SIGUSR2 (user cancel or idle timeout)
 #   0   = normal exit
 #   other = crash (check status to distinguish startup vs runtime)
+# Args: $1 — job name; $2 — exit code from trap.
+# 4-phase sequence: (1) kill vLLM (SIGTERM → wait 2s → SIGKILL if alive),
+#   (2) update lockfile with status/reason based on exit code,
+#   (3) scancel the SLURM job,
+#   (4) return 0.
+# Called automatically by setup_traps for EXIT, SIGUSR1, SIGUSR2.
 # Usage: trap 'tidy_up "$job" $?' EXIT
 tidy_up() {
-    # Exit trap handler: kill vLLM, update lockfile, scancel job.
-    # Called on EXIT, SIGUSR1 (SLURM timeout), SIGUSR2 (cancel/idle).
-    # Usage: called automatically by setup_traps EXIT handler
+    # Graceful shutdown exit trap: kill vLLM, update lockfile, scancel job.
     local job="$1"
     local exit_code="$2"
     local pid
