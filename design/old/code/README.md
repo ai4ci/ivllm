@@ -14,7 +14,7 @@ git diff v2-final  # all changes since checkpoint
 
 | File | v2 purpose | v3 fate |
 |------|-----------|---------|
-| `inference.ts` | 1,176-line bash template generator | Replaced by `lib/utils.sh` + `lib/preamble.sh` |
+| `inference.ts` | 1,176-line bash template generator | Replaced by `lib/utils.sh` + `lib/vllm-env.sh` |
 | `session-helper.ts` | Session lifecycle pipeline | Logic distributed to `connect.ts` + bash framework |
 | `monitors.ts` | LOCAL-side polling + heartbeat | Replaced by bash `monitor_*` functions |
 | `start.ts` | `ivllm start` command | Replaced by `connect.ts` |

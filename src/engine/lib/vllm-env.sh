@@ -11,8 +11,7 @@
 #   - Triton/FlashInfer/DeepGEMM compilation flags
 #   - vLLM runtime overrides
 
-source "./utils.sh"
-source "./cuda.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 
 # ── Vllm native flags:
 # ─────────────────────────────────
@@ -21,7 +20,7 @@ export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 # ── vLLM logging config
 # ──────────────────────────────────────────────
 # N.B. this is needed to ensure that vllm logs time stamps for events so that we can query for inactivity.
-export VLLM_LOGGING_CONFIG_PATH="$(resolve_vllm_dir)/vllm_logs.json}"
+export VLLM_LOGGING_CONFIG_PATH="$(dirname "${BASH_SOURCE[0]}")/vllm_logs.json"
 
 # ── Network interface selection
 # ──────────────────────────────────────

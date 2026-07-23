@@ -10,7 +10,7 @@ working, auto-shutting-down, multi-user vLLM endpoint.
 
 | Phase | Status | Notes |
 |-------|--------|-------|
-| M1 Bash framework | ✅ Done | utils.sh, preamble.sh, 27 bash tests |
+| M1 Bash framework | ✅ Done | utils.sh, vllm-env.sh, 27 bash tests |
 | M2 New CLI commands | ✅ Done | connect/cancel scaffold, v3 types, paths, metadata |
 | M3 Step 0 (mock refactor) | ✅ Done | OpsMode, MockRemoteFs |
 | M3 Step 1 (SSH lockfile) | ✅ Done | Real SSH: pre-flight, lockfile creation, config upload |
@@ -47,7 +47,7 @@ bash framework, upload it, and submit it via sbatch.
 #SBATCH --time={{TIME_LIMIT}}
 #SBATCH --output={{LOG_FILE}}
 
-source {{LIB_DIR}}/preamble.sh
+source {{LIB_DIR}}/vllm-env.sh
 source {{LIB_DIR}}/utils.sh
 
 JOB_NAME="{{JOB_NAME}}"
@@ -93,7 +93,7 @@ const sbatchResult = await ops.runRemote(`sbatch ${v3paths.scriptFile}`);
 **Test criteria**:
 - [ ] Template renders without errors (simple string substitution)
 - [ ] Generated script passes `bash -n` (syntax check)
-- [ ] Generated script sources preamble.sh and utils.sh
+- [ ] Generated script sources vllm-env.sh and utils.sh
 - [ ] `ivllm connect --dry-run` prints the generated script
 - [ ] Committed
 
@@ -244,7 +244,7 @@ it needs to be wired up with the `vllm_logs.json` config and the
 `VLLM_LOGGING_CONFIG_PATH` env var.
 
 **Files to modify**:
-- `src/templates/lib/preamble.sh` — Already sets `VLLM_LOGGING_CONFIG_PATH`
+- `src/templates/lib/vllm-env.sh` — Already sets `VLLM_LOGGING_CONFIG_PATH`
 - `src/templates/lib/utils.sh` — `monitor_head` already has idle timeout logic
 - `src/commands/connect.ts` — Pass `idle-timeout` from config into lockfile
 
@@ -270,7 +270,7 @@ Ensure multiple project members can share running jobs. Fix permissions,
 add diagnostics, update documentation.
 
 **Files to modify**:
-- `src/templates/lib/preamble.sh` — Add `umask 0002`
+- `src/templates/lib/vllm-env.sh` — Add `umask 0002`
 - `src/templates/setup.ts` — Ensure group-writable engine directory
 - Various — Permissions audit
 
@@ -319,8 +319,8 @@ Remove remaining v2 references, update README, bump version.
 | 2 | Monitor + tunnel | — | `connect.ts` | Medium |
 | 3 | Real cancel (SSH) | — | `cancel.ts` | Low |
 | 4 | Detach mode | — | `connect.ts` | Low |
-| 5 | Idle timeout | — | `preamble.sh`, `connect.ts` | Low |
-| 6 | Multi-user | — | `preamble.sh`, `setup.ts` | Low |
+| 5 | Idle timeout | — | `vllm-env.sh`, `connect.ts` | Low |
+| 6 | Multi-user | — | `vllm-env.sh`, `setup.ts` | Low |
 | 7 | Final cleanup | — | Various | Low |
 
 ### Running tests

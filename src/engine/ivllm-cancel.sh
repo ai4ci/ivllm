@@ -1,0 +1,77 @@
+#!/bin/bash
+
+ivllm_cancel_usage() {
+    echo "Usage: $0 [-j job] [-f]"
+    echo ""
+    echo "Options:"
+    echo "  -j job      The name of the job to start."
+    echo "  -f          Force removal of lockfile and scancel of job."
+    echo "  -h          Show this help message"
+    exit 1
+}
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+source "$here/lib/utils.sh"
+
+export IVLLM_JOB=""
+export IVLLM_FORCE=""
+
+while getopts "j:fh" opt; do
+    case $opt in
+        j) IVLLM_JOB="$OPTARG" ;;
+        f) IVLLM_FORCE=true ;;
+        h) ivllm_cancel_usage ;;
+        \?) echo "Error: Invalid option -$OPTARG" >&2; ivllm_cancel_usage ;;
+        :)  echo "Error: Option -$OPTARG requires an argument" >&2; ivllm_cancel_usage ;;
+    esac
+done
+
+lockfile=$(resolve_job_status "$IVLLM_JOB")
+if [[ -f $lockfile ]]; then
+
+    slurmJobId=$(get_job_status_setting "$IVLLM_JOB" ".slurmJobId")
+
+    if is_status "$IVLLM_JOB" "failed"; then
+        echo "[shutdown] cleaning up failed job $IVLLM_JOB"
+        scancel "$slurmJobId" || echo "WARNING: cancel slurm job: $slurmJobId" >&2
+        rm -f "$lockfile"
+        exit 0
+    elif is_status "$IVLLM_JOB" "stopped"; then
+        echo "[shutdown] cleaning up stopped job $IVLLM_JOB"
+        scancel "$slurmJobId" || echo "WARNING: failed to force cancel slurm job: $slurmJobId" >&2
+        rm -f "$lockfile"
+        exit 0
+    else
+
+
+        owner=$(get_job_status_setting "$IVLLM_JOB" ".user")
+        status=$(get_job_status_setting "$IVLLM_JOB" ".status")
+
+        if [[ -z $IVLLM_FORCE ]]; then
+
+            echo "[shutdown] shutting down job $IVLLM_JOB with status: $status"
+            echo "[shutdown] requesting automatic cancel for $IVLLM_JOB"
+            request_cancel "$IVLLM_JOB"
+
+        elif [[ $owner != $(whoami) ]]; then
+
+            echo "[shutdown] not possible to force cancel job owned by $owner: $IVLLM_JOB with status $status" >&2
+            echo "[shutdown] requesting automatic cancel for $IVLLM_JOB"
+            request_cancel "$IVLLM_JOB"
+
+        else
+
+            echo "[shutdown] force cancel job: $IVLLM_JOB with status $status"
+            scancel "$slurmJobId" || echo "ERROR: failed to force cancel slurm job: $slurmJobId" >&2
+            rm -f "$lockfile"
+
+        fi
+
+    fi
+else
+    echo "[shutdown] no job $job to cancel"
+    exit 1
+fi
+
+

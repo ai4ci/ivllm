@@ -232,11 +232,11 @@ the mock harness (`tests/bash/lib/test-utils.sh`) which provides:
 | `test_exit_tidy_up` | vLLM PID killed, scancel called | Process is killed, slurm cancelled |
 | `test_exit_scancel_after_kill` | tidy_up kills vLLM, then scancel | Both happen in order |
 
-#### Environment preamble (`lib/preamble.sh`)
+#### Environment preamble (`lib/vllm-env.sh`)
 
 | Test | Scenario | Expected |
 |------|----------|----------|
-| `test_preamble_sources` | Source preamble.sh | No errors, env vars set |
+| `test_preamble_sources` | Source vllm-env.sh | No errors, env vars set |
 | `test_preamble_nvhpc_root` | NVHPC_ROOT correctly set | Points to existing directory |
 | `test_preamble_cuda_home` | CUDA_HOME correctly set | Contains `cuda/12.9/` |
 | `test_preamble_path` | PATH includes CUDA bin | `which nvcc` works after source |
@@ -520,7 +520,7 @@ Focus: Unit tests for every bash function.
 | Monitor head | 9 | `bash tests/bash/test-monitor-head.sh` |
 | Monitor worker | 6 | `bash tests/bash/test-monitor-worker.sh` |
 | Exit trap / signals | 6 | `bash tests/bash/test-shutdown.sh` |
-| Environment preamble | 6 | `bash tests/bash/test-preamble.sh` |
+| Environment preamble | 6 | `bash tests/bash/test-vllm-env.sh` |
 | **Total** | **45** | `bash tests/bash/run.sh` |
 
 **Success criteria**: `bash tests/bash/run.sh` exits 0.

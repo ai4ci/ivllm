@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source ./utils.sh
+source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 
 IVLLM_JOB=${1?must set job name}
 IVLLM_HEAD_NODE_IP=${2?must set head node}
@@ -16,8 +16,9 @@ model=$(get_job_config_setting "$IVLLM_JOB" ".model")
 serverPort=$(get_job_status_setting "$IVLLM_JOB" ".serverPort")
 
 source "$vllmVersionDir/bin/activate"
-source ./common-env.sh
-source ./vllm-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/common-env.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/vllm-env.sh"
+
 # Evaluate env blocks in yaml file last to override defaults.
 eval "$envExports"
 

@@ -7,7 +7,7 @@
 
 [[ -v IVLLM_CUDA ]] && return
 export IVLLM_CUDA=
-source "./utils.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 
 # ── Module setup ──────────────────────────────────────────────────────
 module purge

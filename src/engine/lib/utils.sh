@@ -10,7 +10,7 @@
 # the caller controls error handling.
 #
 # Required environment variables:
-#   $PROJECTDIR    — Root of the shared project space
+#   $IVLLM_PROJECTDIR    — Root of the shared project space
 #
 # Optional environment variables:
 #   IVLLM_TIME_FMT         — Date format for log timestamp matching (default: +%Y-%m-%d %H:%M)
@@ -24,8 +24,8 @@
 [[ -v IVLLM_UTILS ]] && return
 export IVLLM_UTILS=
 
-if [[ -z ${PROJECTDIR:-} ]]; then
-    echo "CRITICAL ERROR: \$PROJECTDIR is undefined"
+if [[ -z ${IVLLM_PROJECTDIR:-} ]]; then
+    echo "CRITICAL ERROR: \$IVLLM_PROJECTDIR is undefined"
     exit 1
 fi
 
@@ -63,21 +63,26 @@ resolve_localdir() {
 }
 
 # exports $HF_HOME
+# creates directories is they don't exist
 # Usage: local modeldir=$(resolve_model_dir)
 resolve_model_dir() {
-    mkdir -p "$PROJECTDIR/model/hf"
-    export HF_HOME="$PROJECTDIR/model/hf"
-    mkdir -p "$PROJECTDIR/model/venv"
-    chmod -R g+rw "$PROJECTDIR/model"
-    echo "$PROJECTDIR/model"
+    mkdir -p "$IVLLM_PROJECTDIR/model/hf"
+    export HF_HOME="$IVLLM_PROJECTDIR/model/hf"
+    mkdir -p "$IVLLM_PROJECTDIR/model/venv"
+    chmod -R g+rw "$IVLLM_PROJECTDIR/model"
+    echo "$IVLLM_PROJECTDIR/model"
 }
 
+# creates directories is they don't exist
 resolve_nvhpc_dir() {
-    mkdir -p "$PROJECTDIR/engine/nvhpc"
-    chmod -R g+rw "$PROJECTDIR/engine/nvhpc"
-    echo "$PROJECTDIR/engine/nvhpc"
+    mkdir -p "$IVLLM_PROJECTDIR/engine/nvhpc"
+    chmod -R g+rw "$IVLLM_PROJECTDIR/engine/nvhpc"
+    echo "$IVLLM_PROJECTDIR/engine/nvhpc"
 }
 
+# checks if contents present
+# exists with status 1 if not present
+# TODO: rename
 resolve_nvhpc_root() {
     local nvhpcDir=$(resolve_nvhpc_dir)
     if [[ ! -d "$nvhpcDir/Linux_aarch64/26.3" ]]; then
@@ -87,13 +92,15 @@ resolve_nvhpc_root() {
     echo "$nvhpcDir/Linux_aarch64/26.3"
 }
 
+# creates directories if not present
 # Usage: local localdir=$(resolve_vllm_dir)
 resolve_vllm_dir() {
-    mkdir -p "$PROJECTDIR/engine/vllm"
-    chmod -R g+rw "$PROJECTDIR/engine/vllm"
-    echo "$PROJECTDIR/engine/vllm"
+    mkdir -p "$IVLLM_PROJECTDIR/engine/vllm"
+    chmod -R g+rw "$IVLLM_PROJECTDIR/engine/vllm"
+    echo "$IVLLM_PROJECTDIR/engine/vllm"
 }
 
+# creates directories if not present
 # Usage: local vllmVersionDir=$(resolve_vllm_version_dir "0.19.1")
 resolve_vllm_version_dir() {
     local version="${1:-}"
@@ -103,14 +110,17 @@ resolve_vllm_version_dir() {
     echo "$vllm_dir/$version"
 }
 
+# creates directories if not present
 # Usage: local jobdir=$(resolve_job_root_dir)
 resolve_job_root_dir() {
-    mkdir -p "$PROJECTDIR/engine/jobs"
-    chmod -R g+rw "$PROJECTDIR/engine/jobs"
-    echo "$PROJECTDIR/engine/jobs"
+    mkdir -p "$IVLLM_PROJECTDIR/engine/jobs"
+    chmod -R g+rw "$IVLLM_PROJECTDIR/engine/jobs"
+    echo "$IVLLM_PROJECTDIR/engine/jobs"
 }
 
-# Resolve the path to a file in a job's directory.
+# creates directories if not present
+# Resolve the path to a file in a job's directory or to the directory itself.
+# Does not check file exists.
 # Usage: local path=$(resolve_job_dir "$job" "filename")
 resolve_job_dir() {
     local job="$1"
@@ -130,45 +140,59 @@ resolve_job_dir() {
 # This must be a user specific location as caches cannot be shared
 # between users due to hard coded paths in cache files and subsequent permissions
 # issues. We'll go with $HOME/.cache/ivllm/<job>/jit-cache.tar.gz
+# creates the directory if it does not exist
+# does not check the file exists.
 resolve_job_jit_cache() {
+    mkdir -p "$HOME/.cache/ivllm/$1/"
     echo "$HOME/.cache/ivllm/$1/jit-cache.tar.gz"
 }
 
 # Resolve the path to a job's lockfile (status.json).
+# does not check the file exists
 # can glob for job: resolve_job_status '*'
 resolve_job_status() {
     resolve_job_dir "$1" "status.json"
 }
 
 # Resolve the path to a job's log file (per-node).
+# does not check the file exists
 resolve_job_log() {
     local node="${SLURM_NODEID:-0}"
     resolve_job_dir "$1" "vllm.$node.log"
 }
 
-# Resolve the path to a job's log file (per-node).
+# Resolve the path to a job's yaml config file.
+# does not check the file exists
 resolve_job_config() {
     resolve_job_dir "$1" "vllm.yaml"
 }
 
-# Function 2: Strip specific top-level blocks and save the result
+# Strip specific top-level blocks from job yaml config and save the result as "vllm.yaml.clean"
+# TODO: rename this
 resolve_stripped_job_config() {
     local file=$(resolve_job_config "$1")
     local output_file="$file.clean"
     # Deletes the specific blocks cleanly while maintaining valid YAML
-    yq 'del(.env, .min-vllm-version, .ivllm, .idle-timeout)' "$file" > "$output_file"
+    yq 'del(.env, .nnodes, .min-vllm-version, .ivllm, .idle-timeout, .metadata)' "$file" > "$output_file"
     echo "$output_file"
 }
 
 # Read a field from a job's lockfile using jq.
 # must include the leading .
 # Usage: local value=$(get_job_status_setting "$job" ".fieldName")
+# throws error if the lockfile is not there.
+# returns empty value is the lockfile is there but the value is missing.
 get_job_status_setting() {
     local lockfile
     lockfile=$(resolve_job_status "$1")
+    if [[ ! -f $lockfile ]]; then
+        echo "ERROR: no status file found for job $job" >&2
+        exit 1
+    fi
     jq r "$2" "$lockfile" 2>/dev/null || echo ""
 }
 
+# Given a time input returns the maximum between the input and 08:00:00 as a time string.
 get_max_job_time() {
     local user_time="$1"
     local max_time="08:00:00"
@@ -188,23 +212,33 @@ get_max_job_time() {
     fi
 }
 
-}
-
 # Read a field from a job's config file using grep.
 # the field name will be a snake-case identifier including a leading .
 # Usage: local value=$(get_job_config_setting "$job" ".model")
+# throws error if the config is not there.
+# returns empty value is the config is there but the value is missing.
 get_job_config_setting() {
     local file=$(resolve_job_config "$1")
+    if [[ ! -f $file ]]; then
+        echo "ERROR: no configuration file found for job $job" >&2
+        exit 1
+    fi
     yq r "$2" "$file" 2>/dev/null || echo ""
 }
 
-# Function 1: Extract the top-level 'env:' block as raw bash export lines
+# Extract the top-level 'env:' block from a config as raw bash export lines.
+# throws error if the config is not there.
+# returns empty value is the config is there but the value is missing.
 get_job_config_exports() {
     local file=$(resolve_job_config "$1")
+    if [[ ! -f $file ]]; then
+        echo "ERROR: no configuration file found for job $job" >&2
+        exit 1
+    fi
     # Merges keys and values directly into valid export declarations
-    yq '.env | to_entries | .[] | "export " + .key + "=\"" + .value + "\""' "$file"
+    # Using '( .env // {} )' safely defaults a missing block to an empty object
+    yq '( .env // {} ) | to_entries | .[] | "export " + .key + "=\"" + .value + "\""' "$file"
 }
-
 
 
 # Exports a set of paths rated to caches into a subdirectory of localdir
@@ -393,8 +427,8 @@ request_cancel() {
 # Write a reason string to the lockfile without changing status.
 # Usage: update_reason "$job" "reason text"
 update_reason() {
-    local job="$1"
-    local reason="$2"
+    local job="${1?must supply job name}"
+    local reason="${2?must supply reason}"
     local lockfile
 
     lockfile=$(resolve_job_status "$job")
@@ -409,9 +443,13 @@ update_reason() {
 # Usage: if is_status "$job" "running"; then ...
 is_status() {
     local lockfile
-    lockfile=$(resolve_job_status "$1")
+    lockfile=$(resolve_job_status "${1}")
     [ ! -f "$lockfile" ] && return 1
-    jq -e --arg test "$2" 'has("status") and .status == $test' "$lockfile" > /dev/null 2>&1
+    jq -e --arg test "${2?must supply status}" 'has("status") and .status == $test' "$lockfile" > /dev/null 2>&1
+}
+
+is_cancellable() {
+    squeue -j "${1?must supply slurm id}" -u "$(whoami)" -h -o "%i" | grep -q .
 }
 
 # ── Shutdown and cleanup ───────────────────────────────────────────────────
@@ -494,9 +532,10 @@ setup_traps() {
 clear_localdir() {
     local localdir
     localdir=$(resolve_localdir "$1")
+    [ ! -d "$localdir" ] && exit 1
     echo "[cache] cleaning working directory: $localdir"
     if [ -d "$localdir" ]; then
-        rm -rf "${localdir:?no localdir defined}/*"
+        rm -rf "$localdir"
     else
         mkdir -p "$localdir"
     fi
@@ -557,11 +596,14 @@ monitor_startup() {
                     save_cache "$job"
                     echo "[startup] job $job startup complete."
                     update_status_running "$job"
+                    echo "[startup] Startup complete: vLLM is running."
                     break
                 else
                     echo "[startup] ERROR: warmup failed after $max_retries attempts"
                     update_reason "$job" "vLLM warmup failed"
+                    echo "[startup] Startup complete: vLLM failed warmup."
                     kill -s SIGUSR2 "$vllm_parent" 2>/dev/null
+
                     return 1
                 fi
             else
@@ -574,6 +616,7 @@ monitor_startup() {
             local status
             status=$(get_job_status_setting "$job" "status")
             echo "[startup] ERROR: job $job is in unexpected state $status"
+            echo "[startup] Startup complete: vLLM failed to start."
             return 1
         fi
     done
@@ -873,7 +916,8 @@ save_cache() {
 # Helper: Parse version string into components, defaulting missing/invalid parts to 0
 _parse_semver() {
     local IFS='.'
-    local -a parts=($1)
+    local -a parts
+    read -r -a parts <<< "$1"
     # Ensure non-integers or empty values become 0
     echo $((parts[0] + 0)) $((parts[1] + 0)) $((parts[2] + 0))
 }

@@ -7,7 +7,8 @@
 # N.b. set the log in the wrapper script (sbatch --output and --error flags)
 # and most parameters
 
-source ./utils.sh
+source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
+
 IVLLM_JOB=${1?must supply job name}
 IVLLM_GPUS_PER_NODE=${2?must specify gpus per node}
 IVLLM_MEM_PER_NODE=${3?must specify mem per node}

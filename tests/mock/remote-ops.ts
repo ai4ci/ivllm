@@ -15,13 +15,14 @@ import { semverGte, revSemverSort } from './semver.ts';
 import type {
   CloseableEventEmitter,
   Credentials,
-  RemoteOps,
   RunRemoteOptions,
   RunRemoteResult,
   EnvVarEntry,
   ProcessState,
   OpsMode,
 } from './types.ts';
+
+import { RemoteOps } from './ops/RemoteOps.ts';}
 import { tmpdir } from 'node:os';
 
 /**

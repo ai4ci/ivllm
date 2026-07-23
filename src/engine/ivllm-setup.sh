@@ -1,6 +1,6 @@
 #!/bin/bash
 
-setup_engine_usage() {
+ivllm_setup_usage() {
     echo "Usage: $0 [-v version] [-l log file]"
     echo ""
     echo "Options:"
@@ -11,7 +11,8 @@ setup_engine_usage() {
     exit 1
 }
 
-source "./utils.sh"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$here/lib/utils.sh"
 
 export IVLLM_FORCE=0
 export IVLLM_VERSION=""
@@ -22,9 +23,9 @@ while getopts "v:flh" opt; do
         v) IVLLM_VERSION="$OPTARG" ;;
         f) IVLLM_FORCE=1 ;;
         l) LOG="$OPTARG" ;;
-        h) setup_engine_usage ;;
-        \?) echo "Error: Invalid option -$OPTARG" >&2; setup_engine_usage ;;
-        :)  echo "Error: Option -$OPTARG requires an argument" >&2; setup_engine_usage ;;
+        h) ivllm_setup_usage ;;
+        \?) echo "Error: Invalid option -$OPTARG" >&2; ivllm_setup_usage ;;
+        :)  echo "Error: Option -$OPTARG requires an argument" >&2; ivllm_setup_usage ;;
     esac
 done
 
@@ -61,7 +62,7 @@ else
         --ntasks-per-node=1 \
         --time=03:00:00 \
         --export=ALL \
-        ./slurm-vllm-setup.sh "$IVLLM_VERSION"
+        "$here/lib/slurm-vllm-setup.sh" "$IVLLM_VERSION"
 
     # Capture the direct exit code of the srun command
     exit_code=$?
