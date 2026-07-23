@@ -65,12 +65,15 @@ resolve_localdir() {
     echo "$node_local"
 }
 
-# exports $HF_HOME
-# creates directories is they don't exist
+# Create shared model directories (HF cache + venv) and export HF_HOME.
+# Creates $IVLLM_PROJECTDIR/model/hf and $IVLLM_PROJECTDIR/model/venv if they don't exist.
+# Sets $HF_HOME to point at the HuggingFace cache directory.
+# Returns: path to the model directory via stdout.
 # Usage: local modeldir=$(resolve_model_dir)
 resolve_model_dir() {
-    # Resolve the model directory path for a job.
-    # Usage: local dir=$(resolve_model_dir "$job")
+    # Create shared model directories (HF cache + venv) and export HF_HOME.
+    # Sets $HF_HOME to point at the HuggingFace cache directory.
+    # Returns: path to the model directory via stdout.
     mkdir -p "$IVLLM_PROJECTDIR/model/hf"
     export HF_HOME="$IVLLM_PROJECTDIR/model/hf"
     mkdir -p "$IVLLM_PROJECTDIR/model/venv"
