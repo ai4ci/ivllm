@@ -766,14 +766,14 @@ monitor_startup() {
 
 # ── Monitor: head node (background) ───────────────────────────────────────
 
-# Background monitor that runs on the head compute node for the entire job
-# lifetime. Checks for: lockfile deletion, cancel requests, vLLM process death,
-# and idle timeout.
+# Background monitor on head node that runs for the entire job lifetime.
+# Args: $1 — job name; $2 — vLLM parent process PID (not used directly).
+# Reads lockfile, log path, and idle_timeout from lockfile.
+# Runs in a loop checking: (1) lockfile exists, (2) terminal states (failed/stopped),
+#   (3) pending state, (4) vLLM liveness, (5) cancel flag, (6) idle timeout.
+# On idle: checks last 5000 log lines for API requests (not /health) in the idle window.
 # Usage: monitor_head "$job" "$vllm_parent_pid" &
 monitor_head() {
-    # Background monitor loop on head node.
-    # Checks cancel flag, vLLM liveness, idle timeout, lockfile presence.
-    # Usage: monitor_head "$job" "$port" "$timeout"
     local job="$1"
     local vllm_parent="$2"
     local lockfile
