@@ -102,34 +102,40 @@ If the job doesn't exist, creates it and starts it.`,
     await program.parseAsync(process.argv);
 }
 
-async function cmdCancel(jobName: string, force: boolean): Promise<void> {
+async function cmdCancel(
+    jobName: string,
+    options: { force: boolean },
+): Promise<void> {
     // Load and validate credentials
     const config = loadCredentials();
     assertConfigured(config);
     const backend = new IsambardBareMetalBackend(config);
-    backend.requestCancel(jobName, force);
+    await backend.requestCancel(jobName, options.force);
 }
 
-async function cmdConfig(
-    host?: string,
-    user?: string,
-    path?: string,
-    token?: string,
-): Promise<void> {
+async function cmdConfig(options: {
+    loginHost?: string;
+    username?: string;
+    projectDir?: string;
+    hfToken?: string;
+}): Promise<void> {
     const config = loadCredentials();
-    if (host) config.loginHost = host!;
-    if (user) config.username = user!;
-    if (path) config.projectDir = path!;
-    if (token) config.hfToken = token!;
+    if (options.loginHost) config.loginHost = options.loginHost;
+    if (options.username) config.username = options.username;
+    if (options.projectDir) config.projectDir = options.projectDir;
+    if (options.hfToken) config.hfToken = options.hfToken;
     saveConfig(config);
     console.log('Configuration saved.');
 }
 
-async function cmdSetup(vllmVersion: string, force: boolean): Promise<void> {
+async function cmdSetup(
+    vllmVersion: string,
+    options: { force: boolean },
+): Promise<void> {
     const config = loadCredentials();
     assertConfigured(config);
     const backend = new IsambardBareMetalBackend(config);
-    backend.setup(vllmVersion, force);
+    await backend.setup(vllmVersion, options.force);
 }
 
 async function cmdStatus(jobName?: string) {
@@ -146,9 +152,11 @@ async function cmdStatus(jobName?: string) {
 
 async function cmdConnect(
     jobName: string,
-    port: string,
-    timeLimit: string,
-    configFile?: string,
+    options: {
+        port: string;
+        timeLimit: string;
+        configFile?: string;
+    },
 ): Promise<void> {
     // TODO: rething the user experience here. Maybe better to
     // have a specific start command and defer to it if the job
@@ -156,11 +164,16 @@ async function cmdConnect(
     const config = loadCredentials();
     assertConfigured(config);
     const backend = new IsambardBareMetalBackend(config);
-    const localPort = parseInt(port);
+    const localPort = parseInt(options.port);
 
     if (!(await backend.isRunning(jobName))) {
         if (await backend.isStartable(jobName)) {
-            await backend.requestStart(jobName, timeLimit, true, configFile);
+            await backend.requestStart(
+                jobName,
+                options.timeLimit,
+                true,
+                options.configFile,
+            );
         } else {
             if (await backend.isStarting(jobName)) {
                 await backend.watchLog(

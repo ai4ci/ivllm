@@ -30,7 +30,7 @@ export class IsambardBareMetalBackend extends Backend {
     }
 
     async bootstrap(): Promise<void> {
-        this.ops.checkSSH();
+        await this.ops.checkSSH();
         if (!this.bootstrapped) {
             const currentDir = import.meta.dir;
             const enginePath = path.resolve(currentDir, '../engine');
@@ -44,10 +44,10 @@ export class IsambardBareMetalBackend extends Backend {
     }
 
     async setup(version: string, force?: boolean): Promise<void> {
-        this.bootstrap();
+        await this.bootstrap();
 
         const { stdout, exitCode } = await this.ops.runRemote(
-            `${this.remoteEngine}/ivllm-setup.sh -j "${version}"${force ? ' -f' : ''}`,
+            `${this.remoteEngine}/ivllm-setup.sh -v "${version}"${force ? ' -f' : ''}`,
             { env: this.envs, silent: false },
         );
 
@@ -61,7 +61,7 @@ export class IsambardBareMetalBackend extends Backend {
         job: string,
         localPort: number,
     ): Promise<CloseableEventEmitter> {
-        this.bootstrap();
+        await this.bootstrap();
         const lp = localPort;
 
         if (await isLocalPortInUse(lp)) {
@@ -98,7 +98,7 @@ export class IsambardBareMetalBackend extends Backend {
     }
 
     async requestCancel(job: string, force: boolean): Promise<void> {
-        this.bootstrap();
+        await this.bootstrap();
         const { stdout, exitCode } = await this.ops.runRemote(
             `${this.remoteEngine}/ivllm-cancel.sh -j "${job}"${force ? ' -f' : ''}`,
             { env: this.envs, silent: false },
@@ -116,7 +116,7 @@ export class IsambardBareMetalBackend extends Backend {
         monitor: boolean,
         config?: string,
     ): Promise<void> {
-        this.bootstrap();
+        await this.bootstrap();
 
         if (config) {
             if (fs.existsSync(config)) {
@@ -145,7 +145,7 @@ export class IsambardBareMetalBackend extends Backend {
     }
 
     async getAllJobStatus(): Promise<LockfileV3[]> {
-        this.bootstrap();
+        await this.bootstrap();
 
         const { stdout, exitCode } = await this.ops.runRemote(
             `${this.remoteEngine}/ivllm-status.sh -p`,
@@ -177,7 +177,7 @@ export class IsambardBareMetalBackend extends Backend {
         node?: string,
         until?: string,
     ): Promise<CloseableEventEmitter> {
-        this.bootstrap();
+        await this.bootstrap();
 
         return this.ops.runRemoteSync(
             `${this.remoteEngine}/ivllm-show-log.sh -j "${job}" -n "${node ?? '0'}"${until ? ` -m "${until}"` : ''}`,

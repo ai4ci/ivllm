@@ -189,7 +189,7 @@ get_job_status_setting() {
         echo "ERROR: no status file found for job $job" >&2
         exit 1
     fi
-    jq r "$2" "$lockfile" 2>/dev/null || echo ""
+    jq -r "$2" "$lockfile" 2>/dev/null || echo ""
 }
 
 # Given a time input returns the maximum between the input and 08:00:00 as a time string.

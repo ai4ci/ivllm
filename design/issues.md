@@ -6,7 +6,7 @@
 
 **Location**: `src/index.ts` — all command handler functions  
 **Severity**: CRITICAL — affects all CLI commands  
-**Status**: Verified  
+**Status**: Closed - FIXED
 
 **Problem**:
 Commander.js passes options as an object to `.action()` handlers, but the function signatures expect individual parameters. When a command like:
@@ -73,7 +73,7 @@ async function cmdConfig(options: { loginHost?: string; username?: string; proje
 
 **Location**: `src/index.ts` lines 111 and 129  
 **Severity**: HIGH — promises are not awaited, commands exit before completion  
-**Status**: Verified  
+**Status**: Closed - FIXED
 
 **Problem**:
 `cmdCancel()` and `cmdSetup()` do not await the backend method promises:
@@ -101,7 +101,7 @@ await backend.setup(vllmVersion, force);
 
 **Location**: `src/backends/IsambardBareMetalBackend.ts` line 49  
 **Severity**: HIGH — setup script fails because wrong option is passed  
-**Status**: Verified  
+**Status**: Closed
 
 **Problem**:
 The TypeScript backend calls `ivllm-setup.sh` with `-j` for the version argument:
@@ -136,7 +136,7 @@ Change the option flag from `-j` to `-v`:
 
 **Location**: `src/engine/lib/utils.sh` line 192  
 **Severity**: CRITICAL — function cannot read lockfile values  
-**Status**: Verified  
+**Status**: Closed - FIXED
 
 **Problem**:
 The `get_job_status_setting()` function has a typo in the jq command:
@@ -185,7 +185,7 @@ echo '{"test": 123}' | jq -r '.test'
 
 **Location**: `src/backends/IsambardBareMetalBackend.ts` lines 47, 64, 101, 119, 148, 180  
 **Severity**: HIGH — bootstrap operation runs asynchronously without being awaited  
-**Status**: Verified  
+**Status**: Closed - FIXED
 
 **Problem**:
 The `bootstrap()` method is declared as `async Promise<void>` (line 32), but it's called without `await` throughout the class:
@@ -223,7 +223,7 @@ async setup(version: string, force?: boolean): Promise<void> {
 
 **Location**: `src/backends/IsambardBareMetalBackend.ts` line 33  
 **Severity**: HIGH — SSH connectivity check not awaited  
-**Status**: Verified  
+**Status**: Closed - FIXED
 
 **Problem**:
 The `checkSSH()` method is declared as `async Promise<boolean>` in `SshRemoteOps`, but it's called without `await` in `bootstrap()`:
@@ -252,53 +252,4 @@ async bootstrap(): Promise<void> {
     if (!this.bootstrapped) {
 ```
 
----
 
-## Summary Table
-
-| Issue | File | Line | Severity | Type | Verified |
-|-------|------|------|----------|------|----------|
-| 1. Commander.js param mismatch | src/index.ts | multiple | CRITICAL | Type mismatch | ✓ |
-| 2. Missing awaits (cmd handlers) | src/index.ts | 111, 129 | HIGH | Async bug | ✓ |
-| 3. Wrong setup option flag | src/backends/IsambardBareMetalBackend.ts | 49 | HIGH | Option mismatch | ✓ |
-| 4. jq typo in lockfile reader | src/engine/lib/utils.sh | 192 | CRITICAL | Syntax error | ✓ |
-| 5. Missing awaits (bootstrap) | src/backends/IsambardBareMetalBackend.ts | 47, 64, 101, 119, 148, 180 | HIGH | Async bug | ✓ |
-| 6. Missing await (checkSSH) | src/backends/IsambardBareMetalBackend.ts | 33 | HIGH | Async bug | ✓ |
-
----
-
-## Impact Analysis
-
-### Immediate Blockers
-
-**Issue 4 (jq typo)** blocks any operation that tries to read lockfile values, making the entire system non-functional for:
-- Idle timeout detection (cannot read `idleTimeout` from lockfile)
-- Status checking
-- Configuration reading
-- Job monitoring
-
-**Issue 3 (setup option)** blocks the `ivllm setup` command completely.
-
-**Issue 1 (Commander params)** blocks all CLI commands from working correctly because options are received as objects instead of scalar values.
-
-**Issue 2 & 5 (missing awaits)** cause operations to exit or proceed before completing their work:
-- Issue 2: `setup` and `cancel` commands exit before remote operation finishes
-- Issue 5: Engine scripts may not be copied before being executed on remote
-
-### Execution Order Fix
-
-If fixing these issues, resolve in this order:
-1. **Issue 4** — Fix jq syntax (prerequisite for all bash-based operations)
-2. **Issue 5, 6** — Add awaits to bootstrap() and checkSSH() (prerequisite for remote operations)
-3. **Issue 1** — Fix Commander.js parameter handling (prerequisite for CLI)
-4. **Issue 2** — Add awaits to cmd handlers (refinement of CLI)
-5. **Issue 3** — Fix setup script option (fixes specific command)
-
----
-
-## Notes
-
-- All issues are implementation bugs, not architectural problems
-- No redesign is needed; fixes are straightforward
-- The underlying logic and architecture remain sound
-- These issues prevent current code from functioning but don't invalidate the v3 design
