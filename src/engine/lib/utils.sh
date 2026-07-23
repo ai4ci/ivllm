@@ -137,11 +137,13 @@ resolve_vllm_version_dir() {
     echo "$vllm_dir/$version"
 }
 
-# creates directories if not present
-# Usage: local jobdir=$(resolve_job_root_dir)
+# Create the shared job root directory with group-write permissions.
+# Creates $IVLLM_PROJECTDIR/engine/jobs if it doesn't exist.
+# Returns: path to the job root directory via stdout.
+# Usage: local dir=$(resolve_job_root_dir)
 resolve_job_root_dir() {
-    # Resolve the job root directory under $PROJECTDIR/engine/jobs.
-    # Usage: local dir=$(resolve_job_root_dir "$job")
+    # Create the shared job root directory with group-write permissions.
+    # Returns: path to the job root directory via stdout.
     mkdir -p "$IVLLM_PROJECTDIR/engine/jobs"
     chmod -R g+rw "$IVLLM_PROJECTDIR/engine/jobs"
     echo "$IVLLM_PROJECTDIR/engine/jobs"
