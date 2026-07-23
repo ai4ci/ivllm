@@ -400,12 +400,12 @@ create_status_pending() {
     echo "$server_port"
 }
 
-# Mark slurm job id after sbatch submitted. Run on login node when
-# job submitted.
+# Update lockfile with SLURM job ID after sbatch submits.
+# Args: $1 — job name; $2 — SLURM job ID string.
+# Runs on the login node after job submission. Uses jq to write the slurmJobId field.
+# BUG: current code uses `-z` check (only writes when ID is empty) — should be `-n`.
 # Usage: update_status_slurm_id "$job" "$slurm_id"
 update_status_slurm_id() {
-    # Update lockfile with SLURM job ID.
-    # Usage: update_status_slurm_id "$job" "$slurm_id"
     local job="$1"
     local slurm_job_id="${2:-}"
     local lockfile
