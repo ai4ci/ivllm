@@ -323,15 +323,15 @@ get_job_config_exports() {
 }
 
 
-# Exports a set of paths rated to caches into a subdirectory of localdir
-# localdir should be fast node local storage (maybe ram disk)
-# localdir itself is restored fron the jit-cache.tar.gz
-# other caches not specified here will probably go to the users home.
-# This is used in vllm-env.sh
+# Set VLLM and Triton JIT cache environment variables under the node-local directory.
+# Calls resolve_localdir() to determine the base path. Sets 7 cache dir variables:
+#   VLLM_CACHE_ROOT, EP_JIT_CACHE_DIR, DG_JIT_CACHE_DIR, TRITON_CACHE_DIR,
+#   FLASHINFER_JIT_CACHE_DIR, VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR, TORCHINDUCTOR_CACHE_DIR.
+# Called by vllm-env.sh during job startup.
+# No arguments — determines paths from resolve_localdir().
+# Usage: set_jit_caches
 set_jit_caches() {
-    # Save and restore JIT compilation cache (tar.gz).
-    # Saves on head node, restores on all nodes.
-    # Usage: set_jit_caches "$job" "$model_dir" "$nodeid"
+    # Set VLLM and Triton JIT cache environment variables under the node-local directory.
     local localdir=$(resolve_localdir)
     export VLLM_CACHE_ROOT="$localdir/vllm"
     export EP_JIT_CACHE_DIR="$localdir/deep_ep_cache"
