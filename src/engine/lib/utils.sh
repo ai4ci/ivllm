@@ -403,7 +403,6 @@ create_status_pending() {
 # Update lockfile with SLURM job ID after sbatch submits.
 # Args: $1 — job name; $2 — SLURM job ID string.
 # Runs on the login node after job submission. Uses jq to write the slurmJobId field.
-# BUG: current code uses `-z` check (only writes when ID is empty) — should be `-n`.
 # Usage: update_status_slurm_id "$job" "$slurm_id"
 update_status_slurm_id() {
     local job="$1"
@@ -412,7 +411,7 @@ update_status_slurm_id() {
 
     lockfile=$(resolve_job_status "$job")
 
-    if [[ -z "$slurm_job_id" ]]; then
+    if [[ -n "$slurm_job_id" ]]; then
         jq --arg slurm_job_id "$slurm_job_id" '.slurmJobId = $slurm_job_id' "$lockfile" > "$lockfile.tmp" && mv "$lockfile.tmp" "$lockfile"
     fi
 

@@ -72,8 +72,8 @@ export abstract class Backend {
     /**
      * Tail log output for a job.
      * @param job — Job name
-     * @param node — Optional node identifier (head or worker)
-     * @param until — Optional timestamp to tail until
+     * @param node — Optional node identifier (0=head or 1+=worker)
+     * @param until — Optional string which when detected will stop tail
      * @returns A closeable event emitter for the log stream
      */
     abstract watchLog(
@@ -134,30 +134,37 @@ export abstract class Backend {
     }
 
     /**
-     * Check if a job has stopped (stopped or failed state).
+     * Check if a job is in a stopped state (stopped or failed state). If the
+     * status file is missing the job is said to be in a stopped state.
      * @param job — Job name
      * @returns `true` if status is `stopped` or `failed`, `false` otherwise
      */
     async isStopped(job: string): Promise<boolean> {
         try {
             const lockfile = await this.getJobStatus(job);
-            return lockfile.status === 'stopped' || lockfile.status === 'failed';
+            return (
+                lockfile.status === 'stopped' || lockfile.status === 'failed'
+            );
         } catch {
-            return false;
+            return true;
         }
     }
 
     /**
-     * Check if a job can be restarted (stopped or failed state).
+     * Check if a job can be started (stopped or failed state) or no existing
+     * job status file (i.e. has never been run before or status file has been
+     * deleted).
      * @param job — Job name
      * @returns `true` if status is `stopped` or `failed`, `false` otherwise
      */
     async isStartable(job: string): Promise<boolean> {
         try {
             const lockfile = await this.getJobStatus(job);
-            return lockfile.status === 'stopped' || lockfile.status === 'failed';
+            return (
+                lockfile.status === 'stopped' || lockfile.status === 'failed'
+            );
         } catch {
-            return false;
+            return true;
         }
     }
 
