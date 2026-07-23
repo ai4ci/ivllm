@@ -952,8 +952,11 @@ monitor_worker() {
 # ── Resource monitoring ───────────────────────────────────────────────────
 
 report_setup() {
-    # Report setup progress and exit code to lockfile.
-    # Usage: report_setup "$job" "$exit_code"
+    # Report Python/PyTorch GPU status and vLLM-relevant environment variables.
+    # Prints: Python interpreter, PyTorch CUDA version, GPU device info,
+    #   deep_gemm/deep_ep library status, and filtered env vars (VLLM_, RAY_, NCCL_, etc.).
+    # No arguments — does not write to lockfile.
+    # Usage: report_setup
 echo "=== Python & Library Extension Environment ==="
 python -c "
 import os, sys, torch, deep_gemm, deep_ep
