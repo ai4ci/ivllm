@@ -14,7 +14,7 @@ Design decisions were made during refactoring that will invalidate existing test
 
 Key next steps:
 
-- [ ] Review existing code. Identify obvious defects and inconsistent documentation. Record in design/issues.md.
+- [X] Review existing code. Identify obvious defects and inconsistent documentation. Record in design/issues.md.
 - [ ] Setup bash bubblewrap testing enviroment with shims for mocking HPC login and compute nodes.
 - [ ] Unit tests for bash utilities (refactor existing)
 - [ ] Bash lockfile lifecycle test and monitor tests using shims.
