@@ -81,10 +81,13 @@ resolve_model_dir() {
     echo "$IVLLM_PROJECTDIR/model"
 }
 
-# creates directories is they don't exist
+# Create the NVHPC SDK base directory with group-write permissions.
+# Creates $IVLLM_PROJECTDIR/engine/nvhpc if it doesn't exist.
+# Returns: path to the NVHPC directory via stdout.
+# Usage: local dir=$(resolve_nvhpc_dir)
 resolve_nvhpc_dir() {
-    # Resolve the NVHPC SDK base directory.
-    # Usage: local dir=$(resolve_nvhpc_dir)
+    # Create the NVHPC SDK base directory with group-write permissions.
+    # Returns: path to the NVHPC directory via stdout.
     mkdir -p "$IVLLM_PROJECTDIR/engine/nvhpc"
     chmod -R g+rw "$IVLLM_PROJECTDIR/engine/nvhpc"
     echo "$IVLLM_PROJECTDIR/engine/nvhpc"
