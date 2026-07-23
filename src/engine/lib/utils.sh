@@ -259,11 +259,13 @@ get_job_status_setting() {
     jq -r "$2" "$lockfile" 2>/dev/null || echo ""
 }
 
-# Given a time input returns the maximum between the input and 08:00:00 as a time string.
+# Return the lesser of a user-specified time string and 08:00:00 (8 hours).
+# Args: $1 — time string in HH:MM:SS format.
+# Useful for capping SLURM job time to a maximum of 8 hours.
+# Returns: the capped time string via stdout.
+# Usage: local max=$(get_max_job_time "$time_str")
 get_max_job_time() {
-    # Parse and normalise the --time / -t SLURM duration option.
-    # Converts "N" (minutes) or "HH:MM:SS" formats.
-    # Usage: local max=$(get_max_job_time "$time_str")
+    # Return the lesser of a user-specified time string and 08:00:00 (8 hours).
     local user_time="$1"
     local max_time="08:00:00"
     # Convert max_time to total seconds (HH*3600 + MM*60 + SS)
