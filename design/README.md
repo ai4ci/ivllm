@@ -15,8 +15,8 @@ have been identified and resolved.
 
 **Test status:**
 - **Bash**: 74 assertions across 10 test files (1 unit + 9 sandboxed), all green
-- **TypeScript**: 57 assertions across 6 test files, all green
-- **Total**: 131 assertions, 0 failures
+- **TypeScript**: 62 assertions across 6 test files, all green
+- **Total**: 136 assertions, 0 failures
 
 Key completed work:
 
@@ -26,6 +26,25 @@ Key completed work:
 - [X] Add bash login-node handoff, monitor startup/worker, and exit trap tests.
 - [X] Rewrite TypeScript tests from scratch — Backend unit tests, MockRemoteOps, local-ops, semver, CLI lifecycle integration.
 - [X] Wire bash tests into `bun test` via integration wrapper.
+- [X] Full documentation pass: added JSDoc/bash doc headers to all source files.
+  - `utils.sh` — 44+ functions documented (path resolvers, lockfile state machine, monitors, traps, semver, cache).
+  - `Backend.ts`, `index.ts`, `RemoteOps.ts`, `SshRemoteOps.ts`, `utils.ts` — JSDoc added or improved.
+  - Login wrapper scripts (`ivllm-*.sh`) and SLURM templates (`slurm-*.sh`) — doc headers added.
+- [X] Bug fixes discovered and applied during documentation:
+  - `get_job_status_setting()`: `$job` → `$1` in error message (undefined variable).
+  - `get_job_config_setting()`: `$job` → `$1` in error message (undefined variable).
+  - `update_status_slurm_id()`: `-z` → `-n` in condition (was writing SLURM ID when empty).
+  - `Backend.ts`: Lifecycle methods (`isStopped`, `isStartable`) intentionally return `true` on missing lockfile — job was never started, therefore startable.
+
+## Outstanding work
+
+The following items are pending and can be addressed after e2e testing is established:
+
+- [ ] **CLI handler unit tests** — `cmdConnect`, `cmdSetup`, `cmdConfig`, `cmdStatus`, `cmdCancel` in `src/index.ts` have no unit tests. Only the Backend contract is covered in integration tests.
+- [ ] **TypeScript type check** — No `tsc --noEmit` or `--strict` check in the test pipeline. Add as a fast gate before `bun test`.
+- [ ] **ESLint / linting** — No linting configured in the test workflow.
+- [ ] **Monitor idle timeout unit test** — `monitor_head`'s log-parsing idle check works end-to-end but has no focused unit test for the time-pattern matching logic.
+- [ ] **Semver module convergence** — `src/semver.ts` (TypeScript) and `utils.sh` (bash) both implement semver parsing/comparison. Consider documenting the divergence or converging to a single source of truth.
 
 ## Active documents
 
