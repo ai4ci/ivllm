@@ -185,12 +185,13 @@ resolve_job_jit_cache() {
     echo "$HOME/.cache/ivllm/$1/jit-cache.tar.gz"
 }
 
-# Resolve the path to a job's lockfile (status.json).
-# does not check the file exists
-# can glob for job: resolve_job_status '*'
+# Resolve the path to a job's lockfile (status.json) under the job directory.
+# Args: $1 — job name (supports glob patterns like "*").
+# Returns: path to status.json via stdout. Does not check if the file exists.
+# Usage: local status=$(resolve_job_status "$job")
 resolve_job_status() {
-    # Resolve the status.json (lockfile) path for a job.
-    # Usage: local status=$(resolve_job_status "$job")
+    # Resolve the path to a job's lockfile (status.json) under the job directory.
+    # Returns: path to status.json via stdout.
     resolve_job_dir "$1" "status.json"
 }
 
