@@ -418,12 +418,12 @@ update_status_slurm_id() {
 
 }
 
-# Update lockfile with SLURM allocation details. Run on head compute node.
+# Update lockfile with SLURM allocation details on the head compute node.
+# Args: $1 — job name; $2 — vLLM process PID.
+# Sets slurmJobId, computeHostname, vllmPid, start_time, stop_time.
+# Only runs on SLURM_NODEID==0 (head node). Reads SLURM_JOB_ID, COMPUTE_HOSTNAME from env.
 # Usage: update_status_initialise "$job" "$vllm_pid"
 update_status_initialise() {
-    # Transition lockfile: pending → initialising.
-    # Sets slurmJobId, computeHostname, vllmPid.
-    # Usage: update_status_initialise "$job" "$slurm_id" "$hostname" "$pid"
     local job="$1"
     local vllm_pid="$2"
     local lockfile
