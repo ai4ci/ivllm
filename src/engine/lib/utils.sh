@@ -538,6 +538,7 @@ request_cancel() {
 # Usage: update_reason "$job" "reason text"
 update_reason() {
     # Set the reason field in the lockfile.
+    # Run on head node (SLURM_NODEID==0). Does NOT change .status.
     # Usage: update_reason "$job" "$reason_text"
     local job="${1?must supply job name}"
     local reason="${2?must supply reason}"
