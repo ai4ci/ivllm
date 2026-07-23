@@ -566,8 +566,11 @@ is_status() {
 }
 
 is_cancellable() {
-    # Check if job is in a cancellable state.
-    # Usage: is_cancellable "$job" → returns 0 if cancellable
+    # Check if the slurm job exists (owned by current user).
+    # Args: $1 — slurm job ID.
+    # Uses `squeue -j $id -u $(whoami)` to verify the job is visible.
+    # Returns 0 if squeue returns the job, 1 otherwise.
+    # Usage: is_cancellable "$slurm_id" → returns 0 if job exists
     squeue -j "${1?must supply slurm id}" -u "$(whoami)" -h -o "%i" | grep -q .
 }
 
