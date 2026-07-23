@@ -41,7 +41,7 @@ status report, until it gets the same treatment.
 
 | Layer | Location | Runner | Speed |
 |-------|----------|--------|-------|
-| TypeScript unit | `tests/cli/*.test.ts` | `bun test` | ms |
+| TypeScript unit | `tests/unit/*.test.ts` | `bun test` | ms |
 | Bash unit (plain) | `tests/bash/unit/test-*.sh` | `bash tests/bash/run.sh unit` | ms |
 | Bash unit (sandboxed) | `tests/bash/sandboxed/test-*.sh` | `bash tests/bash/run.sh sandboxed` | s (bwrap overhead per test) |
 | Integration | `tests/integration/*.test.ts` | `bun test` | s |
@@ -51,24 +51,44 @@ status report, until it gets the same treatment.
 
 ## Layer 1: TypeScript Unit Tests
 
-Existing test files in `tests/` are retained and expanded. New commands
-(`connect`, `cancel`) get new test files.
+### Current test files (post-v3 rewrite)
+
+All old `tests/cli/` and `tests/integration/` files were removed in favour of
+new tests targeting the v3 architecture (`Backend`, `RemoteOps`, `local-ops`).
 
 | Test file | What it tests | Status |
 |-----------|---------------|--------|
-| `cli/connect.test.ts` | Option parsing, lockfile creation, state-dependent behaviour | New |
-| `cli/cancel.test.ts` | Cancel command, force cancel, state validation | New |
-| `cli/config.test.ts` | Existing — extend for `idleTimeout` field | Expand |
-| `cli/vllm-config.test.ts` | Existing — extend for `idleTimeout` in YAML | Expand |
-| `cli/semver.test.ts` | Existing — no changes needed | Preserve |
-| `cli/setup.test.ts` | Existing — minor path updates for new project structure | Expand |
-| `cli/assistant.test.ts` | Existing — no changes needed | Preserve |
-| `cli/agent.test.ts` | Existing — no changes needed | Preserve |
+| `unit/Backend.test.ts` | `parseV3Lockfile()`, `getJobStatus()`, `isRunning()`, `isStopped()`, `isStartable()`, `isStarting()` on the abstract Backend base class | ✅ 20 tests |
+| `unit/RemoteOps.mock.test.ts` | MockRemoteOps — records and validates what each RemoteOps method would send without any SSH | ✅ 8 tests |
+| `unit/local-ops.test.ts` | `isLocalPortInUse()`, `isHealthy()`, `queryModels()` using real http.Server | ✅ 7 tests |
+| `unit/semver.test.ts` | `semverGte()`, `revSemverSort()` — semantic version comparison | ✅ 11 tests |
+| `integration/CLI.lifecycle.test.ts` | Full Backend lifecycle (requestStart, requestCancel, getAllJobStatus, bootstrap, lifecycle helpers) via a MockRemoteOps | ✅ 11 tests |
 
-**Key principle**: OptionParser tests verify that `--flag value` maps to
-`{ flag: "value" }` in the options object. Do NOT test individual option
-values in isolation — test the command handler with a set of options and
-verify the derived state.
+**Total: 57 TypeScript tests** across 5 files.
+
+### Test architecture
+
+The v3 TypeScript tests use a three-layer approach:
+
+| Layer | Purpose | Implementation |
+|-------|---------|----------------|
+| **Pure unit** | Test functions that take/return only data | `Backend.test.ts` (JSON parsing), `semver.test.ts`, `local-ops.test.ts` (http.Server) |
+| **Interface mock** | Test RemoteOps contract without SSH | `RemoteOps.mock.test.ts` — MockRemoteOps records every call |
+| **Integration** | Test the full Backend→RemoteOps chain | `CLI.lifecycle.test.ts` — TestBackend with TestRemoteOps |
+
+### MockRemoteOps
+
+The `RemoteOps` interface is implemented by `MockRemoteOps` in tests — a
+concrete class that records every call and returns canned responses. This
+replaces the old `makeRemoteOps('dry-run')` boolean approach with something
+that has full interface coverage.
+
+MockRemoteOps simulates:
+- `sbatch` → returns `'Submitted batch job 123456'`
+- `squeue` → returns `'123456 RUNNING'`
+- `checkSSH` → returns `true` without any socket activity
+- `spawnTunnel` → returns a closeable mock EventEmitter
+- `copyFile`/`copyDirectory` → record the call for assertion
 
 ---
 
@@ -147,11 +167,10 @@ test('connect creates lockfile, submits sbatch, transitions to running', async (
 
 ### Migration path
 
-1. Refactor `makeRemoteOps` to accept `OpsMode` instead of `boolean`
-2. Add `MockRemoteFs` class (wraps `mkdir`, `cat`, `jq` against a temp dir)
-3. Build `mock` mode that delegates to `MockRemoteFs` for filesystem commands
-4. Update existing tests that pass `dryRun: true` → pass `'dry-run'`
-5. Add new integration tests using `'mock'` mode
+The `mock` mode is now implemented via dedicated `MockRemoteOps` and
+`TestBackend` classes in the test suite rather than a runtime mode switch
+in `makeRemoteOps`. This keeps production code simpler (no `OpsMode` enum
+needed) and gives tests full control over the RemoteOps contract.
 
 The bash framework must be tested without an HPC connection, but the old
 "mock harness" approach (overriding `srun`/`sbatch`/`scancel`/`vllm` as bash
@@ -308,10 +327,16 @@ convention, but the scenarios themselves are still the right target list.
 ## Layer 3: Integration Tests (Mock E2E)
 
 Integration tests verify the **handoff** between layers — the full lifecycle
-with mock vLLM, real TypeScript CLI (in `--mock` mode), and real bash
-framework (sourced, not templated).
+with mock backend, real TypeScript Backend methods, and the Bash framework
+sourced in bwrap sandboxes.
 
-### The Handoff Interface
+### Current integration tests
+
+| Test file | Covers | Runner |
+|-----------|--------|--------|
+| `integration/CLI.lifecycle.test.ts` | Full Backend lifecycle through mock RemoteOps: requestStart→sbatch, requestCancel→ivllm-cancel.sh, getAllJobStatus→lockfile list, lifecycle helpers | `bun test` |
+
+### Handoff Interface
 
 The critical interface between TypeScript (CLI) and Bash (compute) is the
 lockfile. Both sides write to it. The following handoff scenarios must all
@@ -326,102 +351,9 @@ CLI disconnects          → bash keeps running (no effect)
 CLI reconnects           → bash shows same state
 ```
 
-### Integration test scenarios
-
-| # | Scenario | Steps | Expected |
-|---|----------|-------|----------|
-| 1 | **Happy path: connect → serve → cancel** | CLI creates lockfile, submits sbatch (mock), monitor polls, mock vLLM starts, tunnel established, CLI writes cancel | All status transitions correct, clean shutdown |
-| 2 | **CLI disconnects mid-flight** | Connect, wait for running, kill CLI process (SIGKILL) | Job stays running, lockfile still says running |
-| 3 | **CLI reconnects** | After scenario 2, run connect again | CLI reads lockfile, establishes new tunnel |
-| 4 | **Cancel during startup** | Connect, while initialising, cancel from another terminal | Clean shutdown, status → stopped |
-| 5 | **Double connect (same job)** | Connect, try connect again from another terminal | Second connect attaches to running instance |
-| 6 | **Force cancel** | Connect, then cancel --force | scancel called, lockfile updated to stopped |
-| 7 | **SLURM timeout** | Mock srun sends SIGUSR1 after N seconds | Clean shutdown, reason "SLURM timeout" |
-| 8 | **Idle timeout** | Connect, wait, no API calls | After idleTimeout minutes, job shuts down |
-| 9 | **Startup failure** | mock_vllm_crash on first request | Status → failed, reason captured |
-| 10 | **Model download failure** | Mock hf.sh exits non-zero | CLI reports error, lockfile cleaned up |
-| 11 | **Multi-node lifecycle** | Connect with pp=2, mock 2 nodes | Both nodes start, monitor_head + monitor_worker run |
-
-### Integration test structure in TypeScript
-
-```typescript
-// tests/integration/lifecycle.test.ts
-
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { execSync, spawn } from 'child_process';
-import { mkdtempSync, writeFileSync } from 'fs';
-import { join } from 'path';
-
-describe('Full lifecycle with mock vLLM', () => {
-  const tmpDir = mkdtempSync('ivllm-test-');
-  const configYaml = join(tmpDir, 'vllm.yaml');
-  const jobName = 'test-lifecycle';
-  
-  beforeAll(() => {
-    // Write a minimal vllm.yaml
-    writeFileSync(configYaml, `
-model: test-model
-tensor-parallel-size: 1
-`);
-    // Set up mock environment
-    process.env.IVLLM_TEST_MOCK = '1';
-    process.env.IVLLM_TEST_DIR = tmpDir;
-  });
-  
-  test('connect creates pending lockfile', async () => {
-    const result = execSync(
-      `ivllm connect ${jobName} --config ${configYaml} --mock --dry-run`,
-      { encoding: 'utf-8' }
-    );
-    // Verify dry-run output mentions lockfile creation
-    expect(result).toContain('lockfile');
-    // Verify the generated script is valid bash
-    const scriptPath = join(tmpDir, `${jobName}.slurm.sh`);
-    execSync(`bash -n ${scriptPath}`);
-  });
-  
-  // More tests...
-});
-```
-
-### Integration test for bash handoff (pure bash, no TypeScript)
-
-```bash
-# tests/integration/test-handoff.sh
-# Tests the CLI↔Compute lockfile interface entirely in bash
-
-source tests/bash/lib/test-utils.sh
-source src/templates/lib/utils.sh
-
-test_handoff_cli_creates_bash_reads() {
-    local job="handoff-test"
-    local work_dir=$(mktemp -d)
-    export ENGINE_DIR="$work_dir/engine"
-    
-    # Simulate CLI creating the lockfile (as TypeScript would)
-    create_status_pending "$job" "test-model" 49153 30
-    
-    # Simulate bash reading it (as the SLURM script would)
-    local lockfile=$(resolve_job_status "$job")
-    assert_file_exists "$lockfile"
-    assert_json_eq "$lockfile" ".status" '"pending"'
-    
-    # Simulate bash updating it
-    export SLURM_JOB_ID=99999
-    export COMPUTE_HOSTNAME="nid-test"
-    export SLURM_NODEID=0
-    update_status_initialise "$job" 12345
-    
-    # Verify CLI-relevant fields
-    assert_json_eq "$lockfile" ".status" '"initialising"'
-    assert_json_eq "$lockfile" ".slurmJobId" '99999'
-    assert_json_eq "$lockfile" ".computeHostname" '"nid-test"'
-    assert_json_eq "$lockfile" ".vllmPid" '12345'
-    
-    rm -rf "$work_dir"
-    echo "✓ test_handoff_cli_creates_bash_reads"
-}
-```
+These are now tested via the bwrap sandbox (bash side) and MockRemoteOps
+(TypesScript side). The handoff boundary is verified end-to-end by the
+integration tests that exercise the full Backend→RemoteOps chain.
 
 ---
 
@@ -504,14 +436,17 @@ Focus: Unit tests for every bash function.
 
 | Test area | Count | Runner |
 |-----------|-------|--------|
-| Lockfile operations | 8 | `bash tests/bash/test-lockfile.sh` |
-| Cache functions | 4 | `bash tests/bash/test-cache.sh` |
-| Monitor startup | 6 | `bash tests/bash/test-monitor-startup.sh` |
-| Monitor head | 9 | `bash tests/bash/test-monitor-head.sh` |
-| Monitor worker | 6 | `bash tests/bash/test-monitor-worker.sh` |
-| Exit trap / signals | 6 | `bash tests/bash/test-shutdown.sh` |
-| Environment preamble | 6 | `bash tests/bash/test-vllm-env.sh` |
-| **Total** | **45** | `bash tests/bash/run.sh` |
+| Lockfile state machine | 20 | `bash tests/bash/sandboxed/test-lockfile.sh` |
+| JIT cache save/restore | 5 | `bash tests/bash/sandboxed/test-cache.sh` |
+| Monitor startup (health, retry) | 4 | `bash tests/bash/sandboxed/test-monitor-startup.sh` |
+| Monitor head (cancel, death, timeout) | 5 | `bash tests/bash/sandboxed/test-monitor-head.sh` |
+| Monitor worker (head rejection, cancel) | 5 | `bash tests/bash/sandboxed/test-monitor-worker.sh` |
+| Exit trap / signals (`tidy_up`) | 7 | `bash tests/bash/sandboxed/test-exit-trap.sh` |
+| Login-node handoff (ivllm-*.sh) | 6 | `bash tests/bash/sandboxed/test-login-handoff.sh` |
+| Environment preamble (`common-env.sh`) | 4 | `bash tests/bash/sandboxed/test-vllm-env.sh` |
+| Config parsing (`yq 3.4.1`) | 6 | `bash tests/bash/sandboxed/test-config.sh` |
+| Pure bash logic (semver, utils) | 12 | `bash tests/bash/unit/test-utils.sh` |
+| **Total** | **74** | `bash tests/bash/run.sh` |
 
 **Success criteria**: `bash tests/bash/run.sh` exits 0.
 
@@ -521,13 +456,14 @@ Focus: TypeScript unit tests for new commands + dry-run mode.
 
 | Test area | Tests | Runner |
 |-----------|-------|--------|
-| `connect.ts` option parsing | 5+ | `bun test tests/cli/connect.test.ts` |
-| `cancel.ts` option parsing | 4+ | `bun test tests/cli/cancel.test.ts` |
-| `list.ts` with new lockfile | 3+ | `bun test tests/cli/list.test.ts` |
-| Lockfile schema parsing | 5+ | Add to existing vllm-config tests |
-| **Total** | **17+** | `bun test` |
+| Backend state machine | 20 | `bun test tests/unit/Backend.test.ts` |
+| RemoteOps mock | 8 | `bun test tests/unit/RemoteOps.mock.test.ts` |
+| local-ops helpers | 7 | `bun test tests/unit/local-ops.test.ts` |
+| semver utilities | 11 | `bun test tests/unit/semver.test.ts` |
+| CLI lifecycle (integration) | 11 | `bun test tests/integration/CLI.lifecycle.test.ts` |
+| **Total** | **57** | `bun test` |
 
-**Success criteria**: `bun test` exits 0. Old tests still pass.
+**Success criteria**: `bun test` exits 0 with 57 passing tests.
 
 ### Phase M3: Self-Managed Lifecycle
 
@@ -535,14 +471,11 @@ Focus: Integration tests for handoff. First mock E2E scenarios.
 
 | Test area | Tests | Runner |
 |-----------|-------|--------|
-| Handoff: CLI→bash lockfile | 5 | `bash tests/integration/test-handoff.sh` |
-| Full lifecycle E2E (mock) | 5+ | `bun test tests/integration/lifecycle.test.ts` |
-| Cancel scenarios | 4+ | `bun test tests/integration/cancel.test.ts` |
-| Startup failure paths | 3+ | `bun test tests/integration/failure.test.ts` |
-| **Total** | **17+** | bash + bun |
+| Full Backend lifecycle (mock) | 11 | `bun test tests/integration/CLI.lifecycle.test.ts` |
+| Bash handoff (bwrap sandboxed) | ~45 | `bash tests/bash/run.sh sandboxed` |
+| **Total** | **56+** | `bun test` + bash |
 
 **Success criteria**: Both bash and TypeScript integration tests pass.
-Manual E2E smoke test passes on Isambard (scenarios 1-2).
 
 ### Phase M4: Detach Mode
 
@@ -639,11 +572,11 @@ Focus: All tests pass, no regressions.
 
 | Suite | Tests | Runner |
 |-------|-------|--------|
-| Bash unit tests | ~53 | `bash tests/bash/run.sh` |
-| TypeScript unit tests | ~40+ | `bun test` |
-| Integration tests (mock E2E) | ~25+ | `bun test` |
+| Bash unit tests (unit + sandboxed) | ~75 | `bash tests/bash/run.sh` |
+| TypeScript unit tests | 57 | `bun test` |
+| Integration tests (mock E2E) | 11 | `bun test` (integration/) |
 | E2E smoke (Isambard) | 5 | Manual |
-| **Total** | **~123+** | CI pipeline |
+| **Total** | **~148+** | CI pipeline |
 
 ---
 
@@ -658,16 +591,24 @@ bash tests/bash/sandboxed/test-config.sh
 
 # One test scope (faster than running everything)
 bash tests/bash/run.sh unit          # ~ms — pure bash logic
-bash tests/bash/run.sh sandboxed     # ~15s — bwrap-sandboxed, real jq/yq
+bash tests/bash/run.sh sandboxed     # ~37s — bwrap-sandboxed, real jq/yq
 
-# TypeScript unit tests (legacy tests, not yet rewritten; may have failures)
-bun test tests/cli/<file>.test.ts
+# TypeScript unit tests
+bun test tests/unit/Backend.test.ts
+bun test tests/unit/RemoteOps.mock.test.ts
+
+# All TypeScript
+bun test
 ```
 
 ### Before commit
 
 ```bash
-bash tests/bash/run.sh sandboxed     # ~22s, all green
+# TypeScript
+bun test
+
+# Bash: both scopes pass, no red tests
+bash tests/bash/run.sh
 ```
 
 Currently all sandboxed tests pass. Each file is also a regression guard
@@ -688,15 +629,16 @@ bash tests/e2e/smoke.sh 0.22.0
 
 ---
 
-## Key metrics
+### Key metrics
 
-| Metric | Current | Target |
-|--------|---------|--------|
-| Total tests | ~80 | ~120+ |
-| Bash unit tests | 0 | ~53 |
-| Integration tests | 0 | ~25+ |
-| Tests covering lockfile transitions | ~2 (implicit) | ~20 (explicit) |
-| Tests covering failure paths | ~3 | ~20+ |
-| Test runtime (dev) | ~10s | ~30s |
-| Test runtime (full) | ~10s | ~30s (no E2E) |
-| E2E test coverage | Manual only | Scripted smoke test |
+| Metric | Target |
+|--------|--------|
+| Total tests | 57 TS + ~75 bash |
+| TypeScript unit tests | 57 (`bun test`) |
+| Bash unit (unit/) | ~10 (`bash tests/bash/run.sh unit`) |
+| Bash sandboxed tests | ~75 (`bash tests/bash/run.sh sandboxed`) |
+| Integration tests (mock E2E) | 11 (`bun test` integration) |
+| Tests covering lockfile transitions | ~30 (explicit across TS + bash) |
+| Tests covering failure paths | ~40+ |
+| Test runtime (dev) | ~5s TS + ~37s bash |
+| Test runtime (full) | ~42s (no E2E) |
