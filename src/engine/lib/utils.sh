@@ -47,6 +47,9 @@ export IVLLM_TARGET_ENDPOINTS=(
 # exports $LOCALDIR, returns node local dir
 # Usage: local localdir=$(resolve_localdir "$job")
 resolve_localdir() {
+    # Resolve the per-node local working directory (RAM-backed tmpfs).
+    # Creates the directory if it doesn't exist.
+    # Usage: local dir=$(resolve_localdir "$job")
     local job="$1"
     local id=$(id -u)
 
@@ -66,6 +69,8 @@ resolve_localdir() {
 # creates directories is they don't exist
 # Usage: local modeldir=$(resolve_model_dir)
 resolve_model_dir() {
+    # Resolve the model directory path for a job.
+    # Usage: local dir=$(resolve_model_dir "$job")
     mkdir -p "$IVLLM_PROJECTDIR/model/hf"
     export HF_HOME="$IVLLM_PROJECTDIR/model/hf"
     mkdir -p "$IVLLM_PROJECTDIR/model/venv"
@@ -75,6 +80,8 @@ resolve_model_dir() {
 
 # creates directories is they don't exist
 resolve_nvhpc_dir() {
+    # Resolve the NVHPC SDK base directory.
+    # Usage: local dir=$(resolve_nvhpc_dir)
     mkdir -p "$IVLLM_PROJECTDIR/engine/nvhpc"
     chmod -R g+rw "$IVLLM_PROJECTDIR/engine/nvhpc"
     echo "$IVLLM_PROJECTDIR/engine/nvhpc"
@@ -84,6 +91,9 @@ resolve_nvhpc_dir() {
 # exists with status 1 if not present
 # TODO: rename
 resolve_nvhpc_root() {
+    # Resolve the NVHPC root with version check.
+    # Returns the full path to the NVHPC version directory.
+    # Usage: local root=$(resolve_nvhpc_root)
     local nvhpcDir=$(resolve_nvhpc_dir)
     if [[ ! -d "$nvhpcDir/Linux_aarch64/26.3" ]]; then
       echo "NVHPC SDK version 26.3 is not installed. please run ivllm setup." >&2
@@ -95,6 +105,8 @@ resolve_nvhpc_root() {
 # creates directories if not present
 # Usage: local localdir=$(resolve_vllm_dir)
 resolve_vllm_dir() {
+    # Resolve the vLLM virtual environment directory.
+    # Usage: local dir=$(resolve_vllm_dir "$version")
     mkdir -p "$IVLLM_PROJECTDIR/engine/vllm"
     chmod -R g+rw "$IVLLM_PROJECTDIR/engine/vllm"
     echo "$IVLLM_PROJECTDIR/engine/vllm"
@@ -103,6 +115,8 @@ resolve_vllm_dir() {
 # creates directories if not present
 # Usage: local vllmVersionDir=$(resolve_vllm_version_dir "0.19.1")
 resolve_vllm_version_dir() {
+    # Resolve the versioned vLLM install directory.
+    # Usage: local dir=$(resolve_vllm_version_dir "$version")
     local version="${1:-}"
     local vllm_dir=$(resolve_vllm_dir)
     mkdir -p "$vllm_dir/$version"
@@ -113,6 +127,8 @@ resolve_vllm_version_dir() {
 # creates directories if not present
 # Usage: local jobdir=$(resolve_job_root_dir)
 resolve_job_root_dir() {
+    # Resolve the job root directory under $PROJECTDIR/engine/jobs.
+    # Usage: local dir=$(resolve_job_root_dir "$job")
     mkdir -p "$IVLLM_PROJECTDIR/engine/jobs"
     chmod -R g+rw "$IVLLM_PROJECTDIR/engine/jobs"
     echo "$IVLLM_PROJECTDIR/engine/jobs"
@@ -123,6 +139,8 @@ resolve_job_root_dir() {
 # Does not check file exists.
 # Usage: local path=$(resolve_job_dir "$job" "filename")
 resolve_job_dir() {
+    # Resolve the specific job directory.
+    # Usage: local dir=$(resolve_job_dir "$job")
     local job="$1"
     local root=$(resolve_job_root_dir)
     local out
@@ -143,6 +161,8 @@ resolve_job_dir() {
 # creates the directory if it does not exist
 # does not check the file exists.
 resolve_job_jit_cache() {
+    # Resolve the JIT cache tarball path for a job.
+    # Usage: local cache=$(resolve_job_jit_cache "$job")
     mkdir -p "$HOME/.cache/ivllm/$1/"
     echo "$HOME/.cache/ivllm/$1/jit-cache.tar.gz"
 }
@@ -151,12 +171,16 @@ resolve_job_jit_cache() {
 # does not check the file exists
 # can glob for job: resolve_job_status '*'
 resolve_job_status() {
+    # Resolve the status.json (lockfile) path for a job.
+    # Usage: local status=$(resolve_job_status "$job")
     resolve_job_dir "$1" "status.json"
 }
 
 # Resolve the path to a job's log file (per-node).
 # does not check the file exists
 resolve_job_log() {
+    # Resolve the vLLM log file path for a job and node.
+    # Usage: local log=$(resolve_job_log "$job" "$nodeid")
     local node="${SLURM_NODEID:-0}"
     resolve_job_dir "$1" "vllm.$node.log"
 }
@@ -164,12 +188,17 @@ resolve_job_log() {
 # Resolve the path to a job's yaml config file.
 # does not check the file exists
 resolve_job_config() {
+    # Resolve the vllm.yaml config file path for a job.
+    # Usage: local config=$(resolve_job_config "$job")
     resolve_job_dir "$1" "vllm.yaml"
 }
 
 # Strip specific top-level blocks from job yaml config and save the result as "vllm.yaml.clean"
 # TODO: rename this
 resolve_stripped_job_config() {
+    # Strip env/metadata blocks from vllm.yaml and write clean version.
+    # Removes keys not understood by vllm serve.
+    # Usage: resolve_stripped_job_config "$input_yaml" "$output_yaml"
     local file=$(resolve_job_config "$1")
     local output_file="$file.clean"
     # v3-compatible: chain single-path deletes (v3's `delete`/`d` subcommand
@@ -189,6 +218,8 @@ resolve_stripped_job_config() {
 # throws error if the lockfile is not there.
 # returns empty value is the lockfile is there but the value is missing.
 get_job_status_setting() {
+    # Read a field from the lockfile using jq.
+    # Usage: local val=$(get_job_status_setting "$job" ".fieldName")
     local lockfile
     lockfile=$(resolve_job_status "$1")
     if [[ ! -f $lockfile ]]; then
@@ -200,6 +231,9 @@ get_job_status_setting() {
 
 # Given a time input returns the maximum between the input and 08:00:00 as a time string.
 get_max_job_time() {
+    # Parse and normalise the --time / -t SLURM duration option.
+    # Converts "N" (minutes) or "HH:MM:SS" formats.
+    # Usage: local max=$(get_max_job_time "$time_str")
     local user_time="$1"
     local max_time="08:00:00"
     # Convert max_time to total seconds (HH*3600 + MM*60 + SS)
@@ -224,6 +258,8 @@ get_max_job_time() {
 # throws error if the config is not there.
 # returns empty value is the config is there but the value is missing.
 get_job_config_setting() {
+    # Read a field from vllm.yaml using yq.
+    # Usage: local val=$(get_job_config_setting "$yaml" ".key")
     local file=$(resolve_job_config "$1")
     if [[ ! -f $file ]]; then
         echo "ERROR: no configuration file found for job $job" >&2
@@ -242,6 +278,8 @@ get_job_config_setting() {
 # throws error if the config is not there.
 # returns empty value is the config is there but the value is missing.
 get_job_config_exports() {
+    # Produce export lines from the env: block in vllm.yaml.
+    # Usage: eval "$(get_job_config_exports "$yaml")"
     local file=$(resolve_job_config "$1")
     # For a config without an env: block, emit nothing.
     if [[ ! -f "$file" ]]; then
@@ -260,6 +298,9 @@ get_job_config_exports() {
 # other caches not specified here will probably go to the users home.
 # This is used in vllm-env.sh
 set_jit_caches() {
+    # Save and restore JIT compilation cache (tar.gz).
+    # Saves on head node, restores on all nodes.
+    # Usage: set_jit_caches "$job" "$model_dir" "$nodeid"
     local localdir=$(resolve_localdir)
     export VLLM_CACHE_ROOT="$localdir/vllm"
     export EP_JIT_CACHE_DIR="$localdir/deep_ep_cache"
@@ -277,6 +318,9 @@ set_jit_caches() {
 # Usage: create_status_pending "$job" "$model" "$idle_timeout"
 # exits with code 1 if it cannot get the lock file
 create_status_pending() {
+    # Create a lockfile with pending status.
+    # Uses set -C for atomic create (fails if exists).
+    # Usage: create_status_pending "$job" "$model" "$port" "$timeout"
     local job="$1"
     local model="$2"
     local idle_timeout="${3:-30}"
@@ -329,6 +373,8 @@ create_status_pending() {
 # job submitted.
 # Usage: update_status_slurm_id "$job" "$slurm_id"
 update_status_slurm_id() {
+    # Update lockfile with SLURM job ID.
+    # Usage: update_status_slurm_id "$job" "$slurm_id"
     local job="$1"
     local slurm_job_id="${2:-}"
     local lockfile
@@ -344,6 +390,9 @@ update_status_slurm_id() {
 # Update lockfile with SLURM allocation details. Run on head compute node.
 # Usage: update_status_initialise "$job" "$vllm_pid"
 update_status_initialise() {
+    # Transition lockfile: pending → initialising.
+    # Sets slurmJobId, computeHostname, vllmPid.
+    # Usage: update_status_initialise "$job" "$slurm_id" "$hostname" "$pid"
     local job="$1"
     local vllm_pid="$2"
     local lockfile
@@ -370,6 +419,8 @@ update_status_initialise() {
 # Mark job as running. Run on head compute node when vLLM health check passes.
 # Usage: update_status_running "$job"
 update_status_running() {
+    # Transition lockfile: initialising → running.
+    # Usage: update_status_running "$job"
     local job="$1"
     local lockfile
 
@@ -384,6 +435,8 @@ update_status_running() {
 # Mark job as cleanly stopped. Used by exit trap for user cancel, idle timeout.
 # Usage: update_status_stopped "$job"
 update_status_stopped() {
+    # Transition lockfile: → stopped.
+    # Usage: update_status_stopped "$job" "$reason" "$exit_code"
     local job="$1"
     local lockfile
 
@@ -401,6 +454,8 @@ update_status_stopped() {
 # Mark job as failed. Used by exit trap for startup failures and crashes.
 # Usage: update_status_failed "$job" "reason" exit_code
 update_status_failed() {
+    # Transition lockfile: → failed.
+    # Usage: update_status_failed "$job" "$reason" "$exit_code"
     local job="$1"
     local reason="$2"
     local exit_code="$3"
@@ -423,6 +478,8 @@ update_status_failed() {
 # to detect. Can be run from LOGIN node or any client.
 # Usage: request_cancel "$job"
 request_cancel() {
+    # Write "cancel" to the lockfile to request graceful shutdown.
+    # Usage: request_cancel "$job"
     local job="$1"
     local lockfile
 
@@ -440,6 +497,8 @@ request_cancel() {
 # Write a reason string to the lockfile without changing status.
 # Usage: update_reason "$job" "reason text"
 update_reason() {
+    # Set the reason field in the lockfile.
+    # Usage: update_reason "$job" "$reason_text"
     local job="${1?must supply job name}"
     local reason="${2?must supply reason}"
     local lockfile
@@ -455,6 +514,8 @@ update_reason() {
 # Check if a job has a specific status. Returns 0 if match, 1 otherwise.
 # Usage: if is_status "$job" "running"; then ...
 is_status() {
+    # Check if lockfile status matches expected value.
+    # Usage: is_status "$job" "running" → returns 0 if true
     local lockfile
     lockfile=$(resolve_job_status "${1}")
     [ ! -f "$lockfile" ] && return 1
@@ -462,6 +523,8 @@ is_status() {
 }
 
 is_cancellable() {
+    # Check if job is in a cancellable state.
+    # Usage: is_cancellable "$job" → returns 0 if cancellable
     squeue -j "${1?must supply slurm id}" -u "$(whoami)" -h -o "%i" | grep -q .
 }
 
@@ -474,6 +537,9 @@ is_cancellable() {
 #   other = crash (check status to distinguish startup vs runtime)
 # Usage: trap 'tidy_up "$job" $?' EXIT
 tidy_up() {
+    # Exit trap handler: kill vLLM, update lockfile, scancel job.
+    # Called on EXIT, SIGUSR1 (SLURM timeout), SIGUSR2 (cancel/idle).
+    # Usage: called automatically by setup_traps EXIT handler
     local job="$1"
     local exit_code="$2"
     local pid
@@ -533,6 +599,8 @@ tidy_up() {
 # Set up exit traps for the monitor triad.
 # Usage: setup_traps "$job"
 setup_traps() {
+    # Register EXIT/SIGUSR1/SIGUSR2 traps for graceful shutdown.
+    # Usage: setup_traps "$job" "$vllm_pid" "$slurm_id"
     local job="$1"
     trap 'tidy_up "'"$job"'" 200' SIGUSR1   # SLURM timeout
     trap 'tidy_up "'"$job"'" 201' SIGUSR2   # user cancel or idle timeout
@@ -543,6 +611,8 @@ setup_traps() {
 # Clear the per-node local working directory.
 # Usage: clear_localdir "$job"
 clear_localdir() {
+    # Remove the local working directory and contents.
+    # Usage: clear_localdir "$localdir"
     local localdir
     localdir=$(resolve_localdir "$1")
     [ ! -d "$localdir" ] && exit 1
@@ -560,6 +630,9 @@ clear_localdir() {
 # saves the JIT cache, and transitions status to "running".
 # Usage: monitor_startup "$job" "$vllm_parent_pid"
 monitor_startup() {
+    # Poll /health endpoint until vLLM is running.
+    # Sends warmup request, saves JIT cache, transitions to running.
+    # Usage: monitor_startup "$job" "$port" "$model"
     local job="$1"
     local vllm_parent="$2"
     local server_port
@@ -644,6 +717,9 @@ monitor_startup() {
 # and idle timeout.
 # Usage: monitor_head "$job" "$vllm_parent_pid" &
 monitor_head() {
+    # Background monitor loop on head node.
+    # Checks cancel flag, vLLM liveness, idle timeout, lockfile presence.
+    # Usage: monitor_head "$job" "$port" "$timeout"
     local job="$1"
     local vllm_parent="$2"
     local lockfile
@@ -757,6 +833,9 @@ monitor_head() {
 # state.
 # Usage: monitor_worker "$job" "$vllm_worker_pid" &
 monitor_worker() {
+    # Background monitor on worker nodes.
+    # Watches lockfile; shuts down if job is no longer running.
+    # Usage: monitor_worker "$job" "$vllm_pid"
     local job="$1"
     local vllm_worker="$2"
     local lockfile
@@ -820,6 +899,8 @@ monitor_worker() {
 # ── Resource monitoring ───────────────────────────────────────────────────
 
 report_setup() {
+    # Report setup progress and exit code to lockfile.
+    # Usage: report_setup "$job" "$exit_code"
 echo "=== Python & Library Extension Environment ==="
 python -c "
 import os, sys, torch, deep_gemm, deep_ep
@@ -854,6 +935,8 @@ echo "============================================"
 # Report memory and JIT cache usage for the current node.
 # Usage: report_memory "$job"
 report_memory() {
+    # Report memory usage to the log.
+    # Usage: report_memory
     local localdir
     local node
 
@@ -882,6 +965,8 @@ report_memory() {
 # Restore the JIT compilation cache from shared storage to local tmpfs.
 # Usage: restore_cache "$job"
 restore_cache() {
+    # Restore JIT cache from shared storage to local tmpfs.
+    # Usage: restore_cache "$cache_path" "$target_dir"
     local job="$1"
     local cachetar
     local localdir
@@ -901,6 +986,8 @@ restore_cache() {
 # Only runs on the head node (SLURM_NODEID == 0).
 # Usage: save_cache "$job"
 save_cache() {
+    # Save JIT cache from local tmpfs to shared storage.
+    # Usage: save_cache "$local_dir" "$cache_path"
     local job="$1"
     local cachetar
     local localdir
@@ -928,6 +1015,8 @@ save_cache() {
 
 # Helper: Parse version string into components, defaulting missing/invalid parts to 0
 _parse_semver() {
+    # Internal: parse semver string into MAJOR.MINOR.PATCH.
+    # Usage: _parse_semver "0.19.1" → sets _MAJOR _MINOR _PATCH
     local IFS='.'
     local -a parts
     read -r -a parts <<< "$1"
@@ -938,6 +1027,8 @@ _parse_semver() {
 # Compare two semantic version strings: a < b
 # Returns 0 (true) if a < b, otherwise returns 1 (false)
 semver_lt() {
+    # Internal: less-than comparison for semver strings.
+    # Usage: semver_lt "0.19.0" "0.20.0" → returns 0 if a < b
     read -r a1 a2 a3 <<< "$(_parse_semver "$1")"
     read -r b1 b2 b3 <<< "$(_parse_semver "$2")"
 
@@ -949,6 +1040,8 @@ semver_lt() {
 # Compare two semantic version strings: a >= b
 # Returns 0 (true) if a >= b, otherwise returns 1 (false)
 semver_gte() {
+    # Internal: greater-or-equal comparison for semver strings.
+    # Usage: semver_gte "0.20.0" "0.19.0" → returns 0 if a >= b
     semver_lt "$1" "$2"
     # Invert the boolean return status (0 becomes 1, 1 becomes 0)
     return $(( ! $? ))
@@ -957,18 +1050,24 @@ semver_gte() {
 # Sort an array of semantic version strings in descending order
 # Expects versions as separate arguments. Outputs sorted list to stdout.
 semver_sort() {
+    # Internal: sort semver strings in ascending order.
+    # Usage: semver_sort "0.19.0" "0.21.0" "0.20.0"
     printf '%s\n' "$@" | sort -V -r
 }
 
 # Sort an array of semantic version strings in ascending order
 # Expects versions as separate arguments. Outputs sorted list to stdout.
 rev_semver_sort() {
+    # Internal: sort semver strings in descending order.
+    # Usage: rev_semver_sort "0.19.0" "0.21.0" "0.20.0"
     printf '%s\n' "$@" | sort -V
 }
 
 # Find the LOWEST installed version directory that satisfies a minimum version constraint.
 # Expects minimum vllm version to match
 select_closest_version() {
+    # Find the best installed vLLM version >= minimum.
+    # Usage: select_closest_version "0.19.0" → returns matching version
     local install_dir="$(resolve_vllm_dir)"
     local min_version="$1"
     local candidate
