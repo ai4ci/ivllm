@@ -109,7 +109,7 @@ slurmJobId=$(sbatch \
     --time="$maxTime" \
     --output="$IVLLM_LOG" \
     --error="$IVLLM_LOG" \
-    $here/lib/slurm-vllm-serve.sh "$IVLLM_JOB" "$nGpusPerNode" "$memValue"
+    $here/lib/slurm-vllm-serve.sh "$IVLLM_JOB" "$nGpusPerNode" "$memValue")
 
 echo "Slurm Job ID: $slurmJobId"
 echo "=================================="

@@ -15,6 +15,23 @@
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/sandbox.sh"
 
+# --- Test: serve with minimal config -----------------------------------
+sandbox_run_test "login_serves_with_minimal_config" login '
+    mkdir -p "$IVLLM_PROJECTDIR/engine/jobs/serve-job"
+    cp /work/fixtures/minimal.yaml "$IVLLM_PROJECTDIR/engine/jobs/serve-job/vllm.yaml"
+    # Create a stopped lockfile so create_status_pending sees "stopped" and
+    # restarts it (the only way to pre-exist the lockfile without failing).
+    create_status_pending "serve-job" "test-org/test-model-7b" 30 > /dev/null 2>&1
+    lf=$(resolve_job_status "serve-job")
+    printf '"'"'{"jobName":"serve-job","model":"test-model","status":"stopped","serverPort":49152}'"'"' > "$lf"
+    unset IVLLM_UTILS
+    bash "$IVLLM_PROJECTDIR/engine/ivllm-serve.sh" -j serve-job
+    assert_shim_called "sbatch" "--job-name serve-job" || exit 1
+    assert_shim_called "sbatch" "--partition=interactive" || exit 1
+    assert_shim_called "sbatch" "slurm-vllm-serve.sh" || exit 1
+    exit 0
+'
+
 # --- Test: cancel existing job -----------------------------------------
 sandbox_run_test "login_cancels_existing" login '
     mkdir -p "$IVLLM_PROJECTDIR/engine/jobs/cancel-job"

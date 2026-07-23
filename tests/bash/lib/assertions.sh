@@ -81,7 +81,7 @@ assert_shim_called() {
         echo "FAIL: no call log found at '${log:-<unset>}'"
         return 1
     fi
-    if ! grep -F "[$tool]" "$log" | grep -qF "$substr"; then
+    if ! grep -F "[$tool]" "$log" | grep -qF -- "$substr"; then
         echo "FAIL: expected $tool to be called with '$substr', call log:"
         sed 's/^/  /' "$log"
         return 1
