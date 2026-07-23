@@ -170,15 +170,17 @@ resolve_job_dir() {
     echo "$out"
 }
 
-# Resolve the path to a job's JIT cache tarball.
-# This must be a user specific location as caches cannot be shared
-# between users due to hard coded paths in cache files and subsequent permissions
-# issues. We'll go with $HOME/.cache/ivllm/<job>/jit-cache.tar.gz
-# creates the directory if it does not exist
-# does not check the file exists.
+# Resolve the path to a per-job JIT cache tarball (~/.cache/ivllm/<job>/jit-cache.tar.gz).
+# Caches are user-specific because cache files contain hard-coded paths that cause
+# permission issues if shared between users.
+# Args: $1 — job name.
+# Creates the parent cache directory if it doesn't exist.
+# Returns: path to the cache tarball via stdout. Does not check if the file exists.
+# Usage: local cache=$(resolve_job_jit_cache "$job")
 resolve_job_jit_cache() {
-    # Resolve the JIT cache tarball path for a job.
-    # Usage: local cache=$(resolve_job_jit_cache "$job")
+    # Resolve the path to a per-job JIT cache tarball (~/.cache/ivllm/<job>/jit-cache.tar.gz).
+    # Caches are user-specific because cache files contain hard-coded paths.
+    # Returns: path to the cache tarball via stdout.
     mkdir -p "$HOME/.cache/ivllm/$1/"
     echo "$HOME/.cache/ivllm/$1/jit-cache.tar.gz"
 }
