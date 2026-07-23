@@ -1,6 +1,10 @@
 #!/bin/bash
 # shellcheck disable=SC2155,SC1091
+# vllm-env.sh — vLLM-specific environment variables.
 #
+# Sets NCCL_CROSS_NIC, FI_PROVIDER, FI_CXI_DISABLE_CONNECTIONS,
+# VLLM_ENGINE_ITERATION_TIMEOUT_S, and other tuning variables
+# for optimal Slingshot 11 performance on Isambard GH200.
 # preamble.sh — Isambard GH200 environment setup for vLLM GPU workloads.
 #
 # Source this at the top of any SLURM script before starting vLLM. It sets

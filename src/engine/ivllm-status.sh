@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2059
+# ivllm-status.sh — Show status of a vLLM job or all jobs.
+#
+# Reads status.json from the lockfile and outputs JSON or a formatted row.
 
 ivllm_status_usage() {
     echo "status: $0 [-j job] [-p]"

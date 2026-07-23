@@ -1,6 +1,12 @@
 #!/bin/bash
+# ivllm-cancel.sh — Cancel a running vLLM job.
+#
+# Graceful cancel (default): writes 'cancel' to the job's lockfile.
+# The compute-side monitor detects the request and shuts down vLLM cleanly.
+# Force cancel (-f): runs scancel on the SLURM job directly.
 
 ivllm_cancel_usage() {
+    # Print usage instructions and exit with error code 1.
     echo "Usage: $0 [-j job] [-f]"
     echo ""
     echo "Options:"

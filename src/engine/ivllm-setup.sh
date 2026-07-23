@@ -1,7 +1,12 @@
 #!/bin/bash
+# ivllm-setup.sh — Install or reinstall vLLM on the HPC.
+#
+# Submits an srun job to install the specified vLLM version into the
+# shared project directory. Idempotent: if the version already exists,
+# skips installation unless -f (force) is specified.
 
 ivllm_setup_usage() {
-    echo "Usage: $0 [-v version] [-l log file]"
+    # Print usage instructions and exit with error code 1.
     echo ""
     echo "Options:"
     echo "  -v version  The vllm version to install"

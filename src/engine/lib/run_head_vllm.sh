@@ -1,4 +1,8 @@
 #!/bin/bash
+# run_head_vllm.sh — Head node vLLM launcher.
+#
+# Sources utils.sh, resolves the environment, and runs the vLLM serve
+# command with proper logging. Only runs on SLURM head node (NODEID=0).
 
 source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 

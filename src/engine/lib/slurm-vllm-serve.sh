@@ -1,4 +1,9 @@
 #!/bin/bash
+# slurm-vllm-serve.sh — Multi-node vLLM job launcher.
+#
+# Submitted by ivllm-serve.sh via sbatch. Resolves environment,
+# starts vLLM with proper NCCL/Ray configuration, and runs the
+# monitor triad (startup, head, worker).
 #SBATCH --export=ALL
 #SBATCH --partition=interactive
 #SBATCH --reservation=interactive

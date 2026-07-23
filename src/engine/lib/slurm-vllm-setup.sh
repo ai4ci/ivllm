@@ -1,4 +1,9 @@
 #!/bin/bash
+# slurm-vllm-setup.sh — vLLM installation script.
+#
+# Installs the specified vLLM version into a shared versioned directory.
+# Downloads NVHPC SDK if needed, creates venv, installs PyTorch/vLLM,
+# and compiles CUDA kernels for JIT cache warmup.
 #SBATCH --job-name=vllm-setup
 #SBATCH --nodes=1
 #SBATCH --gpus=1

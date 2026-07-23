@@ -1,4 +1,8 @@
 #!/bin/bash
+# run_worker_vllm.sh — Worker node vLLM launcher.
+#
+# Sources utils.sh and runs the vLLM serve command on worker nodes.
+# Only runs on SLURM worker nodes (NODEID > 0).
 
 source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 

@@ -1,5 +1,8 @@
 #!/bin/bash
 # shellcheck disable=SC2155
+# ivllm-get-model.sh — Download or verify a model in the HuggingFace cache.
+#
+# Checks the shared HF cache and downloads if needed. Used by ivllm-serve.sh.
 
 ivllm-get-model_usage() {
     echo "Usage: $0 [-m model] [-t token]"

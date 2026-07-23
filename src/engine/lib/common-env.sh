@@ -1,6 +1,10 @@
 #!/bin/bash
 # shellcheck disable=SC2155,SC1091
+# common-env.sh — NVHPC/CUDA/Slingshot environment setup.
 #
+# Sources by run_head_vllm.sh and run_worker_vllm.sh. Resolves NVHPC root,
+# sets CUDA_HOME, CC/CXX compilers, LD_LIBRARY_PATH, NCCL vars, and
+# Slingshot 11 fabric tuning. Designed to be sourced multiple times safely.
 # cuda.sh - Common settings for installation and runtime of vllm
 
 # Sets up CUDA_HOME, CC, CXX, CUDA_VERSION, NVHPC_ROOT

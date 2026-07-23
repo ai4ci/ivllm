@@ -1,4 +1,8 @@
 #!/bin/bash
+# ivllm-serve.sh — Start or reconnect to a vLLM job.
+#
+# On the login node: submits a SLURM job via sbatch to run the compute-side
+# vLLM launcher (slurm-vllm-serve.sh) on a compute node allocation.
 
 ivllm-serve_usage() {
     echo "Usage: $0 [-j job] [-t time]"

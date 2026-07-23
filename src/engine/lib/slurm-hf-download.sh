@@ -1,4 +1,8 @@
 #!/bin/bash
+# slurm-hf-download.sh — HuggingFace model download via srun.
+#
+# Downloads model weights to the shared HF cache on the login node
+# using the interactive partition. Supports gated models via token.
 #SBATCH --job-name=hf-download
 #SBATCH --nodes=1
 #SBATCH --mem=20G

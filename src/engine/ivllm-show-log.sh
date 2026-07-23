@@ -1,4 +1,8 @@
 #!/bin/bash
+# ivllm-show-log.sh — Tail the vLLM output log for a job.
+#
+# Streams the remote log file (vllm.<nodeid>.log) to stdout.
+# Supports tailing from a specific node or from the beginning.
 
 ivllm_show_logs_usage() {
     echo "Usage: $0 [-j job] [-n] [-m match]"
