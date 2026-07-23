@@ -1127,11 +1127,11 @@ rev_semver_sort() {
     printf '%s\n' "$@" | sort -V
 }
 
-# Find the LOWEST installed version directory that satisfies a minimum version constraint.
-# Expects minimum vllm version to match
+# Find the LOWEST installed vLLM version >= minimum constraint (closest to minimum).
+# Args: $1 — minimum version string (e.g. "0.19.0").
+# Returns the best candidate via stdout. Exit 1 if install dir missing, exit 0 (no output) if none found.
+# Usage: local version=$(select_closest_version "0.19.0")
 select_closest_version() {
-    # Find the best installed vLLM version >= minimum.
-    # Usage: select_closest_version "0.19.0" → returns matching version
     local install_dir="$(resolve_vllm_dir)"
     local min_version="$1"
     local candidate
