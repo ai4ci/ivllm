@@ -9,6 +9,11 @@ import { formatJobRow, formatJobTable } from './utils.ts';
 const { version } = await import('../package.json');
 (globalThis as any).__VERSION__ = version;
 
+/**
+ * CLI entry point — registers all commands with Commander and parses argv.
+ *
+ * Commands: `setup`, `cancel`, `config`, `connect`, `status`.
+ */
 async function main() {
     program.name('ivllm').version(version).description(`run llms on HPCs`);
 
@@ -102,6 +107,14 @@ If the job doesn't exist, creates it and starts it.`,
     await program.parseAsync(process.argv);
 }
 
+/**
+ * Cancel command handler.
+ *
+ * Loads credentials, creates the backend, and delegates to
+ * {@link Backend.requestCancel} for graceful or forced cancellation.
+ * @param jobName — Job name to cancel
+ * @param options — `{ force: boolean }` — force kill via scancel
+ */
 async function cmdCancel(
     jobName: string,
     options: { force: boolean },
@@ -113,6 +126,13 @@ async function cmdCancel(
     await backend.requestCancel(jobName, options.force);
 }
 
+/**
+ * Config command handler.
+ *
+ * Loads current credentials, applies any provided options, and saves.
+ * @param options — Optional credential fields to update:
+ *   `loginHost`, `username`, `projectDir`, `hfToken`
+ */
 async function cmdConfig(options: {
     loginHost?: string;
     username?: string;
@@ -128,6 +148,14 @@ async function cmdConfig(options: {
     console.log('Configuration saved.');
 }
 
+/**
+ * Setup command handler.
+ *
+ * Loads credentials, creates the backend, and delegates to
+ * {@link Backend.setup} to install vLLM on the HPC.
+ * @param vllmVersion — Version string (e.g. `'0.19.1'`)
+ * @param options — `{ force: boolean }` — force reinstall
+ */
 async function cmdSetup(
     vllmVersion: string,
     options: { force: boolean },
@@ -138,6 +166,12 @@ async function cmdSetup(
     await backend.setup(vllmVersion, options.force);
 }
 
+/**
+ * Status command handler.
+ *
+ * Shows lockfile status for a specific job or all jobs.
+ * @param jobName — Optional job name; if omitted, lists all jobs
+ */
 async function cmdStatus(jobName?: string) {
     const config = loadCredentials();
     assertConfigured(config);
@@ -150,6 +184,15 @@ async function cmdStatus(jobName?: string) {
     }
 }
 
+/**
+ * Connect command handler.
+ *
+ * If the job is running, establishes an SSH tunnel.
+ * If the job is stopped/failed, starts it.
+ * If the job is starting up, tails logs until running.
+ * @param jobName — Job name
+ * @param options — `{ port, timeLimit, configFile }`
+ */
 async function cmdConnect(
     jobName: string,
     options: {
