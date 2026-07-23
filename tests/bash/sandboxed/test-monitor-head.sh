@@ -15,38 +15,35 @@
 # IVLLM_CHECK_INTERVAL_SECS defaults to 1 inside the sandbox (see
 # tests/bash/lib/sandbox.sh), so monitor_head's polling loop reacts quickly
 # enough for these tests to run in a few seconds each.
-#
-# EXPECT MOST OF THESE TESTS TO FAIL RIGHT NOW — this is the correct TDD
-# starting state (see AGENTS.md). get_job_status_setting() is called
-# without its required leading '.' in several places inside monitor_head()
-# (and monitor_startup()/tidy_up()), so `vllm_pid` always resolves to ""
-# and `kill -0 ""` always fails — monitor_head incorrectly reports "lost
-# contact with vLLM process" on its very first loop iteration, before any
-# of these tests' actual scenarios (cancel, idle timeout, active traffic)
-# ever get evaluated. See design/issues.md Issue 13 — this was discovered
-# by writing these very tests. They will turn green once Issue 13 is fixed.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/sandbox.sh"
 
-# Common setup: a "running" job, and a background stand-in process for the
-# vLLM *parent* shell (the thing monitor_head signals to trigger shutdown —
-# in production this is run_head_vllm.sh, which has `setup_traps` installed
-# so SIGUSR2/SIGTERM lead to tidy_up()). Our stand-in is a bare `sleep`,
-# whose default disposition for both SIGTERM and SIGUSR2 is to terminate
-# the process — exactly the observable behaviour monitor_head depends on
-# (`kill -0 $vllm_parent` eventually failing), without needing a trap
-# (a subshell '"'"'(trap ...; sleep 9999) &'"'"' construct was tried first, but
-# bash does not reliably run a subshell'"'"'s trap while it is blocked waiting
-# on its own foreground child — the signal is delivered to the wrong layer).
+# Common setup: a "running" job, with real background processes for:
+#   * the vLLM *parent* shell (monitor_head sends SIGUSR2 to this to trigger
+#     shutdown once its checks fail)
+#   * the actual fake "vllm" process (pid stored in the lockfile; monitor_head
+#     uses `kill -0` to detect its death)
+# Both are bare `sleep`s; `kill -0` works on them and SIGUSR2/SIGTERM kills
+# them (default disposition). The lockfile's vllmPid MUST be the pid of a
+# process that actually exists for monitor_head's liveness check to pass,
+# hence we create a real `sleep` rather than using a static integer.
 _SETUP_RUNNING_JOB='
     create_status_pending "mjob" "model" "${IDLE_TIMEOUT:-30}" > /dev/null 2>&1
     sleep 9999 &
     parent_pid=$!
+    sleep 9999 &
+    fake_vllm_pid=$!
+    # The monitor requires the log file to exist (sanity check). We also prime
+    # it with a RECENT API activity line so monitor_head'"'"'s idle-timeout
+    # check doesn'"'"'t fire immediately — tests that specifically target idle
+    # timeout override by writing their own log content below.
+    log=$(resolve_job_log "mjob")
+    echo "[$(date "+%Y-%m-%d %H:%M:%S")] INFO: 127.0.0.1:0 - \"POST /v1/chat/completions HTTP/1.1\" 200 OK" > "$log"
 '
 
 sandbox_run_test "monitor_head_detects_cancel" compute '
     '"$_SETUP_RUNNING_JOB"'
-    update_status_initialise "mjob" 424242
+    update_status_initialise "mjob" "$fake_vllm_pid"
     update_status_running "mjob"
 
     monitor_head "mjob" "$parent_pid" &
@@ -67,16 +64,14 @@ sandbox_run_test "monitor_head_detects_cancel" compute '
 
 sandbox_run_test "monitor_head_detects_vllm_process_death" compute '
     '"$_SETUP_RUNNING_JOB"'
-    (sleep 9999) &
-    vllm_pid=$!
-    update_status_initialise "mjob" "$vllm_pid"
+    update_status_initialise "mjob" "$fake_vllm_pid"
     update_status_running "mjob"
 
     monitor_head "mjob" "$parent_pid" &
     monitor_pid=$!
 
     sleep 2
-    kill -9 "$vllm_pid" 2>/dev/null
+    kill -9 "$fake_vllm_pid" 2>/dev/null
 
     wait "$monitor_pid"
 
@@ -86,7 +81,7 @@ sandbox_run_test "monitor_head_detects_vllm_process_death" compute '
 
 sandbox_run_test "monitor_head_detects_lockfile_deletion" compute '
     '"$_SETUP_RUNNING_JOB"'
-    update_status_initialise "mjob" 424242
+    update_status_initialise "mjob" "$fake_vllm_pid"
     update_status_running "mjob"
     lockfile=$(resolve_job_status "mjob")
 
@@ -107,10 +102,11 @@ sandbox_run_test "monitor_head_detects_lockfile_deletion" compute '
 sandbox_run_test "monitor_head_idle_timeout_shuts_down" compute '
     IDLE_TIMEOUT=1
     '"$_SETUP_RUNNING_JOB"'
-    update_status_initialise "mjob" 424242
+    update_status_initialise "mjob" "$fake_vllm_pid"
     update_status_running "mjob"
-    # Log file exists but has no API activity at all — should trigger an
-    # idle-timeout shutdown on the very first check.
+    # Log file exists (just created in _SETUP_RUNNING_JOB) but has no API
+    # activity at all — should trigger an idle-timeout shutdown on the very
+    # first check.
     log=$(resolve_job_log "mjob")
     echo "server started, no requests yet" > "$log"
 
@@ -126,7 +122,7 @@ sandbox_run_test "monitor_head_idle_timeout_shuts_down" compute '
 sandbox_run_test "monitor_head_active_traffic_prevents_idle_timeout" compute '
     IDLE_TIMEOUT=1
     '"$_SETUP_RUNNING_JOB"'
-    update_status_initialise "mjob" 424242
+    update_status_initialise "mjob" "$fake_vllm_pid"
     update_status_running "mjob"
     log=$(resolve_job_log "mjob")
     # A log line timestamped *right now*, containing a real endpoint —

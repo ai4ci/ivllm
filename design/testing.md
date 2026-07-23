@@ -667,14 +667,14 @@ bun test tests/cli/<file>.test.ts
 ### Before commit
 
 ```bash
-bash tests/bash/run.sh sandboxed     # ~15s, currently 5 intentional red tests
+bash tests/bash/run.sh sandboxed     # ~22s, all green
 ```
 
-Currently 10 individual red tests are intentional (they demonstrate open
-issues in `design/issues.md`, issues 7–9, 12 and 13 — see
-`test-config.sh`, `test-vllm-env.sh` and `test-monitor-head.sh` headers).
-Passing: lockfile (20/20), cache (5/5), vllm-env (3/4), config (1/6),
-monitor-head (1/5) — 30 of 40 individual assertions pass.
+Currently all sandboxed tests pass. Each file is also a regression guard
+against the class of bug it originally found (yq dialect mismatches,
+subprocess/signal behaviour, env ordering) — the sandboxed harness runs
+the tests against the *real* tools from the host, preventing similar
+regressions silently returning.
 
 ### Before release
 

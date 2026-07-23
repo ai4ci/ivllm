@@ -15,10 +15,9 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/sandbox.sh"
 #
 # NOTE: common-env.sh/vllm-env.sh are sourced here with `set +u`, matching
 # their *actual* invocation context in run_head_vllm.sh/run_worker_vllm.sh
-# (neither sets `-u`). Without this, sourcing common-env.sh crashes with
-# "NVSHMEM_DIR: unbound variable" — a real latent bug, tracked as Issue 11
-# in design/issues.md, not something these tests should silently paper over
-# by weakening their own assertions.
+# (neither sets `-u`). The `set -u` is a guard so the tests don't
+# accidentally start depending on `set +u` semantics if a future change
+# introduces new unbound-variable paths.
 _NVHPC_FIXTURE='
     mkdir -p "$IVLLM_PROJECTDIR/engine/nvhpc/Linux_aarch64/26.3"
     set +u
@@ -44,12 +43,10 @@ sandbox_run_test "common_env_vars_set" compute "
 
 sandbox_run_test "common_env_missing_nvhpc_falls_through_empty" compute '
     set +u
-    # RED (expected to fail until design/issues.md Issue 12 is fixed):
-    # resolve_nvhpc_root() echoes its "not installed" diagnostic to STDOUT
-    # instead of stderr, so common-env.sh'"'"'s
-    # `export NVHPC_ROOT=$(resolve_nvhpc_root)` captures the error *message*
-    # as the value of NVHPC_ROOT instead of leaving it empty. This test
-    # documents the intended (correct) behaviour.
+    # Verifies that resolve_nvhpc_root() writes its diagnostic to stderr
+    # (Issue 12 in design/issues.md), so command substitution captures an
+    # empty NVHPC_ROOT rather than the error message — preventing the
+    # downstream environment from being silently corrupted.
     source /work/project/engine/lib/common-env.sh 2>/work/err.log
     [ -z "$NVHPC_ROOT" ] || { echo "FAIL: expected empty NVHPC_ROOT, got: $NVHPC_ROOT"; exit 1; }
 '

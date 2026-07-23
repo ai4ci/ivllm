@@ -258,15 +258,16 @@ async bootstrap(): Promise<void> {
 
 The following were found while designing the bubblewrap sandbox and tracing
 real external-tool call semantics (real `yq 3.4.1` binary, as confirmed
-installed to match the HPC). Not yet fixed — flagged here per the "document
-verified issues" convention. These will surface as failing (red) tests once
-the sandbox/config tests are written, which is the correct TDD starting state.
+installed to match the HPC). They were first captured as intentional red
+tests (see `tests/bash/sandboxed/test-config.sh`, `test-vllm-env.sh`, and
+`test-monitor-head.sh`) and then fixed — all now green, but the tests
+remain as regression guard for each category of bug.
 
 ### Issue 7: `get_job_config_setting()` passes yq arguments in the wrong order (CRITICAL)
 
 **Location**: `src/engine/lib/utils.sh` — `get_job_config_setting()`  
 **Severity**: CRITICAL — every config value read returns empty  
-**Status**: Verified
+**Status**: Closed
 
 **Problem**:
 The HPC has **yq 3.4.1** (mikefarah/yq v3, confirmed against
@@ -304,7 +305,7 @@ empty string instead of the real value.
 
 **Location**: `src/engine/lib/utils.sh` — `resolve_stripped_job_config()`  
 **Severity**: CRITICAL — vllm.yaml.clean is never generated  
-**Status**: Verified
+**Status**: Closed
 
 **Problem**:
 ```bash
@@ -348,7 +349,7 @@ yq d "$file" env | yq d - nnodes | yq d - min-vllm-version | yq d - idle-timeout
 
 **Location**: `src/engine/lib/utils.sh` — `get_job_config_exports()`  
 **Severity**: CRITICAL — `env:` block from vllm.yaml is never exported  
-**Status**: Verified
+**Status**: Closed
 
 **Problem**:
 ```bash
@@ -377,7 +378,7 @@ yq r -p pv "$file" 'env.*' 2>/dev/null | sed -E 's/^env\.([^ ]+) (.*)$/export \1
 
 **Location**: `src/engine/ivllm-serve.sh` line 52  
 **Severity**: CRITICAL — model download is always skipped/broken  
-**Status**: Verified
+**Status**: Closed
 
 **Problem**:
 ```bash
@@ -410,7 +411,7 @@ model name against the HuggingFace cache.
 
 **Location**: `src/engine/lib/common-env.sh` lines 58 and 67  
 **Severity**: MEDIUM — latent bug, currently masked because these scripts are sourced without `set -u`  
-**Status**: Verified
+**Status**: Closed
 
 **Problem**:
 ```bash
@@ -446,7 +447,7 @@ silently worked around.
 
 **Location**: `src/engine/lib/utils.sh` — `resolve_nvhpc_root()` line 89  
 **Severity**: HIGH — `NVHPC_ROOT`/`CUDA_HOME`/`PATH`/`LD_LIBRARY_PATH` become garbage instead of empty when the NVHPC SDK isn't installed  
-**Status**: Verified
+**Status**: Closed
 
 **Problem**:
 ```bash
@@ -493,8 +494,10 @@ echo "NVHPC SDK version 26.3 is not installed. please run ivllm setup." >&2
 `tests/bash/sandboxed/test-vllm-env.sh`'s
 `common_env_missing_nvhpc_falls_through_empty` test currently fails,
 showing `NVHPC_ROOT` containing the error sentence instead of being empty.
-This is an intentional red test (see design/issues.md conventions / AGENTS.md
-TDD requirement) left failing until the fix above lands.
+The sandboxed test
+`tests/bash/sandboxed/test-vllm-env.sh`'s
+`common_env_missing_nvhpc_falls_through_empty` was written first and failed
+because of this bug; it now passes after the fix.
 
 ---
 
@@ -502,7 +505,7 @@ TDD requirement) left failing until the fix above lands.
 
 **Location**: `src/engine/lib/utils.sh` — lines 469, 470, 555, 556, 617, 672  
 **Severity**: CRITICAL — the entire monitor triad and shutdown trap are non-functional as written  
-**Status**: Verified
+**Status**: Closed
 
 **Problem**:
 `get_job_status_setting()` is documented as requiring a leading `.` (it is a
@@ -583,8 +586,12 @@ idle_timeout=$(get_job_status_setting "$job" ".idleTimeout")
 vllm_pid=$(get_job_status_setting "$job" ".vllmPid")
 ```
 
-**Left open intentionally** (red tests, per the project's TDD requirement)
-so the fix can be made and verified to turn these tests green.
+This was the most severe bug — the entire monitor triad and exit trap
+were non-functional. `tests/bash/sandboxed/test-monitor-head.sh` wrote
+against real subprocess/signal behaviour caught it: backgrounding the
+fake-vllm pid stand-in as a real `sleep` process, then verifying that
+`monitor_head` actually reaches the cancel/idle/lockfile branches
+instead of prematurely failing on a static integer pid.
 
 ---
 
@@ -598,18 +605,19 @@ so the fix can be made and verified to turn these tests green.
 | 4. jq typo in lockfile reader | src/engine/lib/utils.sh | 192 | CRITICAL | Syntax error | Closed |
 | 5. Missing awaits (bootstrap) | src/backends/IsambardBareMetalBackend.ts | 47, 64, 101, 119, 148, 180 | HIGH | Async bug | Closed |
 | 6. Missing await (checkSSH) | src/backends/IsambardBareMetalBackend.ts | 33 | HIGH | Async bug | Closed |
-| 7. yq arg order reversed | src/engine/lib/utils.sh | `get_job_config_setting` | CRITICAL | Argument order | Verified |
-| 8. yq v4 syntax vs v3 binary (del) | src/engine/lib/utils.sh | `resolve_stripped_job_config` | CRITICAL | Version incompatibility | Verified |
-| 9. yq v4 syntax vs v3 binary (to_entries) | src/engine/lib/utils.sh | `get_job_config_exports` | CRITICAL | Version incompatibility | Verified |
-| 10. Missing `-m` flag calling ivllm-get-model.sh | src/engine/ivllm-serve.sh | 52 | CRITICAL | Missing CLI flag | Verified |
-| 11. `$NVSHMEM_DIR` used before defined | src/engine/lib/common-env.sh | 58 (used), 67 (defined) | MEDIUM | Ordering bug | Verified |
-| 12. `resolve_nvhpc_root` error goes to stdout | src/engine/lib/utils.sh | 89 | HIGH | Wrong stream | Verified |
-| 13. Missing leading `.` in jq filter (tidy_up/monitor_startup/monitor_head) | src/engine/lib/utils.sh | 469,470,555,556,617,642,672 | CRITICAL | Argument/syntax bug | Verified |
+| 7. yq arg order reversed | src/engine/lib/utils.sh | `get_job_config_setting` | CRITICAL | Argument order | Closed |
+| 8. yq v4 syntax vs v3 binary (del) | src/engine/lib/utils.sh | `resolve_stripped_job_config` | CRITICAL | Version incompatibility | Closed |
+| 9. yq v4 syntax vs v3 binary (to_entries) | src/engine/lib/utils.sh | `get_job_config_exports` | CRITICAL | Version incompatibility | Closed |
+| 10. Missing `-m` flag calling ivllm-get-model.sh | src/engine/ivllm-serve.sh | 52 | CRITICAL | Missing CLI flag | Closed |
+| 11. `$NVSHMEM_DIR` used before defined | src/engine/lib/common-env.sh | 58 (used), 67 (defined) | MEDIUM | Ordering bug | Closed |
+| 12. `resolve_nvhpc_root` error goes to stdout | src/engine/lib/utils.sh | 89 | HIGH | Wrong stream | Closed |
+| 13. Missing leading `.` in jq filter (tidy_up/monitor_startup/monitor_head) | src/engine/lib/utils.sh | 469,470,555,556,617,642,672 | CRITICAL | Argument/syntax bug | Closed |
 
-Issues 7–13 were all discovered while building the bash sandbox test
-harness and writing real tests against it (see design/testing.md). They are
-left **open** intentionally: the harness is designed so failing (red) tests
-demonstrate each bug against the real `yq`/`jq` binaries and real
-subprocess/signal behaviour, to be fixed as a dedicated follow-up task.
+Issues 7-13 were all discovered while building the bash sandbox test harness
+and writing real tests against it (see `design/testing.md`). The tests that
+original flagged each bug are now green — see
+`tests/bash/sandboxed/test-config.sh` (issues 7-9 & 11),
+`tests/bash/sandboxed/test-vllm-env.sh` (issues 11 & 12), and
+`tests/bash/sandboxed/test-monitor-head.sh` (issue 13).
 
 

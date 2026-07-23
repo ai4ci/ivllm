@@ -49,7 +49,7 @@ model=$(get_job_config_setting "$IVLLM_JOB" ".model")
 serverPort=$(create_status_pending "$IVLLM_JOB" "$model" "$idleTimeout") || exit 1
 
 # Check the model requested exists and download if not & fail if model download fails
-(source $here/ivllm-get-model.sh "$model") || exit 1
+(source $here/ivllm-get-model.sh -m "$model") || exit 1
 
 envExports=$(get_job_config_exports "$IVLLM_JOB")
 strippedConfig=$(resolve_stripped_job_config "$IVLLM_JOB")

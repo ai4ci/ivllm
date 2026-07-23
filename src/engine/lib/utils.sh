@@ -86,7 +86,7 @@ resolve_nvhpc_dir() {
 resolve_nvhpc_root() {
     local nvhpcDir=$(resolve_nvhpc_dir)
     if [[ ! -d "$nvhpcDir/Linux_aarch64/26.3" ]]; then
-      echo "NVHPC SDK version 26.3 is not installed. please run ivllm setup."
+      echo "NVHPC SDK version 26.3 is not installed. please run ivllm setup." >&2
       return 1
     fi
     echo "$nvhpcDir/Linux_aarch64/26.3"
@@ -172,8 +172,14 @@ resolve_job_config() {
 resolve_stripped_job_config() {
     local file=$(resolve_job_config "$1")
     local output_file="$file.clean"
-    # Deletes the specific blocks cleanly while maintaining valid YAML
-    yq 'del(.env, .nnodes, .min-vllm-version, .ivllm, .idle-timeout, .metadata)' "$file" > "$output_file"
+    # v3-compatible: chain single-path deletes (v3's `delete`/`d` subcommand
+    # takes exactly one path per invocation, not a v4-style filter pipeline)
+    yq d "$file" env \
+        | yq d - nnodes \
+        | yq d - min-vllm-version \
+        | yq d - ivllm \
+        | yq d - idle-timeout \
+        | yq d - metadata > "$output_file"
     echo "$output_file"
 }
 
@@ -223,7 +229,13 @@ get_job_config_setting() {
         echo "ERROR: no configuration file found for job $job" >&2
         exit 1
     fi
-    yq r "$2" "$file" 2>/dev/null || echo ""
+    # yq v3's path syntax does NOT use a leading '.' (unlike jq or yq v4);
+    # all callers pass the path as `.field` (because jq *does* require it, and
+    # the codebase originally mixed `get_job_config_setting` with
+    # `get_job_status_setting` call-sites that both use the same dotted
+    # convention). Strip the leading '.' before handing to yq.
+    local expr="${2#.}"
+    yq r "$file" "$expr" 2>/dev/null || echo ""
 }
 
 # Extract the top-level 'env:' block from a config as raw bash export lines.
@@ -231,13 +243,14 @@ get_job_config_setting() {
 # returns empty value is the config is there but the value is missing.
 get_job_config_exports() {
     local file=$(resolve_job_config "$1")
-    if [[ ! -f $file ]]; then
-        echo "ERROR: no configuration file found for job $job" >&2
-        exit 1
+    # For a config without an env: block, emit nothing.
+    if [[ ! -f "$file" ]]; then
+        return 0
     fi
-    # Merges keys and values directly into valid export declarations
-    # Using '( .env // {} )' safely defaults a missing block to an empty object
-    yq '( .env // {} ) | to_entries | .[] | "export " + .key + "=\"" + .value + "\""' "$file"
+    # v3-compatible: read path+value pairs and build export lines in bash
+    # (v3 has no jq-style filter pipeline; v4's `( .env // {} ) | to_entries | ...`
+    # is not supported by the installed yq 3.4.1)
+    yq r -p pv "$file" 'env.*' 2>/dev/null | sed -E 's/^env\.([^:]+): (.*)$/export \1="\2"/'
 }
 
 
@@ -466,8 +479,8 @@ tidy_up() {
     local pid
     local slurm_job_id
 
-    pid=$(get_job_status_setting "$job" "vllmPid")
-    slurm_job_id=$(get_job_status_setting "$job" "slurmJobId")
+    pid=$(get_job_status_setting "$job" ".vllmPid")
+    slurm_job_id=$(get_job_status_setting "$job" ".slurmJobId")
 
     echo "[shutdown] shutting down job $job (vllm: ${pid:-unknown}, slurm: ${slurm_job_id:-unknown}, exit: $exit_code)"
 
@@ -552,8 +565,8 @@ monitor_startup() {
     local server_port
     local model
 
-    server_port=$(get_job_status_setting "$job" "serverPort")
-    model=$(get_job_status_setting "$job" "model")
+    server_port=$(get_job_status_setting "$job" ".serverPort")
+    model=$(get_job_status_setting "$job" ".model")
 
     # Only runs on head node
     if (( SLURM_NODEID != 0 )); then
@@ -614,7 +627,7 @@ monitor_startup() {
             fi
         else
             local status
-            status=$(get_job_status_setting "$job" "status")
+            status=$(get_job_status_setting "$job" ".status")
             echo "[startup] ERROR: job $job is in unexpected state $status"
             echo "[startup] Startup complete: vLLM failed to start."
             return 1
@@ -639,7 +652,7 @@ monitor_head() {
 
     lockfile=$(resolve_job_status "$job")
     log=$(resolve_job_log "$job")
-    idle_timeout=$(get_job_status_setting "$job" "idleTimeout")
+    idle_timeout=$(get_job_status_setting "$job" ".idleTimeout")
 
     if [ ! -f "$lockfile" ]; then
         echo "[head] FATAL: lockfile $lockfile missing on startup"
@@ -669,7 +682,7 @@ monitor_head() {
         fi
 
         local vllm_pid
-        vllm_pid=$(get_job_status_setting "$job" "vllmPid")
+        vllm_pid=$(get_job_status_setting "$job" ".vllmPid")
 
         # vLLM process died
         if [ "$vllm_pid" != "null" ] && ! kill -0 "$vllm_pid" > /dev/null 2>&1; then

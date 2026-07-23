@@ -55,20 +55,23 @@ export PATH="$CUDA_HOME/bin:$PATH"
 # NVHPC separates math library headers (cuBLAS, cuSPARSE) from CUDA SDK headers.
 # flashinfer JIT kernels include cublasLt.h which is in math_libs, not cuda/include.
 export CPATH="$NVHPC_ROOT/math_libs/$CUDA_VERSION/include:${CPATH:-}"
-export CMAKE_PREFIX_PATH="$NVSHMEM_DIR/lib/cmake:${CMAKE_PREFIX_PATH:-}"
-
-# Library path: brics/nccl libs first, then compat libs, then CUDA, compilers, NCCL, NVSHMEM, math.
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:$NVHPC_ROOT/cuda/$CUDA_VERSION/compat:$NVHPC_ROOT/cuda/$CUDA_VERSION/lib64:$NVHPC_ROOT/compilers/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nccl/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nvshmem/lib:$NVHPC_ROOT/math_libs/$CUDA_VERSION/lib64"
 
 # ── NVSHMEM slingshot support
 # ──────────────────────────────────────
 # From: https://docs.nvidia.com/nvshmem/archives/nvshmem-260/pdf/NVSHMEM-Release-Notes.pdf
 # https://docs.nvidia.com/nvshmem/api/gen/env.html
+# (Section moved here so NVSHMEM_DIR is defined *before* CMAKE_PREFIX_PATH,
+# LD_LIBRARY_PATH etc. all use it — a v2/v3 ordering bug caught by the
+# sandboxed test `common_env_sources` under `set -u`.)
 export NVSHMEM_DIR="$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nvshmem"
+export CMAKE_PREFIX_PATH="$NVSHMEM_DIR/lib/cmake:${CMAKE_PREFIX_PATH:-}"
 export FI_CXI_OPTIMIZED_MRS=false
 export NVSHMEM_REMOTE_TRANSPORT="libfabric"
 export NVSHMEM_LIBFABRIC_PROVIDER="cxi"
 export NVSHMEM_DISABLE_CUDA_VMM=1
+
+# Library path: brics/nccl libs first, then compat libs, then CUDA, compilers, NCCL, NVSHMEM, math.
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:$NVHPC_ROOT/cuda/$CUDA_VERSION/compat:$NVHPC_ROOT/cuda/$CUDA_VERSION/lib64:$NVHPC_ROOT/compilers/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nccl/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nvshmem/lib:$NVHPC_ROOT/math_libs/$CUDA_VERSION/lib64"
 
 # vLLM CUDA forward compatibility
 export VLLM_ENABLE_CUDA_COMPATIBILITY=1

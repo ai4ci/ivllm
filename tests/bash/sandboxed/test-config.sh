@@ -2,17 +2,13 @@
 # tests/bash/sandboxed/test-config.sh — vllm.yaml config-reading tests.
 #
 # Runs against the REAL yq binary (3.4.1 — matching what is installed on
-# the HPC, see design/issues.md #7-9) rather than a shimmed/idealised
-# stand-in. This is deliberate: it is how issues 7-9 were discovered in the
-# first place — utils.sh's config-reading functions were written assuming
-# yq v4's jq-style filter syntax, but the real installed yq is v3, which
-# has a completely different (and, in one case, differently-ordered) CLI.
-#
-# EXPECT SOME OF THESE TESTS TO FAIL RIGHT NOW. That is the correct TDD
-# starting state per AGENTS.md ("all tests must be proven to fail before
-# starting development of a feature"): these are red tests that will turn
-# green once issues 7-9 are fixed in src/engine/lib/utils.sh. They are not
-# accidentally broken tests — see the comment on each one.
+# the HPC) rather than a shimmed/idealised stand-in. This is deliberate:
+# running against the real binary is how issues 7-9 in design/issues.md
+# were discovered in the first place — utils.sh's config-reading functions
+# were originally written assuming yq v4's jq-style filter syntax, but the
+# real installed yq is v3, which has a completely different (and, in one
+# case, differently-ordered) CLI. Those issues have been fixed; the tests
+# exercise the corrected behaviour and will catch any future regressions.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/sandbox.sh"
 
