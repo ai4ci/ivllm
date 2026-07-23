@@ -882,14 +882,13 @@ monitor_head() {
 
 # ── Monitor: worker node (background) ─────────────────────────────────────
 
-# Background monitor for worker nodes in multi-node jobs. Watches the lockfile
-# and shuts down the local vLLM process if the job is no longer in a valid
-# state.
+# Background monitor on worker nodes for multi-node jobs.
+# Args: $1 — job name; $2 — vLLM worker process PID.
+# Only runs on worker nodes (SLURM_NODEID != 0); exits with code 1 if started on head node.
+# Polls lockfile: pending → sleep, initialising → report_memory, running → sleep,
+#   any other status → shut down worker process via SIGTERM.
 # Usage: monitor_worker "$job" "$vllm_worker_pid" &
 monitor_worker() {
-    # Background monitor on worker nodes.
-    # Watches lockfile; shuts down if job is no longer running.
-    # Usage: monitor_worker "$job" "$vllm_pid"
     local job="$1"
     local vllm_worker="$2"
     local lockfile
