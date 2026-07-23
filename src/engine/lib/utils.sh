@@ -487,7 +487,9 @@ update_status_stopped() {
 }
 
 # Mark job as failed. Used by exit trap for startup failures and crashes.
-# Usage: update_status_failed "$job" "reason" exit_code
+# Args: $1 — job name; $2 — failure reason string; $3 — numeric exit code.
+# Run on head node (SLURM_NODEID==0). Sets .status="failed", .reason, .stopTime, .exitCode.
+# Usage: update_status_failed "$job" "reason" "$exit_code"
 update_status_failed() {
     # Transition lockfile: → failed.
     # Usage: update_status_failed "$job" "$reason" "$exit_code"
