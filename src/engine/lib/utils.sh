@@ -463,11 +463,15 @@ update_status_running() {
     fi
 }
 
-# Mark job as cleanly stopped. Used by exit trap for user cancel, idle timeout.
+# Mark job as cleanly stopped. Used by tidy_up() exit trap for user cancel or idle timeout.
+# Args: $1 — job name.
+# Run on head node (SLURM_NODEID==0). Sets .status="stopped", .stopTime, .exitCode="0".
 # Usage: update_status_stopped "$job"
 update_status_stopped() {
-    # Transition lockfile: → stopped.
-    # Usage: update_status_stopped "$job" "$reason" "$exit_code"
+    # Transition lockfile: stopped → stopped.
+    # Sets .status="stopped", .stopTime, .exitCode="0" via jq.
+    # Run on head node (SLURM_NODEID==0).
+    # Usage: update_status_stopped "$job"
     local job="$1"
     local lockfile
 
