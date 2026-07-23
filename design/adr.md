@@ -84,10 +84,15 @@ under `$PROJECTDIR/engine/lib/`:
 
 | File | Responsibility |
 |------|---------------|
-| `utils.sh` | Lockfile management, cache save/restore, monitor triad, exit trap, diagnostics |
-| `vllm-env.sh` | NVHPC/NCCL/Slingshot environment setup (hard-won tuning from v2) |
-| `hf.sh` | Model download via `srun` on interactive partition |
-| `vllm-setup.sh` | vLLM installation (adapted from `src/templates/setup.ts`) |
+| `src/engine/lib/utils.sh` | Lockfile management, cache save/restore, monitor triad, exit trap, diagnostics |
+| `src/engine/lib/common-env.sh` | NVHPC/NCCL/Slingshot environment setup |
+| `src/engine/lib/vllm-env.sh` | vLLM-specific environment variables |
+| `src/engine/lib/slurm-vllm-serve.sh` | Run a model on one or more nodes |
+| `src/engine/lib/slurm-vllm-setup.sh` | vLLM installation |
+| `src/engine/lib/slurm-hf-download.sh` | Model download via `srun` |
+| `src/engine/lib/run_head_vllm.sh` | Head node vLLM launcher |
+| `src/engine/lib/run_worker_vllm.sh` | Worker node vLLM launcher |
+| `src/engine/ivllm-*.sh` | Login-node wrapper scripts (serve, status, setup, cancel, show-log, get-model) |
 
 SLURM job scripts become thin wrappers that `source` these libraries.
 
@@ -281,13 +286,11 @@ TypeScript modules that don't need rewriting.
 
 | Module | Justification |
 |--------|--------------|
-| `config.ts` | Clean interface, file-based persistence, CLI flag parsing |
-| `vllm-config.ts` | YAML parsing, `min-vllm-version`, `env` passthrough |
-| `remote-ops.ts` | Multiplexed SSH, SCP, tunnel spawning — all battle-tested |
-| `local-ops.ts` | Port check, health check, model query |
-| `semver.ts` | Version comparison, sorting |
-| `assistant.ts` + `agent.ts` | Full assistant launcher menu system |
-| `job.ts` | Path resolution, arg parsing — needs minor updates for new paths |
+| `src/config.ts` | Clean interface, file-based persistence, CLI flag parsing |
+| `src/ops/RemoteOps.ts` + `src/ops/SshRemoteOps.ts` | Multiplexed SSH, SCP, tunnel spawning — all battle-tested |
+| `src/local-ops.ts` | Port check, health check, model query |
+| `src/semver.ts` | Version comparison, sorting (recreated for v3) |
+| `src/backends/Backend.ts` | Abstract Backend class for lifecycle management |
 
 **Rationale**:
 - Rewriting working code is wasted effort
@@ -368,10 +371,11 @@ fields like `slurmJobId`, `computeHostname`, and `vllmPid`. Future backends
 Backend-specific metadata lives in a `backend` namespace object (optional).
 
 Top-level fields (every backend):
-- `status`, `jobName`, `model`, `serverPort`, `requestedTime`, `idleTimeout`
+- `status`, `jobName`, `model`, `serverPort`, `user`, `requestedTime`, `idleTimeout`
 - `startTime`, `stopTime`, `reason`, `exitCode`
-- `backend`: string identifier (e.g. `"isambard-vllm"`, `"ollama"`)
-- `backendConfig`: optional JSON object (backend-specific, opaque to the CLI)
+- `slurmJobId`, `computeHostname`, `vllmPid` (Isambard-specific, at top level for convenience)
+- `backend`: string identifier (e.g. `"isambard-vllm"`, `"ollama"`) — **planned, not yet implemented**
+- `backendConfig`: optional JSON object (backend-specific, opaque to the CLI) — **planned, not yet implemented**
 
 Example for Isambard:
 ```json
@@ -380,17 +384,17 @@ Example for Isambard:
   "jobName": "qwen36",
   "model": "Qwen/Qwen3.6-35B-A3B-FP8",
   "serverPort": 49153,
+  "user": "testuser",
+  "requestedTime": "2026-07-14T12:00:00+00:00",
   "idleTimeout": 30,
-  "backend": "isambard-vllm",
-  "backendConfig": {
-    "slurmJobId": "123456",
-    "computeHostname": "nid12345",
-    "vllmPid": 12345,
-    "gpuCount": 4,
-    "vllmVersion": "0.22.0"
-  }
+  "slurmJobId": "123456",
+  "computeHostname": "nid12345",
+  "vllmPid": 12345
 }
 ```
+
+**Note**: The `backend` and `backendConfig` fields are planned for future multi-backend support
+but are not yet implemented in the actual lockfile schema (`LockfileV3` in `src/types.ts`).
 
 **Rationale**:
 - The CLI reads only top-level fields (`status`, `jobName`, `model`, `serverPort`)
@@ -420,39 +424,26 @@ Isambard backend is the first implementation; new backends implement the
 same interface.
 
 ```typescript
-interface Backend {
-  /** Human-readable backend identifier, stored in lockfile */
-  readonly name: string;
-
-  /**
-   * Ensure the model is ready and the lockfile exists.
-   * Returns the compute hostname and port to tunnel to.
-   */
-  connect(job: JobConfig): Promise<{
-    hostname: string;
-    port: number;
-    lockfilePath: string;
-  }>;
-
-  /** Request graceful shutdown (write 'cancel' to lockfile) */
-  cancel(jobName: string): Promise<void>;
-
-  /** Force shutdown (kill process directly) */
-  forceCancel(jobName: string): Promise<void>;
-
-  /** Read current lockfile state */
-  status(jobName: string): Promise<LockfileV3 | null>;
-
-  /** List all known jobs for this backend */
-  list(): Promise<LockfileV3[]>;
-
-  /** One-time setup (install vLLM, pull container, etc.) */
-  setup?(version?: string): Promise<void>;
-
-  /** Tail log output for a job */
-  tailLogs?(jobName: string): AsyncIterable<string>;
+abstract class Backend {
+  abstract bootstrap(): Promise<void>;
+  abstract setup(version: string): Promise<void>;
+  abstract connect(job: string, port: number): Promise<CloseableEventEmitter>;
+  abstract requestCancel(job: string, force: boolean): Promise<void>;
+  abstract requestStart(job: string, maxTime: string, monitor: boolean, config?: string): Promise<void>;
+  abstract getAllJobStatus(): Promise<LockfileV3[]>;
+  abstract watchLog(job: string, node?: string, until?: string): Promise<CloseableEventEmitter>;
+  getJobStatus(job: string): Promise<LockfileV3>;
+  isRunning(job: string): Promise<boolean>;
+  isStopped(job: string): Promise<boolean>;
+  isStartable(job: string): Promise<boolean>;
+  isStarting(job: string): Promise<boolean>;
 }
 ```
+
+**Note**: The actual `Backend` class (in `src/backends/Backend.ts`) evolved from the
+interface shown above. The final signature uses `requestCancel`/`requestStart`/`getAllJobStatus`
+instead of `cancel`/`forceCancel`/`status`/`list`/`tailLogs`. The `bootstrap()` and
+state-helpers (`isRunning`, `isStopped`, etc.) were added during implementation.
 
 **Rationale**:
 - Clean separation: new backends don't touch existing code

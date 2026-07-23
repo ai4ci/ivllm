@@ -9,37 +9,31 @@ codebase, covering both TypeScript (CLI layer) and Bash (HPC runtime layer).
 
 ## TypeScript Standards
 
-### Argument Parsing: Use `OptionParser`
+### Argument Parsing: Use Commander.js
 
-Do NOT manually parse `process.argv`. The current code in `src/job.ts`
-manually iterates `args` with `boolFlags` and `flags` objects. Replace
-with a structured option parser.
-
-**Recommended**: [commander](https://github.com/tj/commander.js) or
-[node:util.parseArgs](https://nodejs.org/api/util.html#utilparseargsconfig)
-(Node.js 20+ / Bun built-in).
+All CLI commands use [commander.js](https://github.com/tj/commander.js)
+in `src/index.ts`. Commands are defined as `.command()` chains with
+`.option()` and `.action()`.
 
 ```typescript
-// GOOD — using commander
-import { Command } from 'commander';
+import { program } from 'commander';
 
-const program = new Command();
 program
   .name('ivllm')
-  .version(__VERSION__)
+  .version(version)
   .command('connect <job>')
-  .option('--config <path>', 'Path to vLLM YAML config')
-  .option('--interactive', 'Run with TTY binding')
-  .option('--detach', 'Exit after starting')
-  .option('--local-port <n>', 'Local port for SSH tunnel')
-  .option('--dry-run', 'Preview without executing')
-  .action((job, options) => {
-    // options.config, options.interactive, options.detach, etc.
-  });
+  .option('--config <path>', 'vLLM config YAML (required for first use)')
+  .option('--local-port [port]', 'Local port for API', '11434')
+  .option('--dry-run', 'Preview without connecting to HPC', false)
+  .action(cmdConnect);
 
-// BAD — manual flag parsing with boolFlags and positional iteration
-// See src/job.ts:parseStartArgs for what NOT to do
+program
+  .command('cancel <jobName>')
+  .option('--force', 'Use slurm scancel directly instead of graceful cancel', false)
+  .action(cmdCancel);
 ```
+
+See `src/index.ts` for the full command layout.
 
 ### Object-Oriented Patterns: Prefer Classes over Interface Proliferation
 
@@ -87,32 +81,40 @@ interface ApiEndpointInfo { model: string; port: number; hostname: string; ... }
 - Multiple views of the same data exist (screen display, API, serialisation)
 - The data has lifecycle (e.g. `ProcessState`, `SessionState`)
 
-**The Backend Interface pattern**
+**The Backend class pattern**
 
-The v3 architecture defines a `Backend` interface (see ADR-111) for
-abstracting different inference runtimes. When implementing a backend:
+The v3 architecture defines an abstract `Backend` class (see `src/backends/Backend.ts`)
+for abstracting different inference runtimes. The `IsambardBareMetalBackend` is the
+first (and only current) implementation.
 
 ```typescript
-// src/backends/interface.ts
-export interface Backend {
-  readonly name: string;
-  connect(job: JobConfig): Promise<HostEndpoint>;
-  cancel(jobName: string): Promise<void>;
-  forceCancel(jobName: string): Promise<void>;
-  status(jobName: string): Promise<LockfileV3 | null>;
-  list(): Promise<LockfileV3[]>;
-  setup?(version?: string): Promise<void>;
+// src/backends/Backend.ts — abstract base class
+export abstract class Backend {
+  abstract bootstrap(): Promise<void>;
+  abstract setup(version: string): Promise<void>;
+  abstract connect(job: string, port: number): Promise<CloseableEventEmitter>;
+  abstract requestCancel(job: string, force: boolean): Promise<void>;
+  abstract requestStart(job: string, maxTime: string, monitor: boolean, config?: string): Promise<void>;
+  abstract getAllJobStatus(): Promise<LockfileV3[]>;
+  abstract watchLog(job: string, node?: string, until?: string): Promise<CloseableEventEmitter>;
+  
+  // Convenience methods
+  getJobStatus(job: string): Promise<LockfileV3>;
+  isRunning(job: string): Promise<boolean>;
+  isStopped(job: string): Promise<boolean>;
+  isStartable(job: string): Promise<boolean>;
+  isStarting(job: string): Promise<boolean>;
 }
 
-// src/backends/isambard-vllm.ts
-export class IsambardBareMetalBackend implements Backend {
-  readonly name = 'isambard-vllm';
-  // ... implementation wrapping SSH ops + bash framework
+// src/backends/IsambardBareMetalBackend.ts — concrete implementation
+export class IsambardBareMetalBackend extends Backend {
+  // Wraps SshRemoteOps + bash framework on HPC
 }
 ```
 
-This is the canonical example of the OOP approach: a class implementing a
-well-defined interface, encapsulating all lifecycle behaviour.
+The `Backend` class extends beyond the original interface design (ADR-111)
+with `bootstrap()`, `requestStart()`, state helpers, and a unified
+`requestCancel(job, force)` instead of separate cancel/forceCancel methods.
 
 **When to use an interface**:
 - Simple data transfer objects with no behaviour
@@ -124,14 +126,16 @@ well-defined interface, encapsulating all lifecycle behaviour.
 
 | Construct | Convention | Example |
 |-----------|-----------|---------|
-| Files | `kebab-case.ts` | `remote-ops.ts`, `vllm-config.ts` |
-| Classes | `PascalCase` | `JobConfig`, `SessionState` |
-| Interfaces | `PascalCase` | `InferenceJobOptions`, `ServeOptions` |
-| Types | `PascalCase` | `JobStatus`, `LockfileState` |
-| Functions | `camelCase` | `parseStartArgs`, `generateRandomHighPort` |
-| Constants | `UPPER_SNAKE_CASE` | `SSH_MUX_OPTS`, `HEARTBEAT_INTERVAL_MS` |
-| Private fields | `camelCase` (no `_` prefix) | `private yaml: ...` |
-| Command files | `camelCase.ts` | `connect.ts`, `cancel.ts` |
+| Files | `kebab-case.ts` | `config.ts`, `local-ops.ts`, `semver.ts`, `utils.ts` |
+| Directories | `kebab-case/` | `backends/`, `ops/` |
+| Classes | `PascalCase` | `Backend`, `IsambardBareMetalBackend`, `SshRemoteOps` |
+| Interfaces | `PascalCase` | `Credentials`, `LockfileV3`, `RunRemoteOptions` |
+| Types | `PascalCase` | `LockfileState`, `V1ModelsResponse` |
+| Functions | `camelCase` | `loadCredentials`, `formatJobRow` |
+| Constants | `UPPER_SNAKE_CASE` | `HEALTH_CHECK_TIMEOUT` |
+| Private fields | `camelCase` (no `_` prefix) | `private ops: RemoteOps` |
+| Bash scripts | `snake_case.sh` | `utils.sh`, `vllm-env.sh`, `slurm-vllm-serve.sh` |
+| Bash wrappers | `snake_case.sh` | `ivllm-serve.sh`, `ivllm-status.sh` |
 
 ### Error Handling
 
@@ -153,13 +157,26 @@ export async function cmdConnect(args: string[]): Promise<void> {
 }
 ```
 
-### Testing
+### Testing (TypeScript)
 
-- One test file per source file (or per command)
-- Test files in `tests/` mirror the `src/` structure
-- Use the mock infrastructure (`--dry-run`) rather than mocking SSH
-- Prefer integration-style tests over isolated unit tests for command files
-- All tests must pass before commit
+- Test files live in `tests/unit/` and `tests/integration/`
+- Use `bun:test` — `bun test` runs all TypeScript tests
+- Mock `RemoteOps` via `MockRemoteOps` class (records calls, no SSH needed)
+- Use real `http.Server` for local-ops tests (port/health/model query)
+- Integration tests use `TestBackend` + `TestRemoteOps` for full lifecycle
+- All tests must pass before commit: `bun test`
+
+```
+tests/
+├── unit/
+│   ├── Backend.test.ts          — Lockfile parsing, state checks
+│   ├── RemoteOps.mock.test.ts   — MockRemoteOps records all calls
+│   ├── local-ops.test.ts        — Port/health/model queries
+│   ├── semver.test.ts           — Version comparison/sorting
+│   └── bash-integration.test.ts — Wraps bash suite via bun:test
+└── integration/
+    └── CLI.lifecycle.test.ts    — Full Backend lifecycle
+```
 
 ---
 
@@ -218,11 +235,13 @@ some_function() {
 
 | Construct | Convention | Example |
 |-----------|-----------|---------|
-| Functions | `snake_case` | `update_status_running`, `resolve_lockfile` |
+| Functions | `snake_case` | `update_status_running`, `resolve_lockfile`, `monitor_head` |
 | File-scope constants | `UPPER_SNAKE_CASE` | `CHECK_INTERVAL_SECS` |
 | Local variables | `snake_case` | `local lockfile`, `local vllm_pid` |
-| Environment variables | `UPPER_SNAKE_CASE` | `VLLM_PID`, `SLURM_JOB_ID` |
-| Script files | `kebab-case.sh` | `utils.sh`, `vllm-env.sh` |
+| Environment variables | `UPPER_SNAKE_CASE` | `VLLM_PID`, `SLURM_JOB_ID`, `IVLLM_TEST_CALL_LOG` |
+| Library scripts | `snake_case.sh` | `utils.sh`, `vllm-env.sh`, `common-env.sh` |
+| SLURM scripts | `snake_case.sh` | `slurm-vllm-serve.sh`, `slurm-vllm-setup.sh` |
+| Login wrappers | `ivllm-*.sh` | `ivllm-serve.sh`, `ivllm-status.sh`, `ivllm-cancel.sh` |
 
 ### Error Handling
 
@@ -280,25 +299,41 @@ printf "[%s-node %s] RAM: %s\n" "$(date +%H:%M:%S)" "$SLURM_NODEID" "$mem_summar
 
 ### Testing (Bash)
 
-- Use `design/prototype/test-vllm.sh` as the template
-- Mock `srun`, `scancel`, and `vllm` with local implementations
-- test bash in a bubblewrap environment mocking HPC login or compute nodes.
+- Run via `bash tests/bash/run.sh` (unit then sandboxed)
+- Unit tests run directly on host; sandboxed tests run via bubblewrap
+- Mock `srun`, `sbatch`, `scancel`, `squeue`, `scontrol`, `vllm`, `wget`, etc.
+  via PATH shims in `tests/bash/shims/`
+- Use `sandbox_run` / `sandbox_run_test` helpers from `tests/bash/lib/sandbox.sh`
+- Two profiles: `login` (no SLURM vars) and `compute` (full SLURM env)
 - Test with `set -x` for debugging, but do not commit with `set -x` enabled
-- Each bash function in `lib/` should have a corresponding test function
-- Tests should pass with `bash tests/templates/lib/*.sh`
+- Each bash function in `lib/` should have corresponding test cases
+
+```
+tests/bash/
+├── run.sh              — Test runner (unit + sandboxed)
+├── lib/
+│   ├── sandbox.sh      — bwrap harness
+│   ├── assertions.sh   — assert_* helpers
+│   └── test-utils.sh   — setup/cleanup for unit tests
+├── shims/              — PATH shims for external commands
+├── fixtures/           — Sample YAML configs
+├── unit/               — Pure bash logic (no mocking)
+└── sandboxed/          — Real jq/yq, mocked SLURM/vLLM
+```
 
 ### When to use Bash vs TypeScript
 
 | Task | Language | Reason |
 |------|----------|--------|
-| vLLM lifecycle | Bash | Runs on compute node, needs no runtime |
+| vLLM lifecycle (compute) | Bash | Runs on compute node, needs no runtime |
 | Lockfile management | Bash | Atomic filesystem ops, jq integration |
-| Monitor loops | Bash | Simple loop + curl + grep |
+| Monitor triad | Bash | Loop + health check + log parsing |
 | Cache save/restore | Bash | tar + filesystem ops |
-| CLI user interaction | TypeScript | Rich I/O, readline, error handling |
-| SSH operations | TypeScript | Multiplexing, tunnel lifecycle |
-| vLLM config parsing | Bash | On login node. yq support, validation |
-| Version comparison | Bash | On login node. Semver parsing, sorting |
+| CLI user interaction | TypeScript | Rich I/O, error handling, commander.js |
+| SSH/SCP operations | TypeScript | Multiplexed SSH via `SshRemoteOps` |
+| vLLM config parsing (login) | Bash | yq support, `ivllm-*.sh` wrappers |
+| Version comparison | TypeScript | `src/semver.ts` — shared with CLI |
+| Local ops (port/health) | TypeScript | `src/local-ops.ts` |
 
 ---
 
@@ -322,12 +357,13 @@ Scope: `cli`, `bash`, `config`, `tunnel`, `monitor`, `docs`
 
 ### Pre-commit Checklist
 
-- [ ] `bun test` passes
+- [ ] `bun test` passes (TypeScript + bash integration)
+- [ ] `bash tests/bash/run.sh` passes (unit + sandboxed)
 - [ ] New code has tests
 - [ ] All tests follow TDD (test fails before implementation)
 - [ ] No `console.log` in production code (use `console.error` for diagnostics)
 - [ ] No `set -x` in committed bash scripts
-- [ ] Version bumped (`src/index.ts` already reads from `package.json`)
+- [ ] Version bumped (edit `package.json`)
 - [ ] Committed with descriptive message
 
 ### Version Bumping

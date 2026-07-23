@@ -1,3 +1,9 @@
+# ⚠️ PROTOTYPE — Superseded by design/architecture.md
+
+This document was an early design prototype. The current implementation is described in
+detail by `design/architecture.md`, `design/adr.md`, and the actual source code in `src/`.
+This file is preserved for historical context only.
+
 Large architectural change based around the following.
 
 * We want to remove the dependecy on fragile ssh to keep vllm alive, and allow muiltiple users within a project to access a single running vllm, by each creating ssh tunnel to single node runnning vllm model.

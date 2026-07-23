@@ -36,7 +36,7 @@ limits of slurm permissions.
 │                                                                  │
 │  ivllm connect <job>     Start or attach to a running job        │
 │  ivllm cancel <job>      Request graceful shutdown               │
-│  ivllm status [job]      List all jobs with status               │
+│  ivllm status [job]      List all jobs with status (or single job)               │
 │  ivllm config            Show/set connection details             │
 │  ivllm setup <version>   Install vLLM on HPC (one-off)           │
 │                                                                  │
@@ -56,6 +56,7 @@ limits of slurm permissions.
 │                                                                  │
 │  Bash Framework ($PROJECTDIR/engine/ivllm-*.sh                   │
 │  • Handles lifecycle of running jobs and sbatch submission       │
+│  • Wrapper scripts: ivllm-{serve,status,setup,cancel,...}.sh       │
 │  • Model downloads via srun on interactive partition             │
 │  • Status.json files visible on parallel filesystem              │
 │  • No long-lived processes (scripts forward to COMPUTE)          │
@@ -265,15 +266,21 @@ but the lockfile protocol and CLI interface are backend-agnostic by design.
 To add a new backend (e.g. local Ollama, a different HPC, containers):
 
 - **New backend module** in `src/backends/<name>/` implementing a standard
-  interface:
+  interface. The current `Backend` abstract class defines:
   ```typescript
-  interface Backend {
-    name: string;
-    connect(job: JobConfig): Promise<ConnectResult>;
-    cancel(jobName: string): Promise<void>;
-    status(jobName: string): Promise<LockfileV3 | null>;
-    list(): Promise<LockfileV3[]>;
-    setup?(version?: string): Promise<void>;
+  abstract class Backend {
+    abstract bootstrap(): Promise<void>;
+    abstract setup(version: string): Promise<void>;
+    abstract connect(job: string, port: number): Promise<CloseableEventEmitter>;
+    abstract requestCancel(job: string, force: boolean): Promise<void>;
+    abstract requestStart(job: string, maxTime: string, monitor: boolean, config?: string): Promise<void>;
+    abstract getAllJobStatus(): Promise<LockfileV3[]>;
+    abstract watchLog(job: string, node?: string, until?: string): Promise<CloseableEventEmitter>;
+    getJobStatus(job: string): Promise<LockfileV3>;
+    isRunning(job: string): Promise<boolean>;
+    isStopped(job: string): Promise<boolean>;
+    isStartable(job: string): Promise<boolean>;
+    isStarting(job: string): Promise<boolean>;
   }
   ```
 - **Each backend owns its runtime** — the compute-side management is
@@ -296,7 +303,7 @@ To add a new backend (e.g. local Ollama, a different HPC, containers):
   }
   ```
 - **Multiple SSH connections** are already supported at the SSH layer
-  (`remote-ops.ts` takes a `Credentials` object per connection). Future
+  (`src/ops/SshRemoteOps.ts` takes a `Credentials` object per connection). Future
   CLIs would configure multiple backends with different credentials.
 - **The CLI default (`ivllm connect`) targets a default backend**;
   `ivllm connect <job> --backend <name>` selects an alternative.

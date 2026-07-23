@@ -91,42 +91,7 @@ Tests **common-env.sh** (NVHPC/CUDA/compiler setup) and **vllm-env.sh**
 
 ---
 
-## Layer 1: Login-Node Configuration
-
-### `tests/bash/sandboxed/test-config.sh`
-
-Tests **vllm.yaml config reading** against the real `yq 3.4.1` binary
-(installed on the HPC). Previously caught issues 7–9 (argument order, v3 vs
-v4 syntax). All tests now green.
-
-| Test | What it does | What it verifies |
-|------|-------------|-----------------|
-| `get_job_config_setting_model` | Reads `.model` from `minimal.yaml` | Path resolves correctly |
-| `get_job_config_setting_idle_timeout` | Reads `.idle-timeout` | Integer value preserved |
-| `get_job_config_setting_tensor_parallel` | Reads `.tensor-parallel-size` | Integer value preserved |
-| `resolve_stripped_job_config_strips_env_and_metadata` | Creates config with env/metadata | `yq d` removes both blocks |
-| `get_job_config_exports_produces_export_lines` | env block → `export KEY=VALUE` lines | Correct shell export syntax |
-| `get_job_config_exports_empty_env_block` | No env block → no export lines | Graceful empty output |
-
----
-
-## Layer 1: Environment Preamble
-
-### `tests/bash/sandboxed/test-vllm-env.sh`
-
-Tests **common-env.sh** (NVHPC/CUDA/compiler setup) and **vllm-env.sh**
-(NCCL/Slingshot/vLLM tuning) sourcing.
-
-| Test | What it does | What it verifies |
-|------|-------------|-----------------|
-| `common_env_sources` | Sources common-env.sh with NVHPC fixture | No errors on source |
-| `common_env_vars_set` | Sources and checks key env vars | NVHPC_ROOT, CUDA paths, CC/CXX, LD_LIBRARY_PATH |
-| `common_env_missing_nvhpc_falls_through_empty` | No NVHPC directory → NVHPC_ROOT empty | resolve_nvhpc_root() writes to stderr (not stdout) |
-| `vllm_env_sources_and_sets_vars` | Sources vllm-env.sh | NCCL_CROSS_NIC, FI_PROVIDER, VLLM_ENGINE_ITERATION_TIMEOUT_S |
-
----
-
-## Layer 1: Monitor Head (Background)
+## NEW: Monitor Head (Background)
 
 ### `tests/bash/sandboxed/test-monitor-head.sh`
 

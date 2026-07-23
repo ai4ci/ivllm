@@ -4,26 +4,28 @@ This directory contains the architectural design for the v3 migration.
 
 ## ** CURRENT STATE **
 
-The current implementation has been rewritten from V2 by hand. The binary has
-been renamed `ivllm2` in this branch. Eventually we will decide whether to keep
-original as old `ivllm`
+The current implementation has been rewritten from V2 by hand. The binary is
+named `ivllm2` in package.json; the name is provisional pending a final decision
+on whether to rename the original `ivllm` binary.
 
-A bubblewrap sandbox test harness is now in place, running bash tests in
-isolated environments with real subprocess/signal semantics against the real
-installed yq 3.4.1 and jq 1.7 binaries. All 13 documented implementation
-issues (design/issues.md) have been identified and resolved. Test status:
-40/40 individual assertions pass across 5 test files (lockfile, cache,
-config, vllm-env, monitor-head). Zero failures.
+A bubblewrap (bwrap) sandbox test harness runs bash tests in isolated environments
+with real subprocess/signal semantics against the real installed `yq 3.4.1` and
+`jq 1.7` binaries. All 13 documented implementation issues (design/issues.md)
+have been identified and resolved.
 
-Key next steps (tomorrow):
+**Test status:**
+- **Bash**: 74 assertions across 10 test files (1 unit + 9 sandboxed), all green
+- **TypeScript**: 57 assertions across 6 test files, all green
+- **Total**: 131 assertions, 0 failures
 
-- [X] Review existing code. Identify obvious defects and inconsistent documentation. Record in design/issues.md.
-- [X] Setup bash bubblewrap testing environment with shims for mocking HPC login and compute nodes.
-- [X] Unit tests for bash utilities (refactor existing).
-- [X] Bash lockfile lifecycle test and monitor tests using shims.
-- [ ] Expand bash test coverage: monitor_startup, monitor_worker, exit trap/signal tests, login-node handoff tests against shim call log.
-- [ ] Refactor DryRunRemoteOps and create MockBackend to decouple CLI testing from backend
-- [ ] Typescript tests (refactor or write from scratch)
+Key completed work:
+
+- [X] Review existing code. Identify defects and document in design/issues.md.
+- [X] Build bash bubblewrap testing environment with PATH shims.
+- [X] Rewrite bash unit tests (lockfile, cache, config, vllm-env, monitor).
+- [X] Add bash login-node handoff, monitor startup/worker, and exit trap tests.
+- [X] Rewrite TypeScript tests from scratch — Backend unit tests, MockRemoteOps, local-ops, semver, CLI lifecycle integration.
+- [X] Wire bash tests into `bun test` via integration wrapper.
 
 ## Active documents
 
