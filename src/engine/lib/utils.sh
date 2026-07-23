@@ -1046,7 +1046,9 @@ restore_cache() {
 # Usage: save_cache "$job"
 save_cache() {
     # Save JIT cache from local tmpfs to shared storage.
-    # Usage: save_cache "$local_dir" "$cache_path"
+    # Args: $1 — job name. Only runs on SLURM_NODEID==0.
+    # Archives localdir with tar --owner=0 --group=0 --mode='g+rwX,o-rwx', writes to .tmp first then renames.
+    # Usage: save_cache "$job"
     local job="$1"
     local cachetar
     local localdir
