@@ -185,6 +185,16 @@ describe('isStopped', () => {
         backend.setJob('j', { status: 'running', model: 'm', serverPort: 8000 });
         expect(await backend.isStopped('j')).toBe(false);
     });
+
+    it('returns true for missing job (no status file)', async () => {
+        const backend = new InMemoryBackend({
+            loginHost: 'test',
+            username: 'test',
+            projectDir: '/tmp',
+        });
+        // No job set — missing lockfile means "stopped" by absence
+        expect(await backend.isStopped('ghost')).toBe(true);
+    });
 });
 
 describe('isStartable', () => {
@@ -216,6 +226,17 @@ describe('isStartable', () => {
         });
         backend.setJob('j', { status: 'running', model: 'm', serverPort: 8000 });
         expect(await backend.isStartable('j')).toBe(false);
+    });
+
+    it('returns true for missing job (no status file)', async () => {
+        const backend = new InMemoryBackend({
+            loginHost: 'test',
+            username: 'test',
+            projectDir: '/tmp',
+        });
+        // No job set — missing lockfile means the job was never started,
+        // so it is definitely startable.
+        expect(await backend.isStartable('ghost')).toBe(true);
     });
 });
 
