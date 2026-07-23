@@ -195,11 +195,14 @@ resolve_job_status() {
     resolve_job_dir "$1" "status.json"
 }
 
-# Resolve the path to a job's log file (per-node).
-# does not check the file exists
+# Resolve the path to a per-node vLLM log file (vllm.<nodeid>.log).
+# Args: $1 — job name.
+# Uses $SLURM_NODEID (default 0) for the log filename; does not take a node parameter.
+# Returns: path to the log file via stdout. Does not check if the file exists.
+# Usage: local log=$(resolve_job_log "$job")
 resolve_job_log() {
-    # Resolve the vLLM log file path for a job and node.
-    # Usage: local log=$(resolve_job_log "$job" "$nodeid")
+    # Resolve the path to a per-node vLLM log file (vllm.<nodeid>.log).
+    # Returns: path to the log file via stdout.
     local node="${SLURM_NODEID:-0}"
     resolve_job_dir "$1" "vllm.$node.log"
 }
