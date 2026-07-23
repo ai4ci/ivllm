@@ -662,11 +662,11 @@ setup_traps() {
     trap 'tidy_up "'"$job"'" $?' EXIT
 }
 
-# Clear the per-node local working directory.
+# Remove the per-node local working directory (RAM-backed tmpfs).
+# Args: $1 — job name. Resolves path via resolve_localdir().
+# Exits with code 1 if the directory doesn't exist. Removes via rm -rf.
 # Usage: clear_localdir "$job"
 clear_localdir() {
-    # Remove the local working directory and contents.
-    # Usage: clear_localdir "$localdir"
     local localdir
     localdir=$(resolve_localdir "$1")
     [ ! -d "$localdir" ] && exit 1
