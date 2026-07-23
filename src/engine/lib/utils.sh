@@ -284,17 +284,16 @@ get_max_job_time() {
     fi
 }
 
-# Read a field from a job's config file using grep.
-# the field name will be a snake-case identifier including a leading .
-# Usage: local value=$(get_job_config_setting "$job" ".model")
-# throws error if the config is not there.
-# returns empty value is the config is there but the value is missing.
+# Read a field from a job's vllm.yaml config using yq (v3 syntax).
+# Args: $1 — job name; $2 — key path with leading dot (e.g. ".model").
+# Strips the leading dot before passing to yq (v3 syntax has no leading dot).
+# Exits with code 1 if the config file does not exist.
+# Returns empty string if the config exists but the key is missing.
+# Usage: local val=$(get_job_config_setting "$job" ".model")
 get_job_config_setting() {
-    # Read a field from vllm.yaml using yq.
-    # Usage: local val=$(get_job_config_setting "$yaml" ".key")
     local file=$(resolve_job_config "$1")
     if [[ ! -f $file ]]; then
-        echo "ERROR: no configuration file found for job $job" >&2
+        echo "ERROR: no configuration file found for job $1" >&2
         exit 1
     fi
     # yq v3's path syntax does NOT use a leading '.' (unlike jq or yq v4);
