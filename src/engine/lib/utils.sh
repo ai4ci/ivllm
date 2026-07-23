@@ -491,7 +491,9 @@ update_status_stopped() {
 # Run on head node (SLURM_NODEID==0). Sets .status="failed", .reason, .stopTime, .exitCode.
 # Usage: update_status_failed "$job" "reason" "$exit_code"
 update_status_failed() {
-    # Transition lockfile: → failed.
+    # Transition lockfile: initialising/pending → failed.
+    # Sets .status, .reason, .exitCode, .stopTime via jq.
+    # Run on head node (SLURM_NODEID==0).
     # Usage: update_status_failed "$job" "$reason" "$exit_code"
     local job="$1"
     local reason="$2"
