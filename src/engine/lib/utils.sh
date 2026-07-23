@@ -122,11 +122,14 @@ resolve_vllm_dir() {
     echo "$IVLLM_PROJECTDIR/engine/vllm"
 }
 
-# creates directories if not present
-# Usage: local vllmVersionDir=$(resolve_vllm_version_dir "0.19.1")
+# Create and return the versioned vLLM install directory.
+# Calls resolve_vllm_dir() to get the base path, then creates $base/$version.
+# Args: $1 — vLLM version string (e.g. "0.19.1"); default is empty string.
+# Returns: path to the versioned vLLM directory via stdout.
+# Usage: local dir=$(resolve_vllm_version_dir "0.19.1")
 resolve_vllm_version_dir() {
-    # Resolve the versioned vLLM install directory.
-    # Usage: local dir=$(resolve_vllm_version_dir "$version")
+    # Create and return the versioned vLLM install directory.
+    # Calls resolve_vllm_dir() to get the base path, then creates $base/$version.
     local version="${1:-}"
     local vllm_dir=$(resolve_vllm_dir)
     mkdir -p "$vllm_dir/$version"
