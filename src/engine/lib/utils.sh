@@ -680,13 +680,13 @@ clear_localdir() {
 
 # ── Monitor: startup (foreground, head node only) ─────────────────────────
 
-# Monitor that blocks until vLLM responds to /health, runs a warmup request,
-# saves the JIT cache, and transitions status to "running".
+# Monitor that blocks until vLLM responds to /health, sends warmup, saves cache, then sets running.
+# Args: $1 — job name; $2 — vLLM parent process PID (not used directly).
+# Reads serverPort and model from lockfile. Only runs on SLURM_NODEID==0.
+# 1) Polls /health until it returns 200, 2) saves JIT cache, 3) sends warmup POST to /v1/chat/completions
+#   (up to 5 retries), 4) saves JIT cache again, 5) calls update_status_running.
 # Usage: monitor_startup "$job" "$vllm_parent_pid"
 monitor_startup() {
-    # Poll /health endpoint until vLLM is running.
-    # Sends warmup request, saves JIT cache, transitions to running.
-    # Usage: monitor_startup "$job" "$port" "$model"
     local job="$1"
     local vllm_parent="$2"
     local server_port
