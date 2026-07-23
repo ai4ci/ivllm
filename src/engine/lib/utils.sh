@@ -1023,7 +1023,9 @@ report_memory() {
 # Usage: restore_cache "$job"
 restore_cache() {
     # Restore JIT cache from shared storage to local tmpfs.
-    # Usage: restore_cache "$cache_path" "$target_dir"
+    # Args: $1 — job name. Resolves cache+target via resolve_job_jit_cache() + resolve_localdir().
+    # Extracts tar.gz with --no-same-permissions; prints error on corrupt archive.
+    # Usage: restore_cache "$job"
     local job="$1"
     local cachetar
     local localdir
