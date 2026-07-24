@@ -143,7 +143,6 @@ export class SshRemoteOps extends RemoteOps {
                 'rsync',
                 [
                     '-az', // Archive mode (recursive, preserves attributes) + Compression
-                    '--info=progress2', // Clean progress bar output for directory syncing
                     '-e',
                     sshCommand, // Instruct rsync to use our specific multiplexed SSH configuration
                     src,

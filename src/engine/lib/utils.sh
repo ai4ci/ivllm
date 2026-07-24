@@ -21,12 +21,14 @@
 
 # Marker to prevent
 # Include some form of the following 2 lines to prevent the remainder of the script from being executed again. You can include lines before this line if you still want to execute something every time this is called.
-[[ -v IVLLM_UTILS ]] && return
-export IVLLM_UTILS=
+if [[ -v IVLLM_UTILS ]] && declare -f resolve_localdir > /dev/null; then
+    return
+fi
+export IVLLM_UTILS=1
 
 if [[ -z ${IVLLM_PROJECTDIR:-} ]]; then
-    echo "CRITICAL ERROR: \$IVLLM_PROJECTDIR is undefined"
-    exit 1
+    export IVLLM_PROJECTDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+    echo "Setting project directory: $IVLLM_PROJECTDIR"
 fi
 
 export IVLLM_TIME_FMT="${IVLLM_TIME_FMT:-+%Y-%m-%d %H:%M}"
@@ -77,7 +79,7 @@ resolve_model_dir() {
     mkdir -p "$IVLLM_PROJECTDIR/model/hf"
     export HF_HOME="$IVLLM_PROJECTDIR/model/hf"
     mkdir -p "$IVLLM_PROJECTDIR/model/venv"
-    chmod -R g+rw "$IVLLM_PROJECTDIR/model"
+    chmod g+rwX "$IVLLM_PROJECTDIR/model" "$IVLLM_PROJECTDIR/model/hf" "$IVLLM_PROJECTDIR/model/venv"
     echo "$IVLLM_PROJECTDIR/model"
 }
 
@@ -89,7 +91,7 @@ resolve_nvhpc_dir() {
     # Create the NVHPC SDK base directory with group-write permissions.
     # Returns: path to the NVHPC directory via stdout.
     mkdir -p "$IVLLM_PROJECTDIR/engine/nvhpc"
-    chmod -R g+rw "$IVLLM_PROJECTDIR/engine/nvhpc"
+    chmod g+rwX "$IVLLM_PROJECTDIR/engine/nvhpc"
     echo "$IVLLM_PROJECTDIR/engine/nvhpc"
 }
 
@@ -118,7 +120,7 @@ resolve_vllm_dir() {
     # Create the vLLM virtual environment base directory with group-write permissions.
     # Returns: path to the vLLM directory via stdout.
     mkdir -p "$IVLLM_PROJECTDIR/engine/vllm"
-    chmod -R g+rw "$IVLLM_PROJECTDIR/engine/vllm"
+    chmod g+rwX "$IVLLM_PROJECTDIR/engine/vllm"
     echo "$IVLLM_PROJECTDIR/engine/vllm"
 }
 
@@ -133,7 +135,7 @@ resolve_vllm_version_dir() {
     local version="${1:-}"
     local vllm_dir=$(resolve_vllm_dir)
     mkdir -p "$vllm_dir/$version"
-    chmod -R g+rw "$vllm_dir/$version"
+    chmod g+rwX "$vllm_dir/$version"
     echo "$vllm_dir/$version"
 }
 
@@ -145,7 +147,7 @@ resolve_job_root_dir() {
     # Create the shared job root directory with group-write permissions.
     # Returns: path to the job root directory via stdout.
     mkdir -p "$IVLLM_PROJECTDIR/engine/jobs"
-    chmod -R g+rw "$IVLLM_PROJECTDIR/engine/jobs"
+    chmod g+rwX "$IVLLM_PROJECTDIR/engine/jobs"
     echo "$IVLLM_PROJECTDIR/engine/jobs"
 }
 
@@ -166,7 +168,7 @@ resolve_job_dir() {
         out="$root/$job/$2"
     fi
     mkdir -p "$root/$job"
-    chmod -R g+rw "$root/$job"
+    chmod g+rwX "$root/$job"
     echo "$out"
 }
 
@@ -1058,7 +1060,7 @@ save_cache() {
     if (( SLURM_NODEID == 0 )); then
         echo "[cache] archiving JIT cache to shared storage..."
 
-        chmod -R g+rwX "$localdir" 2>/dev/null || true
+        chmod g+rwX "$localdir" 2>/dev/null || true
 
         tar czf "${cachetar}.tmp" \
             --owner=0 --group=0 \
@@ -1157,3 +1159,5 @@ select_closest_version() {
     # 2. Sort ASCENDING and pick the first one (the lowest valid version)
     rev_semver_sort "${valid_candidates[@]}" | head -n 1
 }
+
+

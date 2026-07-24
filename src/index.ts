@@ -185,9 +185,9 @@ async function cmdStatus(jobName?: string) {
     const backend = getBackend(config);
     if (jobName) {
         // TODO: better formatting of a single job.
-        formatJobRow(await backend.getJobStatus(jobName));
+        console.log(formatJobRow(await backend.getJobStatus(jobName)));
     } else {
-        formatJobTable(await backend.getAllJobStatus());
+        console.log(formatJobTable(await backend.getAllJobStatus()));
     }
 }
 

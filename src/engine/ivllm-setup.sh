@@ -10,7 +10,8 @@ ivllm_setup_usage() {
     echo ""
     echo "Options:"
     echo "  -v version  The vllm version to install"
-    echo "  -f          Force (reinstallation"
+    echo "  -f          Force (reinstallation)"
+    echo "  -r          Retry failed installation"
     echo "  -l log      The log file location (optional)"
     echo "  -h          Show this help message"
     exit 1
@@ -20,13 +21,15 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$here/lib/utils.sh"
 
 export IVLLM_FORCE=0
+export IVLLM_RETRY=0
 export IVLLM_VERSION=""
 export LOG=""
 
-while getopts "v:flh" opt; do
+while getopts "v:frlh" opt; do
     case $opt in
         v) IVLLM_VERSION="$OPTARG" ;;
         f) IVLLM_FORCE=1 ;;
+        r) IVLLM_RETRY=1 ;;
         l) LOG="$OPTARG" ;;
         h) ivllm_setup_usage ;;
         \?) echo "Error: Invalid option -$OPTARG" >&2; ivllm_setup_usage ;;
@@ -38,21 +41,25 @@ if [[ -z $LOG ]]; then
     LOG=$(resolve_job_log "vllm-setup")
 fi
 
+echo "logging to: $LOG"
 # redirect output to log
 exec > >(tee "$LOG") 2>&1
 
 vllmVersionDir=$(resolve_vllm_version_dir "$IVLLM_VERSION")
 
-if [[ $IVLLM_FORCE -eq 1 && -d "${vllmVersionDir?directory does not exist}" ]]; then
+echo "installing $IVLLM_VERSION to $vllmVersionDir"
+
+if [[ $IVLLM_FORCE -eq 1 && -d "$vllmVersionDir" ]]; then
+    echo "removing existing install: $vllmVersionDir"
     rm -rf "$vllmVersionDir"
 fi
 
 # Check if version is already installed
-if [[ -f "$vllmVersionDir/bin/activate" ]]; then
+if [[ $IVLLM_RETRY -eq 0 && -f "$vllmVersionDir/bin/activate" ]]; then
     echo "$IVLLM_VERSION already installed in $vllmVersionDir use -f flag to force reinstall."
     exit 0
 else
-    echo "Installing $IVLLM_VERSION to $vllmVersionDir."
+    echo "Installing $IVLLM_VERSION to $vllmVersionDir"
 
     # srun executes in the foreground, streams output live,
     # and automatically preserves/returns the exit code of the script.
@@ -62,7 +69,7 @@ else
         --job-name=vllm-setup \
         --nodes=1 \
         --gpus=1 \
-        --mem=20G \
+        --mem=115G \
         --cpus-per-gpu=64 \
         --ntasks-per-node=1 \
         --time=03:00:00 \

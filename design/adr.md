@@ -643,3 +643,32 @@ deepseek-ai/DeepSeek-R1-0528:
 - `models.yaml` bundled with ivllm, installed on HPC via `ivllm setup`
 - `ivllm connect <model>` falls back to requiring `--config` if model not in DB
 - `--config` flag still supported for custom models
+
+---
+
+## ADR-116: Elimination of recursive `chmod -R` permissions logic on HPC
+
+**Status**: Accepted
+
+**Context**: In v2 and early v3, helper functions inside `src/engine/lib/utils.sh` (such as `resolve_vllm_dir`, `resolve_job_dir`, etc.) used recursive `chmod -R g+rw` commands to ensure all files and subdirectories inside the shared project space remained group-writable and accessible under multi-user access permissions (ADR-106).
+
+However, recursive `chmod -R` operations are highly problematic on HPC filesystems (like Lustre on Isambard-AI or GPFS):
+1. **Performance Hangs (O(N) Complexity):** As Python virtual environments and model caches grow to contain hundreds of thousands of files, walking the directory tree recursively becomes extremely slow, eventually causing scripts to hang for minutes or hours.
+2. **High-Frequency Polling Contention:** Because `resolve_job_dir` was called inside status-checking functions during the 10-second polling monitor loop, the script performed `chmod -R` on the entire jobs directory every 10 seconds.
+3. **Multi-User Permission Errors:** In a shared group directory, a user lacks permissions to change the mode of files owned by another user. Running `chmod` on files owned by others returned thousands of "Operation not permitted" blocks and warnings, triggering filesystem locking backups.
+
+**Decision**: Remove all recursive `-R` flags from all `chmod` commands inside `src/engine/lib/utils.sh`. Replace them with non-recursive permissions settings on directory creation (namely, `chmod g+rwX` on specific pathways directly when directories are initialized or created). 
+
+To ensure files created inside the shared folder natively inherit group ownership and write permissions without manual recursion support:
+1. Enable the directory Set-Group-ID (**SGID**) flag (`chmod g+s dir`) upon initial setup.
+2. Configure Default Access Control Lists (**ACLs**) at the project directory level (using `setfacl -d -m g::rwX dir` and `setfacl -m g::rwX dir`).
+
+**Rationale**:
+- Eliminates recursive directory traversal entirely, turning path validation from $O(N)$ and loop-contended time into an instant $O(1)$ operation.
+- Natively resolves filesystem metadata lock contention on Lustre, preventing script execution hangs.
+- Natively delegates permission and group inheritance to the operating system/filesystem via SGID and default ACLs, avoiding "Operation not permitted" warnings in multi-user environments.
+
+**Consequences**:
+- The installation process relies on the parent directories having the correct ACLs and SGID bit configured once from the CLI (e.g. during project space onboarding).
+- No functional regressions for the test suite, as mocked sandbox behaviors continue to function seamlessly without the recursive flag.
+

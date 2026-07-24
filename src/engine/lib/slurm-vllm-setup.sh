@@ -42,10 +42,10 @@ echo "working directory: $workingDir"
 nvhpcDir=$(resolve_nvhpc_dir)
 
 # Phase A: Install NVIDIA HPC SDK 26.3 cuda_multi (provides CUDA 12.9 + 13.1)
-if [ ! -d "$nvhpcDir/cuda" ]; then
+if [ ! -d "$nvhpcDir/Linux_aarch64/26.3/cuda" ]; then
 
-  echo "=== Installing NVIDIA HPC SDK 26.3 (cuda_multi) ==="
-  wget "https://developer.download.nvidia.com/hpc-sdk/26.3/nvhpc_2026_263_Linux_aarch64_cuda_multi.tar.gz" \
+  echo "=== Installing NVIDIA HPC SDK 26.3 (cuda_multi) to $nvhpcDir ==="
+  wget --progress=dot:giga "https://developer.download.nvidia.com/hpc-sdk/26.3/nvhpc_2026_263_Linux_aarch64_cuda_multi.tar.gz" \
     -O "$workingDir/nvhpc.tar.gz"
   tar xpzf "$workingDir/nvhpc.tar.gz" -C "$workingDir"
   cd "$workingDir/nvhpc_2026_263_Linux_aarch64_cuda_multi"
@@ -76,6 +76,7 @@ else
   # members don't share a single cache directory with conflicting permissions.
   # $workingDir is wiped at job end; the installed venv in $PROJECTDIR persists.
   export UV_CACHE_DIR=$workingDir/uv_cache
+  export UV_LINK_MODE=copy
 
   uv venv "$vllmVersionDir" --python 3.12
 
@@ -94,7 +95,7 @@ else
 
   # copies all the H200 fused MoE configs as GH200
   for f in *device_name=NVIDIA_H200*; do
-    cp "$f" "\${f//device_name=NVIDIA_H200/device_name=NVIDIA_GH200_120GB}";
+    cp "$f" "${f//device_name=NVIDIA_H200/device_name=NVIDIA_GH200_120GB}";
   done
 
   popd
@@ -149,7 +150,8 @@ fi
 # DeepEP
 
 export EP_NVSHMEM_ROOT_DIR="$NVSHMEM_DIR"
-export EP_NCCL_ROOT_DIR="/tools/brics/apps/linux-sles15-neoverse_v2/gcc-12.3.0/aws-ofi-nccl-1.8.1-c47cd5ivrugm3jzlyqyis4igyflnydmo"
+export EP_NCCL_ROOT_DIR="$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nccl"
+export EP_DISABLE_GIN=1
 
 if uv pip show deepep &>/dev/null; then
   echo "DeepEP already installed"

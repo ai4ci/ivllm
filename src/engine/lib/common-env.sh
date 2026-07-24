@@ -16,7 +16,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 # ── Module setup ──────────────────────────────────────────────────────
 module purge
 module load brics/nccl
-module load gcc-native
+
+# 13.2 required by DeepEP when compiling against 12.9
+module load gcc-native/13.2
 
 # after this LD_LIBRARY_PATH is set to:
 # /opt/cray/libfabric/1.22.0/lib64:/opt/cray/libfabric/1.22.0/lib:/tools/brics/apps/linux-sles15-neoverse_v2/gcc-12.3.0/aws-ofi-nccl-1.8.1-c47cd5ivrugm3jzlyqyis4igyflnydmo/lib
