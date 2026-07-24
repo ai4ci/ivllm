@@ -10,8 +10,7 @@ on whether to rename the original `ivllm` binary.
 
 A bubblewrap (bwrap) sandbox test harness runs bash tests in isolated environments
 with real subprocess/signal semantics against the real installed `yq 3.4.1` and
-`jq 1.7` binaries. All 13 documented implementation issues (design/issues.md)
-have been identified and resolved.
+`jq 1.7` binaries.
 
 **Test status:**
 - **Bash**: 74 assertions across 10 test files (1 unit + 9 sandboxed), all green
@@ -52,9 +51,9 @@ The following items are pending and can be addressed after e2e testing is establ
 |----------|-------------|
 | `architecture.md` | System architecture: layers, lockfile protocol, monitor triad, lifecycle |
 | `adr.md` | Architecture Decision Records for the v3 redesign |
-| `roadmap.md` | Step-by-step migration plan with 7 phases (M1–M7) |
+| `roadmap.md` | current scope and future roadmap |
 | `coding-standards.md` | Coding conventions: TypeScript OptionParser, object-oriented patterns, bash function design |
-| `testing.md` | Test architecture: 4 layers, mock infrastructure, handoff testing, scenario matrix, phase-by-phase plan |
+| `test-scripts.md` | Currently implemented testing |
 
 ## Reference and support
 

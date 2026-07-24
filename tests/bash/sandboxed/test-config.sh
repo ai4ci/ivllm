@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016
 # tests/bash/sandboxed/test-config.sh — vllm.yaml config-reading tests.
 #
 # Runs against the REAL yq binary (3.4.1 — matching what is installed on

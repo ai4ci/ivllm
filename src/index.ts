@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { program } from 'commander';
 
-import { IsambardBareMetalBackend } from './backends/IsambardBareMetalBackend.ts';
+import { getBackend } from './backends/Backend.ts';
 import { loadCredentials, assertConfigured, saveConfig } from './config.ts';
 import { formatJobRow, formatJobTable } from './utils.ts';
 
@@ -122,7 +122,7 @@ async function cmdCancel(
     // Load and validate credentials
     const config = loadCredentials();
     assertConfigured(config);
-    const backend = new IsambardBareMetalBackend(config);
+    const backend = getBackend(config);
     await backend.requestCancel(jobName, options.force);
 }
 
@@ -145,6 +145,7 @@ async function cmdConfig(options: {
     if (options.projectDir) config.projectDir = options.projectDir;
     if (options.hfToken) config.hfToken = options.hfToken;
     saveConfig(config);
+    // TODO: Test configuration with checkSSH before saving
     console.log('Configuration saved.');
 }
 
@@ -162,7 +163,7 @@ async function cmdSetup(
 ): Promise<void> {
     const config = loadCredentials();
     assertConfigured(config);
-    const backend = new IsambardBareMetalBackend(config);
+    const backend = getBackend(config);
     await backend.setup(vllmVersion, options.force);
 }
 
@@ -175,7 +176,7 @@ async function cmdSetup(
 async function cmdStatus(jobName?: string) {
     const config = loadCredentials();
     assertConfigured(config);
-    const backend = new IsambardBareMetalBackend(config);
+    const backend = getBackend(config);
     if (jobName) {
         // TODO: better formatting of a single job.
         formatJobRow(await backend.getJobStatus(jobName));
@@ -206,7 +207,7 @@ async function cmdConnect(
     // is not already running, rather than try and start it.
     const config = loadCredentials();
     assertConfigured(config);
-    const backend = new IsambardBareMetalBackend(config);
+    const backend = getBackend(config);
     const localPort = parseInt(options.port);
 
     if (!(await backend.isRunning(jobName))) {

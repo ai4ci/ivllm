@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2317
 # tests/bash/unit/test-utils.sh — Unit tests for utils.sh helper functions.
 #
 # Pure bash logic tests — no sandbox needed. These run on the host to test

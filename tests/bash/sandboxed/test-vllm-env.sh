@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016
 # tests/bash/sandboxed/test-vllm-env.sh — Environment preamble tests.
 #
 # Exercises common-env.sh (NVHPC/CUDA/compiler setup) and vllm-env.sh

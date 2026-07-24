@@ -463,10 +463,9 @@ state-helpers (`isRunning`, `isStopped`, etc.) were added during implementation.
 
 **Status**: Accepted (design intent)
 
-**Context**: Running multiple models simultaneously requires stable port
-assignments per model. The current `generateRandomHighPort()` is fine for
-ephemeral single-model use but doesn't support discovery or conflict
-avoidance when multiple models share a node or when a router needs to know
+**Context**: Running multiple models requires a registory of local port
+assignments per model and needs to manage conflict
+avoidance when multiple models share a node and support a router to know
 where each model is.
 
 There are 2 types of port assignment:
@@ -475,13 +474,13 @@ There are 2 types of port assignment:
 This is strictly the responsibility of the backend to decide, and can used a
 random high port (preferred) or vllm default 8000. This is up to the backend
 but must be communicated to clients via the lockfile. In the context of a single
-noide running multiple models the backend will have to make sure there are no
+node running multiple models the backend will have to make sure there are no
 conflicts.
 
 2) Local ports: localhost endpoints for ssh tunnel (or passthrough when backend is local ollama).
 We need a port per model running. This should default to 11434 if only a single
 model is connected. The user can override this with a --local-port cli flag to
-`ivllm connect`. Users responsibility to manage local ports in multiple connections.
+`ivllm connect`. Currently it is the users responsibility to manage local ports in multiple connections.
 
 In the future a model router will handle multiple local ports and ssh tunnels:
 

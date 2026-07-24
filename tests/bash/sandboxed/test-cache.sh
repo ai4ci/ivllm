@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016
 # tests/bash/sandboxed/test-cache.sh — JIT cache save/restore tests.
 #
 # Runs inside the bwrap "compute" profile sandbox. resolve_job_jit_cache()

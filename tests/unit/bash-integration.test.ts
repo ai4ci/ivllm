@@ -10,23 +10,13 @@ import { describe, it, expect } from 'bun:test';
 import { execSync } from 'child_process';
 import { join } from 'path';
 
+const skipLong = !process.env.RUN_LONG_TESTS;
 const root = process.cwd();
 const bashRun = join(root, 'tests', 'bash', 'run.sh');
 
-describe('Bash test suite', () => {
-    it('runs all scopes (unit + sandboxed) and exits 0', { timeout: 120_000 }, () => {
-        const output = execSync(`bash tests/bash/run.sh`, {
-            encoding: 'utf-8',
-            timeout: 120_000, // 2 min — sandboxed tests take time
-        });
-        // The bash suite prints a summary line at the end
-        expect(output).toMatch(/0 failed/);
-    });
-});
-
 describe('Bash test suite — unit only', () => {
-    it('runs unit/ tests and exits 0', { timeout: 30_000 }, () => {
-        const output = execSync(`bash tests/bash/run.sh unit`, {
+    it('runs unit/ tests and exits 0', () => {
+        const output = execSync(`bash ${bashRun} unit`, {
             encoding: 'utf-8',
             timeout: 30_000,
         });
@@ -35,8 +25,8 @@ describe('Bash test suite — unit only', () => {
 });
 
 describe('Bash test suite — sandboxed only', () => {
-    it('runs sandboxed/ tests and exits 0', { timeout: 300_000 }, () => {
-        const output = execSync(`bash tests/bash/run.sh sandboxed`, {
+    it.skipIf(skipLong)('runs sandboxed/ tests and exits 0', () => {
+        const output = execSync(`bash ${bashRun} sandboxed`, {
             encoding: 'utf-8',
             timeout: 300_000, // 5 min — heavy sandboxed tests
         });

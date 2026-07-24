@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016
 # tests/bash/sandboxed/test-exit-trap.sh — Exit-trap / tidy_up() tests.
 #
 # Tests the `tidy_up()` function, which is called as an exit trap on ALL

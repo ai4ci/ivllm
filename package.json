@@ -9,9 +9,8 @@
   },
   "scripts": {
     "start": "bun run src/index.ts",
-    "test": "bash tests/bash/run.sh && bun test",
-    "test:bash": "bash tests/bash/run.sh",
-    "test:ts": "bun test",
+    "test": "bun test",
+    "test:all": "RUN_LONG_TESTS=true bun test",
     "prepare": "skills-npm",
     "lint": "eslint",
     "format": "prettier --write -- ",

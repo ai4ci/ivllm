@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016
 # tests/bash/sandboxed/test-monitor-startup.sh — monitor_startup() tests.
 #
 # Tests the `monitor_startup()` function — the foreground monitor that runs

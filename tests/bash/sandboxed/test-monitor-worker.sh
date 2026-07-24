@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016
 # tests/bash/sandboxed/test-monitor-worker.sh — monitor_worker() tests.
 #
 # Tests the `monitor_worker()` function — the background monitor that runs

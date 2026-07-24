@@ -1,13 +1,11 @@
 #!/bin/bash
+# shellcheck disable=SC2016
 # tests/bash/sandboxed/test-login-handoff.sh — Login-node wrapper script tests.
 #
 # Tests the login-node wrapper scripts (ivllm-cancel.sh, ivllm-status.sh,
 # ivllm-setup.sh) in the `login` profile sandbox. These scripts call
 # scancel/squeue/srun which are shimmed to record calls in /work/calls.log.
 #
-# NOTE: ivllm-serve.sh has a pre-existing bash -n syntax error (unclosed
-# $(sbatch on line 99) that prevents it from reaching the sbatch call.
-# This is tracked separately and the serve test is skipped.
 #
 # QUOTING: sandbox_run_test bodies are single-quoted strings. Single quotes
 # inside jq would terminate the body. Instead, we write JSON with printf

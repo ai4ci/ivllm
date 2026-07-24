@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016
 # tests/bash/sandboxed/test-monitor-head.sh — monitor_head() tests.
 #
 # This is the clearest demonstration of *why* the bash tests run inside a

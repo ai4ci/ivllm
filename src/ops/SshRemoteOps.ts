@@ -7,7 +7,6 @@ import type {
 } from '../types';
 import { RemoteOps } from './RemoteOps';
 import { spawn } from 'child_process';
-import { semverGte, revSemverSort } from '../semver.ts';
 
 /**
  * Reusable SSH multiplexing options for SSH/SCP commands.

@@ -42,8 +42,8 @@ status report, until it gets the same treatment.
 | Layer | Location | Runner | Speed |
 |-------|----------|--------|-------|
 | TypeScript unit | `tests/unit/*.test.ts` | `bun test` | ms |
-| Bash unit (plain) | `tests/bash/unit/test-*.sh` | `bash tests/bash/run.sh unit` | ms |
-| Bash unit (sandboxed) | `tests/bash/sandboxed/test-*.sh` | `bash tests/bash/run.sh sandboxed` | s (bwrap overhead per test) |
+| Bash unit (plain) | `tests/bash/unit/test-*.sh` | `bun test` | ms |
+| Bash unit (sandboxed) | `tests/bash/sandboxed/test-*.sh` | `bash tests/bash/run.sh sandboxed` or  `bun test:all`  | s (bwrap overhead per test) |
 | Integration | `tests/integration/*.test.ts` | `bun test` | s |
 | E2E | `tests/e2e/smoke.sh` | Manual / CI on Isambard | 5–30 min |
 
@@ -59,126 +59,12 @@ new tests targeting the v3 architecture (`Backend`, `RemoteOps`, `local-ops`).
 | Test file | What it tests | Status |
 |-----------|---------------|--------|
 | `unit/Backend.test.ts` | `parseV3Lockfile()`, `getJobStatus()`, `isRunning()`, `isStopped()`, `isStartable()`, `isStarting()` on the abstract Backend base class | ✅ 20 tests |
-| `unit/RemoteOps.mock.test.ts` | MockRemoteOps — records and validates what each RemoteOps method would send without any SSH | ✅ 8 tests |
 | `unit/local-ops.test.ts` | `isLocalPortInUse()`, `isHealthy()`, `queryModels()` using real http.Server | ✅ 7 tests |
-| `unit/semver.test.ts` | `semverGte()`, `revSemverSort()` — semantic version comparison | ✅ 11 tests |
 | `integration/CLI.lifecycle.test.ts` | Full Backend lifecycle (requestStart, requestCancel, getAllJobStatus, bootstrap, lifecycle helpers) via a MockRemoteOps | ✅ 11 tests |
 
-**Total: 57 TypeScript tests** across 5 files.
+**Total: 38 TypeScript tests** across 3 files.
 
-### Test architecture
-
-The v3 TypeScript tests use a three-layer approach:
-
-| Layer | Purpose | Implementation |
-|-------|---------|----------------|
-| **Pure unit** | Test functions that take/return only data | `Backend.test.ts` (JSON parsing), `semver.test.ts`, `local-ops.test.ts` (http.Server) |
-| **Interface mock** | Test RemoteOps contract without SSH | `RemoteOps.mock.test.ts` — MockRemoteOps records every call |
-| **Integration** | Test the full Backend→RemoteOps chain | `CLI.lifecycle.test.ts` — TestBackend with TestRemoteOps |
-
-### MockRemoteOps
-
-The `RemoteOps` interface is implemented by `MockRemoteOps` in tests — a
-concrete class that records every call and returns canned responses. This
-replaces the old `makeRemoteOps('dry-run')` boolean approach with something
-that has full interface coverage.
-
-MockRemoteOps simulates:
-- `sbatch` → returns `'Submitted batch job 123456'`
-- `squeue` → returns `'123456 RUNNING'`
-- `checkSSH` → returns `true` without any socket activity
-- `spawnTunnel` → returns a closeable mock EventEmitter
-- `copyFile`/`copyDirectory` → record the call for assertion
-
----
-
-## Mock Remote Ops (TypeScript)
-
-The `makeRemoteOps` factory in `src/remote-ops.ts` currently has two modes:
-`real` (SSH) and `dry-run` (canned text responses). For v3 connect/cancel
-testing we need a **third mode** that simulates a real filesystem on the
-remote side without requiring actual SSH.
-
-### Current problems with `dry-run` mode
-
-| Issue | Example | Impact |
-|-------|---------|--------|
-| Canned `cat` response returns `'lockfile'` (not JSON) | `command.startsWith('cat') → 'lockfile'` | Can't test lockfile parsing |
-| No writable filesystem | `set -C; cat > status.json <<...` returns empty string | Can't test lockfile creation |
-| No state tracking | Every call is independent | Can't simulate pending→running transitions |
-| `dryRun` is boolean | No middle ground | Can't test with real filesystem but fake SSH |
-
-### Solution: add a `mock` mode
-
-```typescript
-type OpsMode = 'real' | 'mock' | 'dry-run';
-
-function makeRemoteOps(config: Credentials, mode: OpsMode): RemoteOps;
-```
-
-In `mock` mode:
-
-| Method | Behaviour |
-|--------|-----------|
-| `runRemote` | Executes commands against a local temp filesystem. `cat`, `mkdir`, `jq` operations work on real files. `sbatch` returns a fake job ID. `scancel` is a no-op. |
-| `copyFile` | Copies to a local temp directory (same as dry-run) |
-| `spawnTunnel` | Returns a mock emitter (same as dry-run) |
-| `checkSSH` | Returns true (same as dry-run) |
-| `streamSrun` | Logs and returns mock emitter (same as dry-run) |
-
-For lockfile simulation, the mock `runRemote` detects `cat` and `jq` patterns
-and delegates to local bash. A `MockLockfile` helper tracks simulated state
-and can inject failures:
-
-```typescript
-class MockRemoteFs {
-  private baseDir: string;
-
-  /**
-   * Simulate a SLURM job progressing from pending → initialising → running.
-   * After `delayMs`, runs `jq '.status = "running"'` on the lockfile.
-   */
-  simulateJobStart(jobName: string, delayMs: number): void;
-
-  /**
-   * Read back the current lockfile for assertions.
-   */
-  readLockfile(jobName: string): LockfileV3 | null;
-}
-```
-
-Test flow for `ivllm connect`:
-
-```typescript
-test('connect creates lockfile, submits sbatch, transitions to running', async () => {
-  const fs = new MockRemoteFs();
-  const ops = makeMockRemoteOps(fs.baseDir);
-
-  // Inject a SLURM job that becomes "running" after 2s
-  fs.simulateJobStart('test-job', 2000);
-
-  await cmdConnect(['test-job', '--config', testConfig, '--local-port', '9999'], ops);
-
-  // Verify lockfile was created
-  const lockfile = fs.readLockfile('test-job');
-  expect(lockfile?.status).toBe('running');
-});
-```
-
-### Migration path
-
-The `mock` mode is now implemented via dedicated `MockRemoteOps` and
-`TestBackend` classes in the test suite rather than a runtime mode switch
-in `makeRemoteOps`. This keeps production code simpler (no `OpsMode` enum
-needed) and gives tests full control over the RemoteOps contract.
-
-The bash framework must be tested without an HPC connection, but the old
-"mock harness" approach (overriding `srun`/`sbatch`/`scancel`/`vllm` as bash
-**functions** sourced into the same shell as the code under test) had real
-gaps: it never exercised actual subprocess/exec semantics, background
-processes could leak onto the host if a test crashed before its trap fired,
-and there was no isolation from whatever HPC tools happened to be on the
-test runner's own PATH.
+## Backend tests
 
 ### Bubblewrap (bwrap) sandbox architecture
 
@@ -351,9 +237,8 @@ CLI disconnects          → bash keeps running (no effect)
 CLI reconnects           → bash shows same state
 ```
 
-These are now tested via the bwrap sandbox (bash side) and MockRemoteOps
-(TypesScript side). The handoff boundary is verified end-to-end by the
-integration tests that exercise the full Backend→RemoteOps chain.
+These are now tested via the bwrap sandbox (bash side) but not effectively on
+the typescript side
 
 ---
 
@@ -555,31 +440,6 @@ done
 - `test_parse_log_malformed` — lines with missing timestamps, non-standard
   formats, empty log file → no crash
 
-### Phase M6: Multi-User
-
-Focus: Permission and concurrent access scenarios.
-
-| Test area | Tests | Runner |
-|-----------|-------|--------|
-| Lockfile group permissions | 2 | Bash unit |
-| Second user connects | 2 | Integration (mock) |
-| Second user cancels | 2 | Integration (mock) |
-| **Total** | **6** | bash + bun |
-
-### Phase M7: Clean Up
-
-Focus: All tests pass, no regressions.
-
-| Suite | Tests | Runner |
-|-------|-------|--------|
-| Bash unit tests (unit + sandboxed) | ~75 | `bash tests/bash/run.sh` |
-| TypeScript unit tests | 57 | `bun test` |
-| Integration tests (mock E2E) | 11 | `bun test` (integration/) |
-| E2E smoke (Isambard) | 5 | Manual |
-| **Total** | **~148+** | CI pipeline |
-
----
-
 ## Running tests
 
 ### During development
@@ -597,8 +457,10 @@ bash tests/bash/run.sh sandboxed     # ~37s — bwrap-sandboxed, real jq/yq
 bun test tests/unit/Backend.test.ts
 bun test tests/unit/RemoteOps.mock.test.ts
 
-# All TypeScript
+# All TypeScript + Bash unit
 bun test
+# All TypeScript + Bash unit + Bash sandbox
+bun test:all
 ```
 
 ### Before commit
@@ -607,8 +469,6 @@ bun test
 # TypeScript
 bun test
 
-# Bash: both scopes pass, no red tests
-bash tests/bash/run.sh
 ```
 
 Currently all sandboxed tests pass. Each file is also a regression guard

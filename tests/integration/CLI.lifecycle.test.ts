@@ -13,10 +13,19 @@
  * The mock backend simulates what the real SSH backend would do, so we
  * can test the full CLI flow without any HPC connection.
  */
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import { Backend } from '../../src/backends/Backend';
 import { RemoteOps } from '../../src/ops/RemoteOps';
 import type { Credentials, LockfileV3, EnvVarEntry } from '../../src/types';
+
+// Intercept the entire module and override getBackend
+mock.module('../../src/backends/Backend.ts', () => {
+    return {
+        getBackend: (creds: Credentials) => {
+            return new TestBackend(creds);
+        },
+    };
+});
 
 // ── Mock RemoteOps ──────────────────────────────────────────────────────
 
@@ -38,11 +47,11 @@ class TestRemoteOps extends RemoteOps {
         this.lockfiles.set(job, { ...existing, ...data } as LockfileV3);
     }
 
-    async runRemote(cmd: string, options?: any): Promise<{ exitCode: number; stdout: string }> {
+    async runRemote(
+        cmd: string,
+        options?: any,
+    ): Promise<{ exitCode: number; stdout: string }> {
         this.calls.push({ method: 'runRemote', args: [cmd, options] });
-        if (cmd.includes('sbatch')) {
-            return { exitCode: 0, stdout: 'Submitted batch job 123456' };
-        }
         if (cmd.includes('ivllm-status.sh -p')) {
             // Return all lockfiles as JSON array
             const jobs = Array.from(this.lockfiles.values());
@@ -61,8 +70,15 @@ class TestRemoteOps extends RemoteOps {
         this.calls.push({ method: 'copyFile', args: [_local, _remote] });
     }
 
-    async copyDirectory(_local: string, _remote: string, _dir: 'up' | 'down'): Promise<void> {
-        this.calls.push({ method: 'copyDirectory', args: [_local, _remote, _dir] });
+    async copyDirectory(
+        _local: string,
+        _remote: string,
+        _dir: 'up' | 'down',
+    ): Promise<void> {
+        this.calls.push({
+            method: 'copyDirectory',
+            args: [_local, _remote, _dir],
+        });
     }
 
     runRemoteSync(_cmd: string, _env: EnvVarEntry[]): any {
@@ -73,14 +89,17 @@ class TestRemoteOps extends RemoteOps {
     }
 
     spawnTunnel(_port: number, _host: string, _rport: number): any {
-        this.calls.push({ method: 'spawnTunnel', args: [_port, _host, _rport] });
+        this.calls.push({
+            method: 'spawnTunnel',
+            args: [_port, _host, _rport],
+        });
         return Object.assign(new (require('events').EventEmitter)(), {
             kill: () => true,
         });
     }
 
     async checkSSH(): Promise<boolean> {
-        this.calls.push({ method: 'checkSSH' });
+        this.calls.push({ method: 'checkSSH', args: [] });
         return true;
     }
 
@@ -153,17 +172,25 @@ class TestBackend extends Backend {
             { env: this.envs, silent: true },
         );
         if (exitCode !== 0) throw new Error(`status failed: ${stdout}`);
+        let jobs: LockfileV3[] = [];
         try {
             const parsed = JSON.parse(stdout || '[]');
-            return Array.isArray(parsed)
-                ? parsed.map((j: any) => this.parseV3Lockfile(JSON.stringify(j))).filter((j: any) => j !== null)
-                : [];
+            if (Array.isArray(parsed)) {
+                jobs = parsed
+                    .map((j) => this.parseV3Lockfile(JSON.stringify(j)))
+                    .filter((j): j is LockfileV3 => j !== null);
+            }
         } catch {
-            return [];
+            // ignore parse errors — show empty list
         }
+        return jobs;
     }
 
-    async watchLog(_job: string, _node?: string, _until?: string): Promise<any> {
+    async watchLog(
+        _job: string,
+        _node?: string,
+        _until?: string,
+    ): Promise<any> {
         await this.bootstrap();
         return this.ops.runRemoteSync(
             `${this.remoteEngine}/ivllm-show-log.sh -j "${_job}"`,
@@ -195,7 +222,11 @@ describe('Backend — requestStart', () => {
         await backend.requestStart('test-job', '04:00:00', true);
 
         const ops = backend.getOps();
-        const call = ops.calls.find(c => c.method === 'runRemote' && c.args[0]?.includes('ivllm-serve.sh'));
+        const call = ops.calls.find(
+            (c) =>
+                c.method === 'runRemote' &&
+                c.args[0]?.includes('ivllm-serve.sh'),
+        );
         expect(call).toBeDefined();
         expect(call!.args[0]).toContain('test-job');
         expect(call!.args[0]).toContain('04:00:00');
@@ -208,7 +239,7 @@ describe('Backend — requestCancel', () => {
         await backend.requestCancel('test-job', false);
 
         const ops = backend.getOps();
-        const call = ops.calls.find(c => c.method === 'runRemote');
+        const call = ops.calls.find((c) => c.method === 'runRemote');
         expect(call!.args[0]).toContain('ivllm-cancel.sh');
         expect(call!.args[0]).toContain('test-job');
         expect(call!.args[0]).not.toContain('-f');
@@ -219,7 +250,7 @@ describe('Backend — requestCancel', () => {
         await backend.requestCancel('test-job', true);
 
         const ops = backend.getOps();
-        const call = ops.calls.find(c => c.method === 'runRemote');
+        const call = ops.calls.find((c) => c.method === 'runRemote');
         expect(call!.args[0]).toContain('-f');
     });
 });
@@ -242,8 +273,8 @@ describe('Backend — getAllJobStatus', () => {
 
         const jobs = await backend.getAllJobStatus();
         expect(jobs).toHaveLength(2);
-        expect(jobs.find(j => j.jobName === 'job1')?.status).toBe('running');
-        expect(jobs.find(j => j.jobName === 'job2')?.status).toBe('stopped');
+        expect(jobs.find((j) => j.jobName === 'job1')?.status).toBe('running');
+        expect(jobs.find((j) => j.jobName === 'job2')?.status).toBe('stopped');
     });
 
     it('returns empty list when no jobs', async () => {
@@ -256,7 +287,12 @@ describe('Backend — getAllJobStatus', () => {
 describe('Backend — lifecycle helpers', () => {
     it('isRunning returns true for running job', async () => {
         const backend = new TestBackend(CRED);
-        backend.setLockfile('j', { status: 'running', jobName: 'j', model: 'm', serverPort: 8000 });
+        backend.setLockfile('j', {
+            status: 'running',
+            jobName: 'j',
+            model: 'm',
+            serverPort: 8000,
+        });
         expect(await backend.isRunning('j')).toBe(true);
     });
 
@@ -267,13 +303,23 @@ describe('Backend — lifecycle helpers', () => {
 
     it('isStartable returns true for stopped job', async () => {
         const backend = new TestBackend(CRED);
-        backend.setLockfile('j', { status: 'stopped', jobName: 'j', model: 'm', serverPort: 8000 });
+        backend.setLockfile('j', {
+            status: 'stopped',
+            jobName: 'j',
+            model: 'm',
+            serverPort: 8000,
+        });
         expect(await backend.isStartable('j')).toBe(true);
     });
 
     it('isStarting returns true for pending job', async () => {
         const backend = new TestBackend(CRED);
-        backend.setLockfile('j', { status: 'pending', jobName: 'j', model: 'm', serverPort: 8000 });
+        backend.setLockfile('j', {
+            status: 'pending',
+            jobName: 'j',
+            model: 'm',
+            serverPort: 8000,
+        });
         expect(await backend.isStarting('j')).toBe(true);
     });
 });
@@ -283,7 +329,7 @@ describe('Backend — bootstrap', () => {
         const backend = new TestBackend(CRED);
         await backend.setup('0.8.0');
         const ops = backend.getOps();
-        const sshCall = ops.calls.find(c => c.method === 'checkSSH');
+        const sshCall = ops.calls.find((c) => c.method === 'checkSSH');
         expect(sshCall).toBeDefined();
     });
 });
@@ -299,10 +345,10 @@ describe('MockRemoteOps — command recording', () => {
         ops.spawnTunnel(11434, 'node0', 8000);
 
         expect(ops.calls).toHaveLength(5);
-        expect(ops.calls[0].method).toBe('runRemote');
-        expect(ops.calls[1].method).toBe('copyFile');
-        expect(ops.calls[2].method).toBe('copyDirectory');
-        expect(ops.calls[3].method).toBe('checkSSH');
-        expect(ops.calls[4].method).toBe('spawnTunnel');
+        expect(ops.calls[0]?.method).toBe('runRemote');
+        expect(ops.calls[1]?.method).toBe('copyFile');
+        expect(ops.calls[2]?.method).toBe('copyDirectory');
+        expect(ops.calls[3]?.method).toBe('checkSSH');
+        expect(ops.calls[4]?.method).toBe('spawnTunnel');
     });
 });

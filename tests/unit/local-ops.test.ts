@@ -5,19 +5,14 @@
  * port checking, health checking, and model catalog queries.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import {
-    isLocalPortInUse,
-    isHealthy,
-    queryModels,
-} from '../../src/local-ops';
-import { AddressInfo } from 'net';
+import { isLocalPortInUse, isHealthy, queryModels } from '../../src/local-ops';
+import http from 'http';
 
 describe('isLocalPortInUse', () => {
     let server: http.Server | null = null;
     let port = 0;
 
     beforeEach(() => {
-        const http = require('http');
         port = 59000 + Math.floor(Math.random() * 5000);
     });
 
@@ -34,7 +29,6 @@ describe('isLocalPortInUse', () => {
     });
 
     it('detects used port', async () => {
-        const http = require('http');
         server = http.createServer((req, res) => {
             res.writeHead(200);
             res.end('ok');
@@ -55,7 +49,6 @@ describe('isHealthy', () => {
     let port = 0;
 
     beforeEach(() => {
-        const http = require('http');
         port = 59000 + Math.floor(Math.random() * 5000);
     });
 
@@ -67,7 +60,6 @@ describe('isHealthy', () => {
     });
 
     it('returns true for healthy server', async () => {
-        const http = require('http');
         server = http.createServer((req, res) => {
             if (req.url === '/health') {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -86,7 +78,6 @@ describe('isHealthy', () => {
     });
 
     it('returns false for server without /health endpoint', async () => {
-        const http = require('http');
         server = http.createServer((req, res) => {
             // Never respond to /health
             res.writeHead(404);
@@ -111,7 +102,6 @@ describe('queryModels', () => {
     let port = 0;
 
     beforeEach(() => {
-        const http = require('http');
         port = 59000 + Math.floor(Math.random() * 5000);
     });
 
@@ -123,13 +113,14 @@ describe('queryModels', () => {
     });
 
     it('returns model list from /v1/models', async () => {
-        const http = require('http');
         server = http.createServer((req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-                object: 'list',
-                data: [{ id: 'test-model', max_model_len: 4096 }],
-            }));
+            res.end(
+                JSON.stringify({
+                    object: 'list',
+                    data: [{ id: 'test-model', max_model_len: 4096 }],
+                }),
+            );
         });
         await new Promise<void>((resolve) => {
             server!.listen(port, () => resolve());
@@ -138,12 +129,11 @@ describe('queryModels', () => {
         const result = await queryModels(port, 2000);
         expect(result.object).toBe('list');
         expect(result.data).toHaveLength(1);
-        expect(result.data[0].id).toBe('test-model');
-        expect(result.data[0].max_model_len).toBe(4096);
+        expect(result.data[0]?.id).toBe('test-model');
+        expect(result.data[0]?.max_model_len).toBe(4096);
     });
 
     it('throws on non-2xx response', async () => {
-        const http = require('http');
         server = http.createServer((req, res) => {
             res.writeHead(500);
             res.end('error');
@@ -152,6 +142,6 @@ describe('queryModels', () => {
             server!.listen(port, () => resolve());
         });
 
-        await expect(queryModels(port, 2000)).rejects.toThrow();
+        expect(queryModels(port, 2000)).rejects.toThrow();
     });
 });

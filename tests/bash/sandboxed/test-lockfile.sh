@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016
 # tests/bash/sandboxed/test-lockfile.sh — Lockfile state machine tests.
 #
 # Runs inside the bwrap "compute" profile sandbox (see
