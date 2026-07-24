@@ -19,7 +19,7 @@ import { RemoteOps } from '../../src/ops/RemoteOps';
 import type { Credentials, LockfileV3, EnvVarEntry } from '../../src/types';
 
 // Intercept the entire module and override getBackend
-mock.module('../../src/backends/Backend.ts', () => {
+mock.module('../../src/backends/backend-factory.ts', () => {
     return {
         getBackend: (creds: Credentials) => {
             return new TestBackend(creds);

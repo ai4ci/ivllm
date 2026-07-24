@@ -3,7 +3,6 @@ import type {
     RunRemoteResult,
     CloseableEventEmitter,
     EnvVarEntry,
-    LockfileV3,
 } from '../types';
 
 /**
@@ -62,7 +61,6 @@ export abstract class RemoteOps {
      * Spawns ssh with batch mode (BatchMode=yes) for passwordless
      * execution, and SSH multiplexing via {@link SSH_MUX_OPTS}. Output is
      * forwarded to the local terminal.
-     *
      * @param config - SSH {@link Credentials}
      * @param env - Environment variables to prefix the command
      * @returns An event emitter that can be closed with `.kill()`

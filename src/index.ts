@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { program } from 'commander';
 
-import { getBackend } from './backends/Backend.ts';
+import { getBackend } from './backends/backend-factory.ts';
 import { loadCredentials, assertConfigured, saveConfig } from './config.ts';
 import { formatJobRow, formatJobTable } from './utils.ts';
 
@@ -17,7 +17,7 @@ const { version } = await import('../package.json');
 async function main() {
     program.name('ivllm').version(version).description(`run llms on HPCs`);
 
-    const setup = program
+    program
         .command('setup')
         .description('Install vLLM <version> on the HPC (one-off)')
         .argument('<version>', 'the vLLM version to install (e.g. 0.19.1)')
@@ -28,7 +28,7 @@ async function main() {
         )
         .action(cmdSetup);
 
-    const cancel = program
+    program
         .command('cancel')
         .description(
             `Cancel a running vLLM inference job.
@@ -52,7 +52,7 @@ when graceful shutdown fails or the monitor is unresponsive.`,
         )
         .action(cmdCancel);
 
-    const config = program
+    program
         .command('config')
         .description('configure user credentials for isambard')
         .option(
@@ -64,7 +64,7 @@ when graceful shutdown fails or the monitor is unresponsive.`,
         .option('--hf-token <token>', 'HuggingFace token for gated models')
         .action(cmdConfig);
 
-    const connect = program
+    program
         .command('connect')
         .description(
             `Start or connect to a vLLM inference session.
@@ -95,7 +95,7 @@ If the job doesn't exist, creates it and starts it.`,
         .option('--dry-run', 'Preview without connecting to HPC', false)
         .action(cmdConnect);
 
-    const status = program
+    program
         .command('status')
         .description('Show the status of llm jobs on the HPC')
         .argument(
@@ -114,6 +114,7 @@ If the job doesn't exist, creates it and starts it.`,
  * {@link Backend.requestCancel} for graceful or forced cancellation.
  * @param jobName — Job name to cancel
  * @param options — `{ force: boolean }` — force kill via scancel
+ * @param options.force
  */
 async function cmdCancel(
     jobName: string,
@@ -132,6 +133,10 @@ async function cmdCancel(
  * Loads current credentials, applies any provided options, and saves.
  * @param options — Optional credential fields to update:
  *   `loginHost`, `username`, `projectDir`, `hfToken`
+ * @param options.loginHost
+ * @param options.username
+ * @param options.projectDir
+ * @param options.hfToken
  */
 async function cmdConfig(options: {
     loginHost?: string;
@@ -156,6 +161,7 @@ async function cmdConfig(options: {
  * {@link Backend.setup} to install vLLM on the HPC.
  * @param vllmVersion — Version string (e.g. `'0.19.1'`)
  * @param options — `{ force: boolean }` — force reinstall
+ * @param options.force
  */
 async function cmdSetup(
     vllmVersion: string,
@@ -193,6 +199,9 @@ async function cmdStatus(jobName?: string) {
  * If the job is starting up, tails logs until running.
  * @param jobName — Job name
  * @param options — `{ port, timeLimit, configFile }`
+ * @param options.port
+ * @param options.timeLimit
+ * @param options.configFile
  */
 async function cmdConnect(
     jobName: string,

@@ -51,7 +51,6 @@ export class SshRemoteOps extends RemoteOps {
      * Spawns ssh with batch mode and multiplexing via {@link SSH_MUX_OPTS}.
      * When `options.silent` is `false`, stdout/stderr are forwarded to
      * the local terminal; otherwise output is captured and returned.
-     *
      * @param command — Shell command to execute on the login node
      * @param options — Execution options
      * @param options.env — Environment variables to prefix the command
@@ -92,7 +91,6 @@ export class SshRemoteOps extends RemoteOps {
      * Copy a local file to the login node via SCP.
      *
      * Spawns scp with batch mode and multiplexing via {@link SSH_MUX_OPTS}.
-     *
      * @param localPath — Path to the local source file
      * @param remotePath — Destination path on the login node
      * @throws Error with the SCP exit code if the transfer fails
@@ -169,7 +167,6 @@ export class SshRemoteOps extends RemoteOps {
      *
      * Spawns ssh with batch mode and multiplexing via {@link SSH_MUX_OPTS}.
      * Stdout and stderr are forwarded directly to the local terminal.
-     *
      * @param command — Shell command to execute
      * @param env — Environment variables to prefix the command
      * @returns A process that can be terminated with `.kill()`
@@ -196,7 +193,6 @@ export class SshRemoteOps extends RemoteOps {
      * Maps `localhost:<localPort>` → `<remoteHost>:<remotePort>` through
      * the login node. Uses `ServerAliveInterval`/`ServerAliveCountMax` for
      * keepalive and `ExitOnForwardFailure` to detect bad hostnames.
-     *
      * @param localPort — Port to listen on locally
      * @param remoteHost — Remote host (e.g. compute node hostname)
      * @param remotePort — Remote port (e.g. vLLM server port)
@@ -236,7 +232,6 @@ export class SshRemoteOps extends RemoteOps {
      *
      * Runs `echo ok` via {@link runRemote} and checks the exit code.
      * On failure, logs an error and calls `process.exit(1)`.
-     *
      * @returns `true` when connectivity is confirmed
      */
     async checkSSH(): Promise<boolean> {

@@ -68,9 +68,9 @@ export class IsambardBareMetalBackend extends Backend {
             throw new Error(`Local port ${lp} is in use`);
         }
 
-        var jobStatus: LockfileV3;
+        let jobStatus: LockfileV3;
 
-        do {
+        for (;;) {
             jobStatus = await this.getJobStatus(job);
             const s = jobStatus.status;
             if (s == 'failed' || s == 'stopped' || s == 'cancel') {
@@ -82,7 +82,7 @@ export class IsambardBareMetalBackend extends Backend {
             if (s == 'pending') console.log('Waiting for job to start');
             if (s == 'initialising') console.log('vLLM is starting up');
             sleep(10_000);
-        } while (true);
+        }
 
         if (jobStatus.computeHostname) {
             return this.ops.spawnTunnel(

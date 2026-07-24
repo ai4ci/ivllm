@@ -4,7 +4,23 @@ This document captures the current scope of the v3 rewrite and maps out
 future directions derived from the architecture document (`architecture.md`)
 and the Architecture Decision Records (`adr.md`).
 
----
+### NEXT STEPS
+
+* N.B. WHEN THESE ARE COMPLETED UPDATE CURRENT SCOPE SECTION:
+
+These items tighten quality and robustness before broader features are
+added.
+
+- [ ] **CLI handler unit tests** — `cmdConnect`, `cmdSetup`, `cmdConfig`,
+      `cmdStatus`, `cmdCancel` in `src/index.ts` have no unit tests. Only
+      the Backend contract is covered via integration tests.
+- [x] **ESLint / linting** — Configured (jsdoc + prettier + typescript-eslint). Excluded `design/` from scanning. 0 errors, ~16 warnings (JSDoc minor issues).
+- [x] **TypeScript type check** — `tsconfig.json` has `strict: true` and `noEmit`. Runs cleanly with 0 errors.
+- [ ] **Monitor idle timeout unit test** — `monitor_head` log-parsing idle
+      check works end-to-end but lacks a focused unit test for the
+      time-pattern matching logic.
+- [ ] **Version bump to v3** — Package.json still shows `v2.14.0`;
+      the binary is named `ivllm2`. Needs a coherent version strategy.
 
 ## Current Scope
 
@@ -220,29 +236,16 @@ binaries and mocked SLURM/vLLM commands (`sbatch`, `srun`, `scancel`, `vllm`, et
 | Source JSDoc | All public functions documented (44+ bash functions, all TypeScript modules) |
 | GitHub Pages | Auto-deployed API docs from `typedoc` on `main` push |
 
-### Remaining (within current scope)
-
-These items tighten quality and robustness before broader features are
-added.
-
-- [ ] **CLI handler unit tests** — `cmdConnect`, `cmdSetup`, `cmdConfig`,
-      `cmdStatus`, `cmdCancel` in `src/index.ts` have no unit tests. Only
-      the Backend contract is covered via integration tests.
-- [ ] **TypeScript type check** — No `tsc --noEmit` or `--strict` check in
-      the test pipeline. Should be a fast gate before `bun test`.
-- [ ] **ESLint / linting** — No linting configured in the test workflow.
-- [ ] **Monitor idle timeout unit test** — `monitor_head` log-parsing idle
-      check works end-to-end but lacks a focused unit test for the
-      time-pattern matching logic.
-- [ ] **Version bump to v3** — Package.json still shows `v2.14.0`;
-      the binary is named `ivllm2`. Needs a coherent version strategy.
-
----
-
 ## Future Directions
 
 The v3 architecture is designed to support these evolutions without structural
 changes. Each maps to one or more ADRs.
+
+### Log file failure recovery
+
+* On failure to start up the vllm config and vllm logs from the current run need to be copied to /engine/diagnostics/<job>/<date-time> directory
+* Job diagnostics need to be rsynced to a user local directory (TBD - probably a temp directory, maybe configurable)
+* So that logs can be analysed by an agent on local.
 
 ### Model routing server
 
@@ -279,6 +282,13 @@ for example, Ollama (local), a different HPC, or container-based deployment.
 
 **Rationale:** Keeps the lockfile protocol shared so a future model router can
 discover and dispatch to any backend.
+
+### Model performance on remote host.
+
+* A benchmarking script on remote that connects to a running vllm using the lockfile
+* Runs benchmarking and reports statistics and vllm config (and logs why not) into into /engine/diagnostics/<job>/<date-time>
+* Syncs to local directory.
+* So that agent can analyse throughput.
 
 ### Advanced scheduling
 

@@ -76,11 +76,11 @@ export async function queryModels(
   localPort: number,
   timeoutMs: number,
 ): Promise<V1ModelsResponse> {
-  const timeout = new Promise<Response>((resolve) =>
+  const timeout = new Promise<Response>((_resolve, reject) => {
     setTimeout(() => {
-      throw new Error('Timed out');
-    }, timeoutMs),
-  );
+      reject(new Error('Timed out'));
+    }, timeoutMs);
+  });
 
   const request = fetch(`http://localhost:${localPort}/v1/models`, {});
 
