@@ -1,0 +1,25 @@
+metadata:
+    target: Isambard-AI GH200
+    created-by: Rob
+    version: 0.1.0
+    lifecycle: experimental
+
+model: upstage/Solar-Open2-250B
+kv-cache-dtype: fp8
+gpu-memory-utilization: 0.95
+max-num-seqs: 512
+max-model-len: 1048576
+max-num-batched-tokens: 16384
+enable-chunked-prefill: true
+
+tensor-parallel-size: 4
+data-parallel-size: 2
+enable-expert-parallel: true
+# moe-backend: triton
+moe-backend: deep_gemm
+all2all-backend: deepep_low_latency
+default-chat-template-kwargs: '{"think_render_option":"preserved"}'
+reasoning-parser: solar_open2
+tool-call-parser: solar_open2
+enable-auto-tool-choice: true
+logits-processors: vllm.v1.sample.logits_processor.solar_open2:SolarOpen2TemplateLogitsProcessor

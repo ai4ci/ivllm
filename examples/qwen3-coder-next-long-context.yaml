@@ -11,10 +11,9 @@
 # Parallelism: tp=2 (70 GB weights, ~102 GB remaining for KV cache across 2 GPUs)
 # Context: 262,144 tokens (full native context)
 
-model: RedHatAI/Qwen3-Coder-Next-FP8-dynamic
+model: Qwen/Qwen3-Coder-Next-FP8
 
 tensor-parallel-size: 2
-
 gpu-memory-utilization: 0.95
 max-num-seqs: 512
 dtype: fp8
@@ -42,10 +41,10 @@ hf-overrides: '{"rope_parameters": {"mrope_interleaved": true, "mrope_section": 
 max-model-len: 1010000
 
 
-# Mixture of experts models need to be forced to use triton
-gdn-prefill-backend: "triton"
-moe-backend: triton             # Forces vLLM to use pre-compiled Triton MoE kernels
-attention-config: '{"backend":"TRITON_ATTN"}'
-enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
+# # Mixture of experts models need to be forced to use triton
+# gdn-prefill-backend: "triton"
+# moe-backend: triton             # Forces vLLM to use pre-compiled Triton MoE kernels
+# attention-config: '{"backend":"TRITON_ATTN"}'
+# enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
 
 

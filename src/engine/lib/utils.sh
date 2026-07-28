@@ -249,6 +249,15 @@ resolve_stripped_job_config() {
         | yq d - min-vllm-version \
         | yq d - ivllm \
         | yq d - idle-timeout \
+        | yq d - node-rank \
+        | yq d - master-addr \
+        | yq d - data-parallel-size-local \
+        | yq d - data-parallel-address \
+        | yq d - data-parallel-rpc-port \
+        | yq d - data-parallel-start-rank \
+        | yq d - config \
+        | yq d - numa-bind \
+        | yq d - served-model-name \
         | yq d - metadata > "$output_file"
     echo "$output_file"
 }
@@ -578,6 +587,10 @@ is_status() {
     # Returns 0 (true) if lockfile exists and .status == $2, 1 otherwise.
     # Usage: is_status "$job" "running" → returns 0 if true
     local lockfile
+    if [[ -x ${2:-} ]]; then
+        echo "must supply status" >&2
+        exit 1
+    fi
     lockfile=$(resolve_job_status "${1}")
     [ ! -f "$lockfile" ] && return 1
     jq -e --arg test "${2?must supply status}" 'has("status") and .status == $test' "$lockfile" > /dev/null 2>&1
@@ -590,6 +603,28 @@ is_cancellable() {
     # Returns 0 if squeue returns the job, 1 otherwise.
     # Usage: is_cancellable "$slurm_id" → returns 0 if job exists
     squeue -j "${1?must supply slurm id}" -u "$(whoami)" -h -o "%i" | grep -q .
+}
+
+is_startable() {
+    # Check existing status before starting job.
+    local job=${1?must supply job id}
+    if is_status "$job" "pending"; then
+        echo "ERROR: job $job is already submitted and waiting resources" >&2
+        return 1
+    fi
+    if is_status "$job" "initialising"; then
+        echo "ERROR: job $job is already starting up" >&2
+        return 1
+    fi
+    if is_status "$job" "running"; then
+        echo "[serve] ERROR: job $job is already running" >&2
+        return 1
+    fi
+    if is_status "$job" "cancel"; then
+        echo "[serve] ERROR: job $job is in process of shutting down" >&2
+        return 1
+    fi
+    return 0
 }
 
 # ── Shutdown and cleanup ───────────────────────────────────────────────────

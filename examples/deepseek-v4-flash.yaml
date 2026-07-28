@@ -1,30 +1,33 @@
+metadata:
+    target: Isambard-AI GH200
+    created-by: Rob
+    version: 0.1.0
+    lifecycle: experimental
+
 # vLLM config for deepseek-ai/DeepSeek-V4-Flash on Isambard AI
-#
-# Hardware: 4 × GH200 120GB per node (Isambard AI Phase 1/2) — ~96 GiB usable HBM3e per GPU
 # Model: 284B total parameters, 13B active parameters (MoE)
-# Parallelism: tp=4 (full node) — Tensor + Expert Parallel (TEP)
-#   Active weights are extremely lightweight, enabling highly efficient serving.
-#   FP4+FP8 mixed checkpoint: experts are stored in FP4, other parameters in FP8.
-#
+# This may stuggle with OOM on loading...
+# Using the full fp8 unquantised base model to keep in the fp8 sweet spot
 # Architecture: Mixture of Experts (MoE) with hybrid CSA+HCA attention
 #   Compressed Sparse Attention (CSA) and Heavily Compressed Attention (HCA)
 #   reduce the KV cache footprint to just 10% of V3.2.
-#   Three-tier reasoning effort: Non-think, Think High, and Think Max.
-#   Function calling: native deepseek_v4 tool-use protocol.
-#
-# Usage: ivllm start <job-name> --config examples/deepseek-v4-flash.yaml
 
-model: deepseek-ai/DeepSeek-V4-Flash
-tensor-parallel-size: 4
+
+model: deepseek-ai/DeepSeek-V4-Flash-Base
+tensor-parallel-size: 1
+pipeline-parallel-size: 1
+data-parallel-size: 4
 enable-expert-parallel: true
+# Wide EP settings.
 
 # Highly KV-cache efficient; FP8 KV cache further reduces memory footprint
-kv-cache-dtype: fp8
+# kv-cache-dtype: fp8
 block-size: 256
 
 max-model-len: 1048576
+max-num-seqs: 512
 gpu-memory-utilization: 0.90
-# cpu-offload-gb: 40
+max-cudagraph-capture-size: 256
 
 trust-remote-code: true
 
@@ -32,7 +35,6 @@ trust-remote-code: true
 reasoning-parser: deepseek_v4
 
 # Tool calling — DeepSeek V4 uses a custom protocol;
-# the deepseek_v4 parser handles serialisation into tool_calls objects.
 enable-auto-tool-choice: true
 tool-call-parser: deepseek_v4
 tokenizer-mode: deepseek_v4
@@ -42,4 +44,19 @@ enable-prefix-caching: true
 
 min-vllm-version: "0.23.0"
 # min-vllm-version: DeepSeek-V4 support is present in vLLM 0.20.0+.
-# ivllm checks this before submitting; stripped before passing to vLLM.
+
+moe-backend: deep_gemm_mega_moe
+# If we have to revert to FP4 quantised experts then
+# moe-backend: humming
+# env:
+#     VLLM_HUMMING_MOE_GEMM_TYPE: indexed
+#     VLLM_HUMMING_INPUT_QUANT_CONFIG: '{"dtype":"float8e4m3","input_scale_group_size":128}'
+# as per https://blog.doubleword.ai/throughputmaxxing-v4-flash-single-node
+
+speculative-config: '{"method": "deepseek_mtp","num_speculative_tokens": 1}'
+
+# AI recommended attention config:
+# disable-hybrid-kv-cache-manager is on vllm recipes also
+kv-cache-dtype: fp8_ds_mla
+disable-hybrid-kv-cache-manager: false
+# attention-backend: FLASHINFER_MLA_SPARSE

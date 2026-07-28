@@ -41,13 +41,13 @@ done
 shift $((OPTIND - 1))
 
 if [[ -z "$IVLLM_JOB" ]]; then
-    echo "ERROR: No job parameter supplied" >&2
+    echo "[serve] ERROR: no job parameter supplied" >&2
     exit 1
 fi
 
 JOB_FILE=$(resolve_job_status "$IVLLM_JOB")
 if [[ ! -f $JOB_FILE ]]; then
-    echo "INFO: No existing job file found for $IVLLM_JOB"
+    echo "[serve] no existing job file found for $IVLLM_JOB"
 fi
 
 export IVLLM_LOG=$(resolve_job_log "$IVLLM_JOB")
@@ -60,9 +60,7 @@ exec > >(tee "$IVLLM_LOG") 2>&1
 idleTimeout=$(get_job_config_setting "$IVLLM_JOB" ".idle-timeout")
 model=$(get_job_config_setting "$IVLLM_JOB" ".model")
 
-echo "starting $model with vllm $vllmVersion: idle timeout: ${idleTimeout:-30} mins"
-# Create the lockfile & fail if cannot get a lockfile.
-serverPort=$(create_status_pending "$IVLLM_JOB" "$model" "${idleTimeout:-30}") || exit 1
+echo "[serve] starting $model with vllm $vllmVersion: idle timeout: ${idleTimeout:-30} mins"
 
 # Check the model requested exists and download if not & fail if model download fails
 (source "$here/ivllm-get-model.sh" -m "$model" -l "$IVLLM_LOG") || exit 1
@@ -74,9 +72,9 @@ dp=$(get_job_config_setting "$IVLLM_JOB" ".data-parallel-size")
 tp=$(get_job_config_setting "$IVLLM_JOB" ".tensor-parallel-size")
 pp=$(get_job_config_setting "$IVLLM_JOB" ".pipeline-parallel-size")
 
-echo "data parallel: ${dp:-1}, tensor parallel: ${tp:-1}, pipeline parallel: ${pp:-1}"
+echo "[serve] data parallel: ${dp:-1}, tensor parallel: ${tp:-1}, pipeline parallel: ${pp:-1}"
 
-# Calculate total GPUs using safe defaults (using 1 instead of -1 for neutral multiplication)
+# Calculate total GPUs using safe defaults
 nGpus=$((${dp:-1} * ${tp:-1} * ${pp:-1}))
 
 # Calculate nodes, rounding up to ensure a minimum of 1 node is allocated
@@ -95,25 +93,48 @@ else
     exclusiveFlag=""
 fi
 
-echo "$nGpus GPUs; $nNodes nodes; $nGpusPerNode GPUs per node; memory: $memValue"
+echo "[serve] $nGpus GPUs; $nNodes nodes; $nGpusPerNode GPUs per node; memory: $memValue"
 
 maxTime=$(get_max_job_time "$IVLLM_MAXTIME")
 
+# Check existing status before starting job.
+if is_status "$IVLLM_JOB" "pending"; then
+    echo "[serve] ERROR: job $IVLLM_JOB is already submitted and waiting resources" >&2
+    exit 1
+fi
+if is_status "$IVLLM_JOB" "initialising"; then
+    echo "[serve] ERROR: job $IVLLM_JOB is already starting up" >&2
+    exit 1
+fi
+if is_status "$IVLLM_JOB" "running"; then
+    echo "[serve] ERROR: job $IVLLM_JOB is already running" >&2
+    exit 1
+fi
+if is_status "$IVLLM_JOB" "cancel"; then
+    echo "[serve] ERROR: job $IVLLM_JOB is in process of being cancelled" >&2
+    exit 1
+fi
+
+# Create the lockfile & fail if cannot get a lockfile.
+serverPort=$(create_status_pending "$IVLLM_JOB" "$model" "${idleTimeout:-30}") || exit 1
+
+echo ""
 echo "=================================="
 echo "Starting job $IVLLM_JOB:"
 echo "=================================="
-echo "Model: $model"
-echo "Port: $serverPort"
-echo "Nodes: $nNodes"
-echo "Log: $IVLLM_LOG"
-echo "Gpus per node: $nGpusPerNode"
-echo "Memory per node: $memValue"
-echo "Max wall time: $maxTime"
-echo "Target vllm version: $vllmVersion"
+echo "  Model: $model"
+echo "  Port: $serverPort"
+echo "  Nodes: $nNodes"
+echo "  Status file: $(resolve_job_status "$IVLLM_JOB")"
+echo "  Log: $IVLLM_LOG"
+echo "  Gpus per node: $nGpusPerNode"
+echo "  Memory per node: $memValue"
+echo "  Max wall time: $maxTime"
+echo "  Target vllm version: $vllmVersion"
 echo "=== Custom environment exports ==="
-echo "$envExports"
+echo "$envExports" | awk '{print "  " $0}'
 echo "=== Stripped configuration ======="
-cat "$strippedConfig"
+cat "$strippedConfig" | awk '{print "  " $0}'
 echo "=================================="
 
 #shellcheck disable 2086
@@ -131,13 +152,13 @@ slurmJobId=$(sbatch \
     $@ \
     $here/lib/slurm-vllm-serve.sh "$IVLLM_JOB" "$nGpusPerNode" "$memValue")
 
-echo "Slurm Job ID: $slurmJobId"
+echo "  Slurm Job ID: $slurmJobId"
 echo "=================================="
 
 update_status_slurm_id "$IVLLM_JOB" "$slurmJobId"
 
-echo "Monitor start up progress:"
-echo "Logfile: tail -f $IVLLM_LOG"
-echo "Status: cat $(resolve_job_status "$IVLLM_JOB")"
+echo "  To monitor start up progress:"
+echo "  Tail log: ./ivllm-show-log.sh -j $IVLLM_JOB"
+echo "  Check status: ./ivllm-status.sh -j $IVLLM_JOB"
 echo "=================================="
-
+echo ""

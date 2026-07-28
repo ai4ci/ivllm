@@ -1,3 +1,9 @@
+metadata:
+    target: Isambard-AI GH200
+    created-by: Rob
+    version: 0.1.0
+    lifecycle: experimental
+
 # NVIDIA Nemotron-3-Super-120B-A12B-BF16 on Isambard AI
 #
 # Weights: ~120B params -> ~240 GB bf16 weights, so use a full 4x GH200 node.
@@ -13,7 +19,7 @@
 
 model: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
 tensor-parallel-size: 4
-# max-model-len: 262144  # the default
+
 max-model-len: 1048576
 gpu-memory-utilization: 0.95
 kv-cache-dtype: fp8
@@ -21,22 +27,19 @@ kv-cache-dtype: fp8
 enable-auto-tool-choice: true
 tool-call-parser: qwen3_coder
 
-# reasoning-parser: super_v3
-# reasoning-parser-plugin: ./plugins/nemotron/super_v3_reasoning_parser.py
 reasoning-parser: nemotron_v3
 
 enable-prefix-caching: true
 min-vllm-version: 0.22.0
-enable-expert-parallel: true
 
 enable-chunked-prefill: true
 max-num-seqs: 512
 
 # Mixture of experts models need to be forced to use triton
-gdn-prefill-backend: "triton"
-moe-backend: triton             # Forces vLLM to use pre-compiled Triton MoE kernels
-attention-config: '{"backend":"TRITON_ATTN"}'
-enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
+# gdn-prefill-backend: "triton"
+# moe-backend: triton             # Forces vLLM to use pre-compiled Triton MoE kernels
+# attention-config: '{"backend":"TRITON_ATTN"}'
+# enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
 
 # suggested on the huggingface card (but not vllm recipes)
 async-scheduling: true
