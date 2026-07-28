@@ -14,6 +14,13 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/sandbox.sh"
 
 # --- Test: serve with minimal config -----------------------------------
+#
+# ivllm-serve.sh now sources ivllm-get-model.sh inline (synchronously, on
+# the login node) before submitting the sbatch job — see ADR / roadmap
+# "model download moved out of a separate sbatch job". MOCK_HF_CACHED_MODELS
+# tells the `hf` shim that the fixture model is already cached, so
+# ivllm-get-model.sh exits 0 immediately without attempting a download and
+# ivllm-serve.sh proceeds to the sbatch call.
 sandbox_run_test "login_serves_with_minimal_config" login '
     mkdir -p "$IVLLM_PROJECTDIR/engine/jobs/serve-job"
     cp /work/fixtures/minimal.yaml "$IVLLM_PROJECTDIR/engine/jobs/serve-job/vllm.yaml"
@@ -23,10 +30,39 @@ sandbox_run_test "login_serves_with_minimal_config" login '
     lf=$(resolve_job_status "serve-job")
     printf '"'"'{"jobName":"serve-job","model":"test-model","status":"stopped","serverPort":49152}'"'"' > "$lf"
     unset IVLLM_UTILS
+    # Model is fixture'"'"'s "test-org/test-model-7b" — mark it pre-cached so the
+    # inline ivllm-get-model.sh step short-circuits without a real download.
+    export MOCK_HF_CACHED_MODELS="test-org/test-model-7b"
     bash "$IVLLM_PROJECTDIR/engine/ivllm-serve.sh" -j serve-job
+    assert_shim_called "hf" "cache" || exit 1
+    # assert_shim_not_called only takes a tool name (checks it was never
+    # called at all), so check the specific subcommand directly against
+    # the call log instead.
+    if grep -F "[hf]" "$IVLLM_TEST_CALL_LOG" | grep -qF "download"; then
+        echo "FAIL: hf download should not have been called (model pre-cached)"
+        exit 1
+    fi
     assert_shim_called "sbatch" "--job-name serve-job" || exit 1
     assert_shim_called "sbatch" "--partition=interactive" || exit 1
     assert_shim_called "sbatch" "slurm-vllm-serve.sh" || exit 1
+    exit 0
+'
+
+# --- Test: serve downloads model when not cached ------------------------
+sandbox_run_test "login_serves_downloads_uncached_model" login '
+    mkdir -p "$IVLLM_PROJECTDIR/engine/jobs/serve-dl-job"
+    cp /work/fixtures/minimal.yaml "$IVLLM_PROJECTDIR/engine/jobs/serve-dl-job/vllm.yaml"
+    create_status_pending "serve-dl-job" "test-org/test-model-7b" 30 > /dev/null 2>&1
+    lf=$(resolve_job_status "serve-dl-job")
+    printf '"'"'{"jobName":"serve-dl-job","model":"test-model","status":"stopped","serverPort":49153}'"'"' > "$lf"
+    unset IVLLM_UTILS
+    # Model not in MOCK_HF_CACHED_MODELS — ivllm-get-model.sh must fall back
+    # to `srun ... hf download`. A token is required for the download branch.
+    export HF_TOKEN="mock-token"
+    bash "$IVLLM_PROJECTDIR/engine/ivllm-serve.sh" -j serve-dl-job
+    assert_shim_called "hf" "cache" || exit 1
+    assert_shim_called "srun" "hf download test-org/test-model-7b" || exit 1
+    assert_shim_called "sbatch" "--job-name serve-dl-job" || exit 1
     exit 0
 '
 

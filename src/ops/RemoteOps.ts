@@ -47,7 +47,7 @@ export abstract class RemoteOps {
      * @param localPath - Path to the local directory
      * @param remotePath - Destination or source path on the login node
      * @param direction - 'up' to upload (local -> remote), 'down' to download (remote -> local)
-     * @throws Error with the rsync exit code if the transfer fails
+     * @throws {Error} with the rsync exit code if the transfer fails
      */
     abstract copyDirectory(
         localPath: string,

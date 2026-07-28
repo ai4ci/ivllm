@@ -295,12 +295,34 @@ for example, Ollama (local), a different HPC, or container-based deployment.
 **Rationale:** Keeps the lockfile protocol shared so a future model router can
 discover and dispatch to any backend.
 
-### Model performance on remote host.
+### Model performance benchmarking — `ivllm compare`
 
-* A benchmarking script on remote that connects to a running vllm using the lockfile
-* Runs benchmarking and reports statistics and vllm config (and logs why not) into into /engine/diagnostics/<job>/<date-time>
-* Syncs to local directory.
-* So that agent can analyse throughput.
+**ADR-118** (Ephemeral diagnostic jobs for model benchmarking)
+
+Let an agent submit several candidate vLLM configs, get throughput/latency
+numbers for each, and compare them — without ever creating a persistent,
+connectable `ivllm connect`-managed job. Benchmarking is implemented
+**only** as ephemeral, disposable diagnostic jobs (this replaces, not
+complements, the earlier idea of benchmarking an already-running job).
+
+| Step | Description | Dependencies |
+|------|-------------|--------------|
+| 1. | Extract `IVLLM_ARGS`-building logic out of `run_head_vllm.sh`/`run_worker_vllm.sh` into a shared function taking `port`/`model`/`config` as plain parameters (today they read `serverPort` from the lockfile, which an ephemeral job doesn't have) | — |
+| 2. | New ephemeral job script(s): launch vLLM (head + optional workers), health-poll (no lockfile), run `vllm bench serve --dataset-name random` against `localhost:$port`, save `bench.json`, kill everything, exit | Step 1 |
+| 3. | Worker coordination for multi-node ephemeral jobs via SLURM's own job-teardown semantics (no `monitor_worker`/lockfile polling needed) | Step 2 |
+| 4. | CLI: `ivllm compare <comparisonName> --submit <config1.yaml> <config2.yaml> ...` — non-blocking `sbatch` per config, writes `comparison.json` manifest (configName → slurmJobId, submittedAt, status) | Step 2 |
+| 5. | CLI: `ivllm compare <comparisonName> --analyse` — one-shot status check against the manifest, rsyncs down newly-completed configs' diagnostics, prints a status table with metrics inline; no verdict-picking | Step 4 |
+| 6. | Diagnostics stored at `$PROJECTDIR/engine/diagnostics/<comparisonName>/<configName>/{vllm.yaml,slurm.sh,vllm.log,bench.json}` | — |
+| 7. | Regular batch partition (not interactive) for `--submit` jobs — sidesteps the interactive reservation's 1-sbatch-job limit, enables true parallel submission across configs | — |
+| 8. | Default `--time` of 2 hours (large/multi-node model load + warmup can itself take 45–60+ min), overridable per comparison run | — |
+
+**Rationale:** No lockfile, no monitor triad, no SSH tunnel, no lingering
+GPU-hour risk (self-terminating by construction), trivially parallelisable
+across many configs, and sidesteps the interactive-reservation single-job
+limit entirely. Sits deliberately outside the `Backend` lifecycle contract
+defined in `design/backend-contract.md` — a one-shot benchmark run doesn't
+need any of the properties (detach/reattach, multi-user sharing, idle
+timeout) that contract exists to guarantee.
 
 ### Advanced scheduling
 

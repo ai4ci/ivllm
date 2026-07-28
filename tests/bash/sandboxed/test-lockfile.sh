@@ -198,7 +198,7 @@ sandbox_run_test "get_job_status_setting" compute '
     [ "$timeout" = "15" ] || { echo "FAIL: idleTimeout=$timeout"; exit 1; }
 
     missing=$(get_job_status_setting "resolve-job" ".nonexistent")
-    [ "$missing" = "null" ] || { echo "FAIL: missing field should return null, got $missing"; exit 1; }
+    [ "$missing" = "" ] || { echo "FAIL: missing field should return empty string, got $missing"; exit 1; }
 '
 
 sandbox_run_test "full_lifecycle" compute '

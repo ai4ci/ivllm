@@ -93,7 +93,7 @@ export class SshRemoteOps extends RemoteOps {
      * Spawns scp with batch mode and multiplexing via {@link SSH_MUX_OPTS}.
      * @param localPath — Path to the local source file
      * @param remotePath — Destination path on the login node
-     * @throws Error with the SCP exit code if the transfer fails
+     * @throws {Error} with the SCP exit code if the transfer fails
      */
     async copyFile(localPath: string, remotePath: string): Promise<void> {
         return new Promise((resolve, reject) => {
@@ -121,7 +121,7 @@ export class SshRemoteOps extends RemoteOps {
      * @param localPath - Path to the local directory
      * @param remotePath - Destination or source path on the login node
      * @param direction - 'up' to upload (local -> remote), 'down' to download (remote -> local)
-     * @throws Error with the rsync exit code if the transfer fails
+     * @throws {Error} with the rsync exit code if the transfer fails
      */
     async copyDirectory(
         localPath: string,

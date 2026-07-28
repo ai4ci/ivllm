@@ -8,6 +8,7 @@ import { Backend } from './Backend';
 import { SshRemoteOps } from '../ops/SshRemoteOps';
 import path from 'path';
 import fs from 'fs';
+import { homedir } from 'os';
 import { sleep } from 'bun';
 import { isLocalPortInUse } from '../local-ops';
 
@@ -183,5 +184,19 @@ export class IsambardBareMetalBackend extends Backend {
             `${this.remoteEngine}/ivllm-show-log.sh -j "${job}" -n "${node ?? '0'}"${until ? ` -m "${until}"` : ''}`,
             this.envs,
         );
+    }
+
+    async fetchDiagnostics(job: string, localDest?: string): Promise<string> {
+        await this.bootstrap();
+
+        const remoteDiagDir = `${this.remoteEngine}/diagnostics/${job}`;
+        const targetDir =
+            localDest ||
+            path.join(homedir(), '.config', 'ivllm', 'diagnostics', job);
+
+        console.log(`Downloading diagnostics for job '${job}'...`);
+        await this.ops.copyDirectory(targetDir, remoteDiagDir, 'down');
+
+        return targetDir;
     }
 }

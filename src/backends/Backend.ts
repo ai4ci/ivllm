@@ -89,10 +89,18 @@ export abstract class Backend {
     ): Promise<CloseableEventEmitter>;
 
     /**
+     * Fetch remote diagnostics for a failed or completed job.
+     * @param job — Job name
+     * @param localDest — Optional local destination directory
+     * @returns Path to the local diagnostics directory
+     */
+    abstract fetchDiagnostics(job: string, localDest?: string): Promise<string>;
+
+    /**
      * Get the lockfile status for a specific job.
      * @param job — Job name
      * @returns The job's lockfile status
-     * @throws Error if the job is not found
+     * @throws {Error} if the job is not found
      */
     async getJobStatus(job: string): Promise<LockfileV3> {
         const statuses = await this.getAllJobStatus();

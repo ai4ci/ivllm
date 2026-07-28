@@ -674,6 +674,145 @@ To ensure files created inside the shared folder natively inherit group ownershi
 
 ---
 
+## ADR-118: Ephemeral diagnostic jobs for model benchmarking (not a Backend lifecycle capability)
+
+**Status**: Accepted (design intent)
+
+**Context**: We need a way to benchmark vLLM configurations (throughput,
+TTFT, ITL) on Isambard, primarily so an AI agent can automate "try N
+candidate configs, compare the numbers, pick one" without a human manually
+submitting jobs and reading logs. Several designs were considered:
+
+1. **Benchmark an already-running, persistent, `ivllm connect`-managed job.**
+   The benchmark client would need to run somewhere — colocated with the
+   model (contends with vLLM's own process/network), on a separate SLURM
+   allocation reaching the model's `computeHostname:serverPort` over the
+   fabric (extra allocation, possible interactive-reservation conflict since
+   ADR-104 notes only 1 sbatch job is allowed on the interactive
+   reservation), or through the existing SSH tunnel from the local machine
+   (bakes WAN latency into TTFT/ITL numbers, making them meaningless).
+2. **A fully self-contained, disposable job**: start vLLM, benchmark it
+   against itself, shut down. No lockfile, no persistent lifecycle.
+
+Option 2 turned out to be a much better fit once examined closely:
+
+- **No interactive-reservation contention** — runs on the regular batch
+  partition, not the interactive reservation, so an agent can submit many
+  of these concurrently for different configs without hitting the "1 sbatch
+  job" limit that a persistent `ivllm connect` job would already be using.
+- **No lingering GPU-hour risk** — self-terminating by construction. There
+  is no idle-timeout monitor to build or rely on, because there is nothing
+  to time out; the job runs a bounded, predictable duration (load + warmup
+  + benchmark) and exits.
+- **No SSH tunnel needed** — the benchmark client and `vllm serve` are
+  colocated in the same SLURM allocation, so it's `localhost:$port`. This
+  sidesteps the "where does the bench client run relative to the model"
+  topology question entirely.
+- **Trivially parallelisable** — each config is an independent SLURM job.
+  An agent can fire off several concurrently and collect results
+  independently, with no shared state to coordinate.
+- **`vllm bench serve` already does its own warmup** — it runs a single
+  test request before the real measurement starts ("Starting initial single
+  prompt test run..."), so the elaborate `monitor_startup` warmup-then-save-
+  JIT-cache dance the persistent path needs isn't required for correctness.
+
+**Decision**: Benchmarking is implemented **only** as ephemeral, disposable
+diagnostic jobs. This fully replaces (not complements) the idea of
+benchmarking an already-running persistent job — there is no `ivllm bench
+<job>` command. If someone wants numbers for a config, they submit a fresh
+disposable job with that config; there is no way to benchmark a job that is
+already serving real traffic without restarting it.
+
+CLI surface: a two-phase command, `ivllm compare <comparisonName> --submit
+<config1.yaml> <config2.yaml> ...` and `ivllm compare <comparisonName>
+--analyse`. `comparisonName` is a grouping/manifest concept — distinct from
+any individual config's identity — used to organise the results of
+potentially many configs being compared, under
+`$PROJECTDIR/engine/diagnostics/<comparisonName>/`.
+
+`--submit` is **non-blocking** (`sbatch`, not `sbatch --wait`) — it fires one
+independent job per config and returns immediately, writing a
+`comparison.json` manifest recording each config's SLURM job ID and
+submission time. This matches a fire-and-forget agent workflow: submit, do
+something else, come back later.
+
+`--analyse` does a **one-shot status check** (no internal polling loop —
+consistent with the project's general "don't hammer the scheduler"
+convention) against the manifest's job IDs, rsyncs down the diagnostics
+directory for any newly-completed config, and prints a status table
+(pending/running/completed/failed) with metrics inline for completed
+configs. It exits 0 even if jobs are still pending — the agent decides
+whether and when to re-invoke it. **It does not compute a verdict** —
+picking a winner from the numbers is the agent's job, not the tool's.
+
+`--submit`'s SLURM `--time` defaults to **2 hours**, overridable per
+comparison run. Model load time (weight download/read, JIT/`torch.compile`
+compilation, multi-node startup coordination) can itself take 45–60+
+minutes for large or multi-node configs before benchmarking even starts, so
+a default in the 45–60 minute range — initially considered — was too tight
+and risked the job being killed by its own time limit before producing any
+result. 2 hours gives enough headroom for large/multi-node configs while
+still being a bounded, disposable-job duration; `--time` remains available
+for configs that need longer.
+
+Multi-node configs are supported from the first version (not deferred),
+reusing the existing head/worker script split. Worker coordination for an
+ephemeral job does **not** need lockfile polling (`monitor_worker`'s
+approach) — the head script `srun`-launches worker(s) as background job
+steps within the same `sbatch` script, waits on the head `vllm serve`
+process, benchmarks, then kills everything; SLURM's own allocation teardown
+when the script exits reaps any remaining worker steps. This is simpler
+than the persistent path's coordination precisely because there is no
+detach/reattach concern for a job that is never meant to outlive one
+CLI-driven benchmark run.
+
+**A required refactor this surfaces**: `run_head_vllm.sh` and
+`run_worker_vllm.sh` currently read `serverPort` **from the lockfile** via
+`get_job_status_setting "$IVLLM_JOB" ".serverPort"` — they are not drop-in
+reusable for a job with no lockfile. The `IVLLM_ARGS`-building logic (DP/TP/PP
+math, `--served-model-name`, etc.) must be extracted into a shared function
+that takes `port`/`model`/`config` as plain parameters, callable from both:
+
+- the persistent path (looks up port from the lockfile, then calls the
+  shared builder), and
+- the new ephemeral path (picks a port directly — no conflict risk, since
+  each ephemeral job is its own isolated allocation and worker nodes reach
+  the head via SLURM's own hostname resolution, not a lockfile-published
+  address).
+
+This avoids the two paths drifting apart on "how do I correctly build a
+`vllm serve` command from a job config" — the part that's actually worth
+sharing.
+
+**Rationale**:
+- Matches the actual use case ("try N configs, compare, pick one" — a
+  tuning/diagnostic workflow) far better than forcing benchmarking into the
+  persistent-job lifecycle contract defined in `backend-contract.md`, which
+  is designed for long-lived, detachable, multi-user-shared servers — none
+  of which properties a one-shot benchmark run needs.
+- Keeps the hard lifecycle contract in `backend-contract.md` unpolluted:
+  benchmarking deliberately sits outside `Backend.connect()` /
+  `requestCancel()` / the lockfile state machine entirely, rather than
+  bolting a second, incompatible state machine onto the same abstraction.
+- Non-blocking `--submit` + one-shot `--analyse` matches how an agent
+  actually wants to drive this: kick off work, do other things, poll
+  occasionally, read structured results itself.
+
+**Consequences**:
+- No `Backend.benchmark()` method is added (unlike the earlier, superseded
+  sketch in `design/old/roadmap2.md` Phase M7.6) — this capability does not
+  go through the `Backend` abstraction at all.
+- `run_head_vllm.sh` / `run_worker_vllm.sh` need the arg-building extraction
+  described above before the ephemeral path can reuse them safely.
+- `comparison.json` is a new manifest schema (comparisonName → per-config
+  {slurmJobId, submittedAt, status}), separate from `LockfileV3`.
+- Diagnostics storage convention (`$PROJECTDIR/engine/diagnostics/<name>/`)
+  matches the pre-existing "Log file failure recovery" roadmap item, so both
+  can share the same directory convention and eventual rsync-to-local
+  tooling (`copyDirectory(..., 'down')` already exists in `RemoteOps`).
+
+---
+
 ## ADR-117: Support for UCCL-EP as a high-performance open-source expert-parallel alternative on HPE Slingshot
 
 **Status**: Accepted

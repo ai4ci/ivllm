@@ -198,6 +198,20 @@ class TestBackend extends Backend {
         );
     }
 
+    async fetchDiagnostics(
+        job: string,
+        localDest?: string,
+    ): Promise<string> {
+        await this.bootstrap();
+        const targetDir = localDest || `/tmp/ivllm-diag/${job}`;
+        await this.ops.copyDirectory(
+            targetDir,
+            `${this.remoteEngine}/diagnostics/${job}`,
+            'down',
+        );
+        return targetDir;
+    }
+
     // Allow tests to inject lockfile state
     setLockfile(job: string, data: Partial<LockfileV3>): void {
         this.ops.setLockfile(job, data);
@@ -321,6 +335,24 @@ describe('Backend — lifecycle helpers', () => {
             serverPort: 8000,
         });
         expect(await backend.isStarting('j')).toBe(true);
+    });
+});
+
+describe('Backend — fetchDiagnostics', () => {
+    it('calls copyDirectory to download remote diagnostics', async () => {
+        const backend = new TestBackend(CRED);
+        const dest = await backend.fetchDiagnostics(
+            'failed-job',
+            '/local/diag',
+        );
+
+        const ops = backend.getOps();
+        const call = ops.calls.find((c) => c.method === 'copyDirectory');
+        expect(call).toBeDefined();
+        expect(call!.args[0]).toBe('/local/diag');
+        expect(call!.args[1]).toContain('diagnostics/failed-job');
+        expect(call!.args[2]).toBe('down');
+        expect(dest).toBe('/local/diag');
     });
 });
 

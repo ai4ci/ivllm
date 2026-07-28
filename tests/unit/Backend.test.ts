@@ -34,6 +34,9 @@ class InMemoryBackend extends Backend {
     async watchLog(_job: string, _node?: string, _until?: string): Promise<any> {
         return { kill: () => true };
     }
+    async fetchDiagnostics(_job: string, _localDest?: string): Promise<string> {
+        return '';
+    }
 
     /** Internal test helper — set lockfile state */
     setJob(name: string, data: Partial<LockfileV3>): void {

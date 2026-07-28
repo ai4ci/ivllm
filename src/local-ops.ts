@@ -70,7 +70,7 @@ export async function isHealthy(
  * @param localPort — Port forwarded by the SSH tunnel.
  * @param timeoutMs — Maximum milliseconds before throwing.
  * @returns The parsed {@link V1ModelsResponse} body.
- * @throws Error on non-2xx HTTP status or timeout.
+ * @throws {Error} on non-2xx HTTP status or timeout.
  */
 export async function queryModels(
   localPort: number,

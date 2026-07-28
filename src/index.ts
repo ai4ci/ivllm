@@ -104,6 +104,13 @@ If the job doesn't exist, creates it and starts it.`,
         )
         .action(cmdStatus);
 
+    program
+        .command('diagnostics')
+        .description('Download diagnostics for a failed or crashed job')
+        .argument('<jobName>', 'name of the job')
+        .option('--out <path>', 'local destination directory')
+        .action(cmdDiagnostics);
+
     await program.parseAsync(process.argv);
 }
 
@@ -249,6 +256,25 @@ async function cmdConnect(
             `job ${jobName} was not running (after attempted start)`,
         );
     }
+}
+
+/**
+ * Diagnostics command handler.
+ *
+ * Downloads remote diagnostics for a failed or crashed job.
+ * @param jobName — Job name
+ * @param options — Command options
+ * @param options.out — Optional local destination path
+ */
+async function cmdDiagnostics(
+    jobName: string,
+    options: { out?: string },
+): Promise<void> {
+    const config = loadCredentials();
+    assertConfigured(config);
+    const backend = getBackend(config);
+    const localPath = await backend.fetchDiagnostics(jobName, options.out);
+    console.log(`✓ Diagnostics saved to: ${localPath}`);
 }
 
 main();

@@ -351,7 +351,7 @@ else
 
     # 2. Clone the core NIXL codebase
     rm -rf "$workingDir/nixl"
-    git clone --recursive https://github.com "$workingDir/nixl"
+    git clone --recursive https://github.com/ai-dynamo/nixl.git "$workingDir/nixl"
     cd "$workingDir/nixl"
 
     # 3. Compile the base C++ engine and build the target architecture wheel

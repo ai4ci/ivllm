@@ -627,6 +627,44 @@ is_startable() {
     return 0
 }
 
+# ── Diagnostics and failure capture ────────────────────────────────────────
+
+# Resolve and create a timestamped diagnostics directory for a job.
+# Args: $1 — job name.
+# Returns: path to diagnostics directory via stdout.
+# Usage: local diag_dir=$(resolve_diagnostics_dir "$job")
+resolve_diagnostics_dir() {
+    local job="$1"
+    local timestamp
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    local diag_dir="$IVLLM_PROJECTDIR/engine/diagnostics/$job/$timestamp"
+    mkdir -p "$diag_dir"
+    chmod g+rwX "$diag_dir"
+    echo "$diag_dir"
+}
+
+# Copy failed job artifacts (logs, config, lockfile) to diagnostics storage.
+# Args: $1 — job name.
+# Usage: capture_job_diagnostics "$job"
+capture_job_diagnostics() {
+    local job="$1"
+    local job_dir
+    job_dir=$(resolve_job_dir "$job" 2>/dev/null || true)
+
+    if [[ -d "$job_dir" ]]; then
+        local diag_dir
+        diag_dir=$(resolve_diagnostics_dir "$job")
+        echo "[diagnostics] archiving failed job artifacts to $diag_dir"
+
+        cp -f "$job_dir"/vllm*.log "$diag_dir/" 2>/dev/null || true
+        cp -f "$job_dir"/vllm.yaml "$diag_dir/" 2>/dev/null || true
+        cp -f "$job_dir"/vllm.yaml.clean "$diag_dir/" 2>/dev/null || true
+        cp -f "$job_dir"/status.json "$diag_dir/" 2>/dev/null || true
+
+        chmod g+rwX "$diag_dir" "$diag_dir"/* 2>/dev/null || true
+    fi
+}
+
 # ── Shutdown and cleanup ───────────────────────────────────────────────────
 
 # Graceful shutdown exit trap. Handles all exit codes:
@@ -680,12 +718,14 @@ tidy_up() {
             echo "[shutdown] vLLM terminated normally"
             ;;
         *)
-            if is_status "$job" "initialising"; then
+            if is_status "$job" "initialising" || is_status "$job" "pending"; then
                 echo "[shutdown] exit code $exit_code: vLLM failed to start"
                 update_status_failed "$job" "failed to start" "$exit_code"
+                capture_job_diagnostics "$job"
             else
                 echo "[shutdown] exit code $exit_code: vLLM crashed during inference"
                 update_status_failed "$job" "crashed during inference" "$exit_code"
+                capture_job_diagnostics "$job"
             fi
             ;;
     esac
