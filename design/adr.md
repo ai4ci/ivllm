@@ -672,3 +672,34 @@ To ensure files created inside the shared folder natively inherit group ownershi
 - The installation process relies on the parent directories having the correct ACLs and SGID bit configured once from the CLI (e.g. during project space onboarding).
 - No functional regressions for the test suite, as mocked sandbox behaviors continue to function seamlessly without the recursive flag.
 
+---
+
+## ADR-117: Support for UCCL-EP as a high-performance open-source expert-parallel alternative on HPE Slingshot
+
+**Status**: Accepted
+
+**Context**: Mixture-of-Experts (MoE) models (like DeepSeek-V3 or DeepSeek-R1) rely on expert-parallel (EP) communication kernels to achieve high GPU efficiency. Historically, vLLM compiles the NVIDIA-optimized `deep_ep` package for this purpose. 
+
+However, DeepEP is strictly bound to Mellanox Connect-X InfiniBand hardware, direct NVSHMEM GPU-Initiated Networking (GIN) parameters, and Mellanox OFED developmental headers (`mlx5dv.h`). On supercomputers like Isambard-AI Phase 2 which utilize the **HPE Slingshot 11 interconnect** (powered by Cassini ASICs and standard `aws-ofi-nccl` libfabric transport), DeepEP fails to compile due to missing vendor-specific headers, and cannot execute at runtime since Cassini NICs speak libfabric rather than InfiniBand verbs.
+
+The open-source **UCCL-EP** (Unified Collective Communication Library - Expert Parallel) project implements the identical high-performance, GPU-initiated MoE collectives interface but abstracts transport interactions. A custom fork of UCCL-EP maintained by `doublewordai` on the **`pr997-swiss-cxi`** branch explicitly integrates native HPE Slingshot 11 support via the libfabric `CXI` transport layer on Swiss Alps and Isambard-AI, and includes a full `deep_ep_wrapper` drop-in replacement package.
+
+**Decision**: Modify `src/engine/lib/slurm-vllm-setup.sh` to implement a robust dual-path installation workflow for expert-parallel collectives:
+1. Try compiling the standard `deep_ep` library first.
+2. If `deep_ep` fails to compile (expected on SLES bare-metal on Slingshot), catch the block and fall back to UCCL-EP.
+3. Automatically compile the user-space **`rdma-core`** library from source if standard InfiniBand development headers (`infiniband/verbs.h`) are missing on SLES bare-metal. To ensure libraries survive job tear-downs, they are compiled persistently inline inside the virtual environment directory (`$vllmVersionDir/rdma-core/`) and dynamically resolved at runtime inside **`src/engine/lib/vllm-env.sh`** by dynamically appending it to `LD_LIBRARY_PATH`. This makes compilation and runtime resolution fully stable, self-contained, and persistent on any subsequent compute nodes.
+4. Automatically install `nanobind` (build dependency for UCCL-EP), clone the **`doublewordai/uccl`** fork on the **`pr997-swiss-cxi`** branch, and compile it with Slingshot CXI transport optimization flags (`USE_LIBFABRIC_CXI=1` and `USE_DMABUF=1`), installing the core `ep` package.
+5. If compiled successfully, install the included **`deep_ep_wrapper`** package, which serves as a complete, pre-configured high-fidelity `deep_ep` drop-in replacement so that vLLM can seamlessly import and leverage UCCL-EP without patching downstream source files.
+
+**Rationale**:
+- **Completeness:** Promotes optimal high-performance MoE serving throughput for DeepSeek models on Isambard-AI's HPE Slingshot 11, matching the physical interconnect technology.
+- **Zero Code Modification:** Creating a package shim in `site-packages/deep_ep` lets vLLM seamlessly import and leverage UCCL-EP without patching vLLM's internal python source files.
+- **Resilience:** If UCCL-EP compilation fails, standard vLLM operations continue unaffected, falling back gracefully to PyTorch or default MoE kernels.
+
+**Consequences**:
+- `slurm-vllm-setup.sh` is fully self-healing: if either library fails to compile, it catches the error and proceeds, allowing standard vLLM and standard models to install successfully (exit code 0).
+- Because UCCL-EP's core headers (like `proxy_ctx.hpp`) are still hard-coded to include `<infiniband/verbs.h>` for structural declarations, its bare-metal compilation still requires `libibverbs`. On HPE Slingshot SLES bare-metal (which lacks InfiniBand development headers), UCCL-EP compilation will be safely skipped with a warning.
+- To run high-performance expert-parallel kernels (DeepEP/UCCL-EP), users are advised to run vLLM via the `isambard_containers` Apptainer container, which gets around SLES bare-metal header constraints by pre-installing standard InfiniBand development packages inside its Ubuntu build layer.
+- The `ep` package and its `deep_ep` shim are transparently managed within the venv side-packages when compiling successfully.
+
+

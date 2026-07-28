@@ -5,8 +5,6 @@
 # starts vLLM with proper NCCL/Ray configuration, and runs the
 # monitor triad (startup, head, worker).
 #SBATCH --export=ALL
-#SBATCH --partition=interactive
-#SBATCH --reservation=interactive
 
 # shellcheck disable=SC2155,SC1091
 # N.b. set the log in the wrapper script (sbatch --output and --error flags)

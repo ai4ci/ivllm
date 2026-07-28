@@ -78,11 +78,12 @@ export VLLM_FLASHINFER_ALLREDUCE_BACKEND=trtllm  # Force standard NCCL for Sling
 export VLLM_ENGINE_ITERATION_TIMEOUT_S=1800       # Prevent timeouts during multi-node graph setup
 export VLLM_ALLREDUCE_USE_SYMM_MEM=0             # Disable broken experimental symmetric memory allocator
 
-# ── DeepEP flags:
+# ── DeepEP / UCCL-EP flags:
 # ─────────────────────────────────
 # See: https://github.com/deepseek-ai/DeepEP:
 # /opt/cray/libfabric/1.22.0/bin/fi_info -p cxi on login.
 export EP_NIC_NAME="cxi0"
+export USE_LIBFABRIC_CXI=1
 
 # ── DeepGEMM flags:
 # ─────────────────────────────────
@@ -120,4 +121,7 @@ export VLLM_COMPILE_CACHE_SAVE_FORMAT="unpacked"
 # ─────────────────────────────────
 export HF_HOME="$(resolve_model_dir)/hf"
 export HF_HUB_OFFLINE=1
+
+
+
 

@@ -25,6 +25,7 @@ export IVLLM_RETRY=0
 export IVLLM_VERSION=""
 export LOG=""
 
+OPTIND=1
 while getopts "v:frlh" opt; do
     case $opt in
         v) IVLLM_VERSION="$OPTARG" ;;
@@ -39,6 +40,11 @@ done
 
 if [[ -z $LOG ]]; then
     LOG=$(resolve_job_log "vllm-setup")
+fi
+
+if [[ -z "$IVLLM_VERSION" ]]; then
+    echo "ERROR: No version supplied" >&2
+    exit 1
 fi
 
 echo "logging to: $LOG"

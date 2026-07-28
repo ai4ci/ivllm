@@ -247,6 +247,18 @@ changes. Each maps to one or more ADRs.
 * Job diagnostics need to be rsynced to a user local directory (TBD - probably a temp directory, maybe configurable)
 * So that logs can be analysed by an agent on local.
 
+### Multinode disggregation strategies
+
+* Current multinode is not 100% data parallel friendly
+* on multinode we have 4 slingshot x 4 NVlink x GH200
+* Need to shard experts in a way that miniminses internode traffic
+* https://docs.vllm.ai/en/stable/serving/data_parallel_deployment/
+* https://docs.vllm.ai/en/stable/serving/expert_parallel_deployment/
+* when is DP better that TP.
+* Prefill decode disggregation maybe another route for sharding
+* With the UCCL-P2P and EP we should have NIXL support:
+* https://docs.vllm.ai/en/stable/features/nixl_connector_usage/
+
 ### Model routing server
 
 **Architecture: "Model routing server"** section

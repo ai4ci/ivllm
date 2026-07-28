@@ -1,6 +1,6 @@
 {
   "name": "isambard-vllm",
-  "version": "2.14.1",
+  "version": "2.14.6",
   "module": "src/index.ts",
   "type": "module",
   "private": true,

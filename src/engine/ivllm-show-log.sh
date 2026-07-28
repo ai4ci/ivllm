@@ -22,6 +22,7 @@ export IVLLM_JOB=""
 export IVLLM_NODE="0"
 export IVLLM_MATCH=""
 
+OPTIND=1
 while getopts "j:n:m:h" opt; do
     case $opt in
         j) IVLLM_JOB="$OPTARG" ;;
@@ -32,6 +33,11 @@ while getopts "j:n:m:h" opt; do
         :)  echo "Error: Option -$OPTARG requires an argument" >&2; ivllm_show_logs_usage ;;
     esac
 done
+
+if [[ -z "$IVLLM_JOB" ]]; then
+    echo "ERROR: No job parameter supplied" >&2
+    exit 1
+fi
 
 jobDir=$(resolve_job_dir "$IVLLM_JOB")
 logsGlob="$jobDir/vllm.$IVLLM_NODE.log"

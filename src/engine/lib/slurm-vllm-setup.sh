@@ -59,6 +59,51 @@ else
 
 fi
 
+# RDMA compile from source
+# Compile rdma-core from source to provide the necessary libibverbs headers and libraries if missing
+rdma_install_dir=$(resolve_rdma_dir)
+if [[ ! -f "$rdma_install_dir/include/infiniband/verbs.h" ]]; then
+  echo "infiniband/verbs.h not found in system or local headers. Compiling rdma-core from source to $rdma_install_dir..."
+  rdmaCoreGit="https://github.com/linux-rdma/rdma-core.git"
+  mkdir -p "$workingDir/rdma-core-src"
+  if git clone --depth 1 "$rdmaCoreGit" "$workingDir/rdma-core-src"; then
+    pushd "$workingDir/rdma-core-src"
+
+    rm -rf build && mkdir build && cd build
+
+    # 2. Configure using IN_PLACE and skip hardware providers
+    if cmake -DIN_PLACE=1 \
+              -DNO_PROVIDERS=ON \
+              -DENABLE_VALGRIND=OFF \
+              -DENABLE_LOG_ERRORS=OFF \
+              -DNO_MAN_PAGES=ON \
+              -DENABLE_PYTHON=OFF \
+              .. && make -j16; then
+
+      # 3. Create your custom installation directories manually
+      mkdir -p "$rdma_install_dir/include/infiniband"
+      mkdir -p "$rdma_install_dir/lib"
+
+      # 4. Copy the compiled Infiniband Verb headers to your target include dir
+      cp -rL include/infiniband/* "$rdma_install_dir/include/infiniband/"
+
+      # 5. Optional: Copy the generated libibverbs stub libraries if your program links to them
+      cp -dL lib/libibverbs* "$rdma_install_dir/lib/" 2>/dev/null || true
+
+      echo "rdma-core headers safely extracted to $rdma_install_dir!"
+
+    else
+      echo "WARNING: Failed to compile rdma-core from source."
+    fi
+    popd
+  fi
+else
+  if [[ -d "$rdma_install_dir" ]]; then
+    echo "=== Local userspace rdma-core already installed at $rdma_install_dir — reusing. === "
+  fi
+fi
+
+
 # sets LD_LIBRARY_PATH & other CUDA variables needed for install.
 source "$(dirname "${BASH_SOURCE[0]}")/common-env.sh"
 
@@ -147,38 +192,173 @@ else
   fi
 fi
 
-# DeepEP
+# DeepEP or UCCL-EP (High-Performance MoE Collective transport)
+# export EP_NVSHMEM_ROOT_DIR="$NVSHMEM_DIR"
+# export EP_NCCL_ROOT_DIR="$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nccl"
 
-export EP_NVSHMEM_ROOT_DIR="$NVSHMEM_DIR"
-export EP_NCCL_ROOT_DIR="$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nccl"
-export EP_DISABLE_GIN=1
 
-if uv pip show deepep &>/dev/null; then
-  echo "DeepEP already installed"
+# Ensure build requirements match the host environment
+uv pip install tomlkit nanobind wheel setuptools build pybind11
+
+if uv pip show deepep &>/dev/null && uv pip show uccl &>/dev/null; then
+    echo "UCCL already installed with DeepEP wrapper"
 else
-  deepEpRef=$(curl -fsSL "https://raw.githubusercontent.com/vllm-project/vllm/refs/heads/releases/v$vllmVersion/tools/ep_kernels/install_python_libraries.sh" | grep "DEEPEP_COMMIT_HASH=" | head -n 1 | sed 's/.*-"\(.*\)".*/\1/')
+#   deepEpRef=$(curl -fsSL "https://raw.githubusercontent.com/vllm-project/vllm/refs/heads/releases/v$vllmVersion/tools/ep_kernels/install_python_libraries.sh" | grep "DEEPEP_COMMIT_HASH=" | head -n 1 | sed 's/.*-"\(.*\)".*/\1/')
+#
+#   compiled_any_ep=0
+#
+#   if [[ -n ${deepEpRef:-} ]]; then
+#     echo "=== compiling DeepEP from source ==="
+#
+#     deepEPgit="https://github.com/deepseek-ai/DeepEP.git"
+#     mkdir -p "$workingDir/deepep"
+#     # Checkout the specific reference
+#     if git clone --recursive --shallow-submodules "$deepEPgit" "$workingDir/deepep"; then
+#       pushd "$workingDir/deepep"
+#       git checkout "$deepEpRef"
+#
+#       # COMPILE AND PIP INSTALL VIA UV
+#       echo "Compiling DeepEP C++/CUDA extensions directly into venv..."
+#       if uv pip install --no-build-isolation -vvv .; then
+#         echo "DeepEP successfully compiled and installed from tmpfs."
+#         echo "DEEPEP_SETUP_SUCCESS"
+#         compiled_any_ep=1
+#       else
+#         echo "WARNING: DeepEP compilation failed (this is expected on systems without Mellanox InfiniBand such as HPE Slingshot)."
+#       fi
+#       popd
+#     fi
+#   else
+#     echo "WARNING: no DeepEP git reference found to compile"
+#   fi
+#
+#   # Fallback to UCCL-EP if DeepEP compilation is skipped or fails
+#   if [[ $compiled_any_ep -eq 0 ]]; then
 
-  if [[ -z ${deepEpRef:-} ]]; then
-    echo "WARNING: no DeepEP git reference found to compile"
-  else
 
-    echo "=== compiling DeepEP from source ==="
+    echo "=== Building UCCL-EP with HPE Slingshot (CXI) transport support ==="
 
-    deepEPgit="https://github.com/deepseek-ai/DeepEP.git"
-    mkdir -p "$workingDir/deepep"
-    # Checkout the specific reference
-    git clone --recursive --shallow-submodules "$deepEPgit" "$workingDir/deepep"
-    pushd "$workingDir/deepep"
 
-    # Checkout the specific reference
-    git checkout "$deepEpRef"
+    # Ensure build requirements match Isambard's Grace Hopper nodes
+    export TORCH_CUDA_ARCH_LIST="9.0a"
+    export USE_LIBFABRIC_CXI=1
+    export USE_DMABUF=1
 
-    # COMPILE AND PIP INSTALL VIA UV
-    echo "Compiling DeepEP C++/CUDA extensions directly into venv..."
-    uv pip install --no-build-isolation -vvv .
-    echo "DeepEP successfully compiled and installed from tmpfs."
-    popd
-    echo "DEEPEP_SETUP_SUCCESS"
+    # repicates specific instructions from:
+    # https://raw.githubusercontent.com/uccl-project/uccl/refs/heads/main/build_inner.sh
 
-  fi
+    # Install build dependency: nanobind
+    echo "Installing UCCL-EP build dependency: nanobind..."
+
+
+    # The doublewordAI fork has been built for isambard.
+    ucclEPgit="https://github.com/doublewordai/uccl.git"
+    mkdir -p "$workingDir/uccl"
+
+    if git clone --recursive --shallow-submodules -b main "$ucclEPgit" "$workingDir/uccl"; then
+
+#         pushd "$workingDir/uccl/ep"
+#         export USE_LIBFABRIC_CXI=1
+#         export USE_DMABUF=1
+#
+#         echo "Executing native UCCL wheel compilation loop..."
+#         # Format: bash build.sh [cuda_version] [module_target] [python_version] --install
+#         if python3 setup.py build_ext --inplace; then
+#             echo "UCCL-EP compiled successfully. Manually mapping binary to site-packages..."
+#
+#             # Identify your virtual environment layout
+#             VENV_SITE_PACKAGES="$vllmVersionDir/lib/python3.12/site-packages"
+#             mkdir -p "$VENV_SITE_PACKAGES/uccl"
+#
+#             # 5. Place the true compiled .so binary and initialize the module namespace
+#             cp ep.abi3.so "$VENV_SITE_PACKAGES/uccl/"
+#             touch "$VENV_SITE_PACKAGES/uccl/__init__.py"
+#
+#             # 6. Generate and register package metadata to satisfy pip dependency tracking
+#             python3 setup.py egg_info
+#             cp -r *.egg-info "$VENV_SITE_PACKAGES/uccl-0.0.1-py3.12.egg-info"
+#             echo "UCCL-EP successfully manually integrated."
+#
+#             # 7. Install doublewordai's deep_ep drop-in wrapper helper
+#             echo "Installing deep_ep drop-in wrapper..."
+#             if uv pip install --no-build-isolation -vvv ./deep_ep_wrapper; then
+#                 echo "deep_ep_wrapper successfully compiled and integrated."
+#             else
+#                 echo "WARNING: UCCL-EP compiled but deep_ep_wrapper setup encountered an error."
+#             fi
+#         else
+#             echo "WARNING: Host-native UCCL-EP compilation failed."
+#         fi
+
+      pushd "$workingDir/uccl"
+      echo "--> Compiling P2P extension components..."
+          cd p2p && make clean && make -j$(nproc) && cd ..
+
+          mkdir -p uccl/lib
+          cp p2p/libuccl_p2p.so uccl/lib/
+          cp p2p/p2p.*.so uccl/
+          cp p2p/utils.py uccl/
+
+          # Handle nanobind stable ABI naming convention if python >= 3.12
+          py_stable_abi_ok=$(python3 -c "import sys; print(1 if sys.version_info >= (3, 12) else 0)")
+          if [[ "$py_stable_abi_ok" == "1" ]]; then
+              for f in uccl/*.cpython-*.so; do
+                  if [[ -f "$f" ]]; then
+                      #shellcheck disable 2001
+                      newname=$(echo "$f" | sed 's/\.cpython-[^.]*-[^.]*-[^.]*\.so/.abi3.so/')
+                      mv "$f" "$newname"
+                  fi
+              done
+          fi
+
+          # 3. Replicate 'build_ep' function from build_inner.sh
+          echo "--> Compiling EP extension components..."
+          cd ep && make clean && rm -rf build || true
+
+          # Run the setup.py inline tracking hook inside ep/
+          python3 setup.py build_ext --inplace
+          cd ..
+
+          # Mirror the metadata hooks into the target workspace
+          cp -r ep/build/lib.linux-aarch64-*/* uccl/ 2>/dev/null || cp -r ep/*.so uccl/ 2>/dev/null || true
+
+          # 4. Run the final 'python3 -m build' command from build_inner.sh
+          echo "--> Executing top-level package compilation pass..."
+          python3 -m build --wheel --no-isolation
+
+          # 5. Extract and install the finished, native host wheel file via uv
+          echo "--> Deploying unified UCCL wheel..."
+          uv pip install --no-build-isolation dist/uccl-*.whl
+
+          # 6. Install the deep_ep_wrapper so vLLM can use it as a drop-in replacement
+          echo "--> Integrating deep_ep_wrapper..."
+          cd ep
+          uv pip install --no-build-isolation -vvv ./deep_ep_wrapper
+        popd
+    else
+        echo "WARNING: Failed to clone UCCL repository."
+    fi
+
+    echo "installing humming from doublewordAI"
+    uv pip install git+https://github.com/doublewordai/humming.git
+
+fi
+
+if uv pip show nixl &>/dev/null; then
+    echo "NIXL with slingshot already installed"
+else
+    echo "=== Compiling NIXL with HPE Slingshot (CXI) Support ==="
+
+    # 2. Clone the core NIXL codebase
+    rm -rf "$workingDir/nixl"
+    git clone --recursive https://github.com "$workingDir/nixl"
+    cd "$workingDir/nixl"
+
+    # 3. Compile the base C++ engine and build the target architecture wheel
+    # Passing --no-build-isolation forces the setup layout to acknowledge Slingshot structures
+    python3 -m build --wheel --no-isolation
+
+    # 4. Install the resulting wheel package into your Python environment
+    uv pip install --no-build-isolation dist/nixl-*.whl
+
 fi

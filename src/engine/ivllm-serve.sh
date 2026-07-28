@@ -13,30 +13,41 @@ ivllm-serve_usage() {
     echo "Options:"
     echo "  -j job      The name of the job to start."
     echo "  -t time     The maximum runtime of this job as HH:MM:SS"
+    echo "  -b          Run as a non-interactive batch"
     echo "  -h          Show this help message"
+    echo "Additional flags passed unchanged to sbatch"
     exit 1
 }
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$here/lib/utils.sh"
 
-export IVLLM_JOB=""
-export IVLLM_MAXTIME="08:00:00"
+IVLLM_JOB=""
+IVLLM_PARTITION="--partition=interactive --reservation=interactive"
+IVLLM_MAXTIME="08:00:00"
 
-while getopts "j:th" opt; do
+OPTIND=1
+while getopts "j:t:bh" opt; do
     case $opt in
         j) IVLLM_JOB="$OPTARG" ;;
         t) IVLLM_MAXTIME="$OPTARG" ;;
+        b) unset IVLLM_PARTITION ;;
         h) ivllm-serve_usage ;;
         \?) echo "Error: Invalid option -$OPTARG" >&2; ivllm-serve_usage ;;
         :)  echo "Error: Option -$OPTARG requires an argument" >&2; ivllm-serve_usage ;;
     esac
 done
 
+shift $((OPTIND - 1))
+
+if [[ -z "$IVLLM_JOB" ]]; then
+    echo "ERROR: No job parameter supplied" >&2
+    exit 1
+fi
+
 JOB_FILE=$(resolve_job_status "$IVLLM_JOB")
 if [[ ! -f $JOB_FILE ]]; then
-    echo "No job file found for $IVLLM_JOB" >&2
-    exit 1
+    echo "INFO: No existing job file found for $IVLLM_JOB"
 fi
 
 export IVLLM_LOG=$(resolve_job_log "$IVLLM_JOB")
@@ -49,11 +60,12 @@ exec > >(tee "$IVLLM_LOG") 2>&1
 idleTimeout=$(get_job_config_setting "$IVLLM_JOB" ".idle-timeout")
 model=$(get_job_config_setting "$IVLLM_JOB" ".model")
 
+echo "starting $model with vllm $vllmVersion: idle timeout: ${idleTimeout:-30} mins"
 # Create the lockfile & fail if cannot get a lockfile.
-serverPort=$(create_status_pending "$IVLLM_JOB" "$model" "$idleTimeout") || exit 1
+serverPort=$(create_status_pending "$IVLLM_JOB" "$model" "${idleTimeout:-30}") || exit 1
 
 # Check the model requested exists and download if not & fail if model download fails
-(source $here/ivllm-get-model.sh -m "$model") || exit 1
+(source "$here/ivllm-get-model.sh" -m "$model" -l "$IVLLM_LOG") || exit 1
 
 envExports=$(get_job_config_exports "$IVLLM_JOB")
 strippedConfig=$(resolve_stripped_job_config "$IVLLM_JOB")
@@ -61,6 +73,8 @@ strippedConfig=$(resolve_stripped_job_config "$IVLLM_JOB")
 dp=$(get_job_config_setting "$IVLLM_JOB" ".data-parallel-size")
 tp=$(get_job_config_setting "$IVLLM_JOB" ".tensor-parallel-size")
 pp=$(get_job_config_setting "$IVLLM_JOB" ".pipeline-parallel-size")
+
+echo "data parallel: ${dp:-1}, tensor parallel: ${tp:-1}, pipeline parallel: ${pp:-1}"
 
 # Calculate total GPUs using safe defaults (using 1 instead of -1 for neutral multiplication)
 nGpus=$((${dp:-1} * ${tp:-1} * ${pp:-1}))
@@ -81,6 +95,8 @@ else
     exclusiveFlag=""
 fi
 
+echo "$nGpus GPUs; $nNodes nodes; $nGpusPerNode GPUs per node; memory: $memValue"
+
 maxTime=$(get_max_job_time "$IVLLM_MAXTIME")
 
 echo "=================================="
@@ -100,19 +116,19 @@ echo "=== Stripped configuration ======="
 cat "$strippedConfig"
 echo "=================================="
 
+#shellcheck disable 2086
 slurmJobId=$(sbatch \
     --parsable \
     --job-name "$IVLLM_JOB" \
     --nodes=$nNodes \
     --gpus-per-node=$nGpusPerNode \
     --cpus-per-gpu=64 \
-    --ntasks-per-node=1 \
-    --partition=interactive \
-    --reservation=interactive \
-    --mem=$memValue ${exclusiveFlag} \
+    --ntasks-per-node=1 $IVLLM_PARTITION \
+    --mem=$memValue $exclusiveFlag \
     --time="$maxTime" \
     --output="$IVLLM_LOG" \
     --error="$IVLLM_LOG" \
+    $@ \
     $here/lib/slurm-vllm-serve.sh "$IVLLM_JOB" "$nGpusPerNode" "$memValue")
 
 echo "Slurm Job ID: $slurmJobId"

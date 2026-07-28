@@ -23,6 +23,7 @@ source "$here/lib/utils.sh"
 export IVLLM_JOB=""
 export IVLLM_FORCE=""
 
+OPTIND=1
 while getopts "j:fh" opt; do
     case $opt in
         j) IVLLM_JOB="$OPTARG" ;;
@@ -33,19 +34,29 @@ while getopts "j:fh" opt; do
     esac
 done
 
+if [[ -z "$IVLLM_JOB" ]]; then
+    echo "ERROR: No job parameter supplied" >&2
+    exit 1
+fi
+
 lockfile=$(resolve_job_status "$IVLLM_JOB")
 if [[ -f $lockfile ]]; then
 
     slurmJobId=$(get_job_status_setting "$IVLLM_JOB" ".slurmJobId")
+    echo "cancelling slurm job: ${slurmJobId:-unknown}"
 
     if is_status "$IVLLM_JOB" "failed"; then
         echo "[shutdown] cleaning up failed job $IVLLM_JOB"
-        scancel "$slurmJobId" || echo "WARNING: cancel slurm job: $slurmJobId" >&2
+        if [[ -n "$slurmJobId" ]]; then
+            scancel "$slurmJobId" || echo "WARNING: cancel slurm job: $slurmJobId" >&2
+        fi
         rm -f "$lockfile"
         exit 0
     elif is_status "$IVLLM_JOB" "stopped"; then
         echo "[shutdown] cleaning up stopped job $IVLLM_JOB"
-        scancel "$slurmJobId" || echo "WARNING: failed to force cancel slurm job: $slurmJobId" >&2
+        if [[ -n "$slurmJobId" ]]; then
+            scancel "$slurmJobId" || echo "WARNING: failed to force cancel slurm job: $slurmJobId" >&2
+        fi
         rm -f "$lockfile"
         exit 0
     else
@@ -69,14 +80,16 @@ if [[ -f $lockfile ]]; then
         else
 
             echo "[shutdown] force cancel job: $IVLLM_JOB with status $status"
-            scancel "$slurmJobId" || echo "ERROR: failed to force cancel slurm job: $slurmJobId" >&2
+            if [[ -n "$slurmJobId" ]]; then
+                scancel "$slurmJobId" || echo "ERROR: failed to force cancel slurm job: $slurmJobId" >&2
+            fi
             rm -f "$lockfile"
 
         fi
 
     fi
 else
-    echo "[shutdown] no job $job to cancel"
+    echo "[shutdown] no job $IVLLM_JOB to cancel"
     exit 1
 fi
 

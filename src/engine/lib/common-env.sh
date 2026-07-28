@@ -16,6 +16,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 # ── Module setup ──────────────────────────────────────────────────────
 module purge
 module load brics/nccl
+module load libfabric
 
 # 13.2 required by DeepEP when compiling against 12.9
 module load gcc-native/13.2
@@ -76,8 +77,36 @@ export NVSHMEM_REMOTE_TRANSPORT="libfabric"
 export NVSHMEM_LIBFABRIC_PROVIDER="cxi"
 export NVSHMEM_DISABLE_CUDA_VMM=1
 
+# ── UCCL slingshot support
+# ──────────────────────────────────────
+export RDMA_ROOT=$(resolve_rdma_dir)
+export USE_LIBFABRIC_CXI=1
+export USE_DMABUF=1
+export EP_DISABLE_GIN=1
+export UCCL_SOCKET_IFNAME=hsn0
+
+# To avoid possible hangs, we suggest setting env variables explicitly including NCCL_IB_GID_INDEX, UCCL_IB_GID_INDEX, NCCL_SOCKET_IFNAME, and UCCL_SOCKET_IFNAME:
+# UCCL_IB_GID_INDEX should be the same as NCCL_IB_GID_INDEX like if you were using NCCL.
+# UCCL_SOCKET_IFNAME should be the interface that you would use for the --master_addr in torchrun.
+
+# Set up compilation environment variables if local rdma-core was successfully built or already present
+# 2. Hardcode the definitive Cray libfabric absolute paths for Isambard AI
+LIBFABRIC_INC_DIR="/opt/cray/libfabric/1.22.0/include"
+LIBFABRIC_LIB_DIR="/opt/cray/libfabric/1.22.0/lib64"
+
+# 3. Synchronize CPATH so nvcc and g++ grab both rdma-core and fabric headers
+export CPATH="$RDMA_ROOT/include:${LIBFABRIC_INC_DIR}:${CPATH:-}"
+
+# 4. Synchronize compiler/linker variables
+export CFLAGS="-I$RDMA_ROOT/include -I{LIBFABRIC_INC_DIR} ${CFLAGS:-}"
+export CPPFLAGS="-I$RDMA_ROOT/include -I${LIBFABRIC_INC_DIR} ${CPPFLAGS:-}"
+export CXXFLAGS="-I$RDMA_ROOT/include -I${LIBFABRIC_INC_DIR} ${CXXFLAGS:-}"
+export LDFLAGS="-L$RDMA_ROOT/lib64 -L$RDMA_ROOT/lib -L${LIBFABRIC_LIB_DIR} ${LDFLAGS:-}"
+export LD_LIBRARY_PATH="$RDMA_ROOT/lib64:$RDMA_ROOT/lib:${LIBFABRIC_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+export LIBRARY_PATH="$RDMA_ROOT/lib64:$RDMA_ROOT/lib:${LIBFABRIC_LIB_DIR}:${LIBRARY_PATH:-}"
+
 # Library path: brics/nccl libs first, then compat libs, then CUDA, compilers, NCCL, NVSHMEM, math.
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:$NVHPC_ROOT/cuda/$CUDA_VERSION/compat:$NVHPC_ROOT/cuda/$CUDA_VERSION/lib64:$NVHPC_ROOT/compilers/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nccl/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nvshmem/lib:$NVHPC_ROOT/math_libs/$CUDA_VERSION/lib64"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:$RDMA_ROOT/lib:$NVHPC_ROOT/cuda/$CUDA_VERSION/compat:$NVHPC_ROOT/cuda/$CUDA_VERSION/lib64:$NVHPC_ROOT/compilers/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nccl/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nvshmem/lib:$NVHPC_ROOT/math_libs/$CUDA_VERSION/lib64"
 
 # vLLM CUDA forward compatibility
 export VLLM_ENABLE_CUDA_COMPATIBILITY=1

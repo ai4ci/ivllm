@@ -11,10 +11,10 @@ export function formatJobRow(job: LockfileV3): string {
     const parts: string[] = [
         job.jobName.padEnd(8),
         job.status.padEnd(10),
-        job.user.padEnd(8),
-        job.model.padEnd(20),
-        (job.stopTime ?? '-').padEnd(8),
-        (job.model ?? '-').padEnd(36),
+        job.user.padEnd(12),
+        job.model.padEnd(40),
+        (job.stopTime ?? '-').padEnd(16),
+        job.reason ?? '-',
     ];
     if (job.reason) parts.push(job.reason!);
     return parts.join('  ').trimEnd();
@@ -34,11 +34,11 @@ export function formatJobTable(jobs: LockfileV3[]): string {
         '  ' +
         'STATUS'.padEnd(10) +
         '  ' +
-        'USER'.padEnd(8) +
+        'USER'.padEnd(12) +
         '  ' +
-        'MODEL'.padEnd(20) +
+        'MODEL'.padEnd(40) +
         '  ' +
-        'UNTIL'.padEnd(8) +
+        'UNTIL'.padEnd(16) +
         '  ' +
         'INFO';
     const separator = '-'.repeat(header.length);

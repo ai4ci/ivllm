@@ -20,6 +20,7 @@ source "$here/lib/utils.sh"
 export IVLLM_JOB=""
 export IVLLM_JSON=""
 
+OPTIND=1
 while getopts "j:ph" opt; do
     case $opt in
         j) IVLLM_JOB="$OPTARG" ;;

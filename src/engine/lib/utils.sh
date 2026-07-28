@@ -95,6 +95,18 @@ resolve_nvhpc_dir() {
     echo "$IVLLM_PROJECTDIR/engine/nvhpc"
 }
 
+# Create the RDMA base directory with group-write permissions.
+# Creates $IVLLM_PROJECTDIR/engine/rdma if it doesn't exist.
+# Returns: path to the RDMA directory via stdout.
+# Usage: local dir=$(resolve_rdma_dir)
+resolve_rdma_dir() {
+    # Create the NVHPC SDK base directory with group-write permissions.
+    # Returns: path to the NVHPC directory via stdout.
+    mkdir -p "$IVLLM_PROJECTDIR/engine/rdma"
+    chmod g+rwX "$IVLLM_PROJECTDIR/engine/rdma"
+    echo "$IVLLM_PROJECTDIR/engine/rdma"
+}
+
 # Resolve the NVHPC root directory with a version check (26.3).
 # Exits with status 1 and prints an error if the expected NVHPC version is not found.
 # Calls resolve_nvhpc_dir() to determine the base path.
@@ -258,7 +270,12 @@ get_job_status_setting() {
         echo "ERROR: no status file found for job $1" >&2
         exit 1
     fi
-    jq -r "$2" "$lockfile" 2>/dev/null || echo ""
+    tmp=$(jq -r "$2" "$lockfile" 2>/dev/null)
+    if [[ $tmp == "null" ]]; then
+        echo ""
+    else
+        echo "$tmp"
+    fi
 }
 
 # Return the lesser of a user-specified time string and 08:00:00 (8 hours).
