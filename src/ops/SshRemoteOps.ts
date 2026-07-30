@@ -35,6 +35,8 @@ const SSH_MUX_OPTS = [
 
 export class SshRemoteOps extends RemoteOps {
     private config: Credentials;
+    private lastCheckTime = 0;
+    private readonly CACHE_TTL_MS = 5000; // Skip system execution if checked in the last 5 seconds
 
     constructor(config: Credentials) {
         super();
@@ -231,13 +233,132 @@ export class SshRemoteOps extends RemoteOps {
      * @returns `true` when connectivity is confirmed
      */
     async checkSSH(): Promise<boolean> {
-        console.log('Checking SSH connectivity...');
-        const { exitCode: sshCheck } = await this.runRemote('echo ok');
-        if (sshCheck !== 0) {
-            console.error('Error: Cannot connect to login node.');
-            process.exit(1);
+        // console.log('Checking SSH connectivity...');
+        // const { exitCode: sshCheck } = await this.runRemote('echo ok');
+        // if (sshCheck !== 0) {
+        //     console.error('Error: Cannot connect to login node.');
+        //     process.exit(1);
+        // }
+        // console.log('✓ SSH connectivity OK');
+        // return true;
+
+        const now = Date.now();
+
+        // 1. Return cached check if a query is active or resolved recently
+        if (now - this.lastCheckTime < this.CACHE_TTL_MS) {
+            return true;
         }
-        console.log('✓ SSH connectivity OK');
-        return true;
+
+        // 1. Try a fast, silent local multiplexer check first
+        const isMuxAlive = await new Promise<boolean>((resolve) => {
+            const checkProc = spawn(
+                'ssh',
+                [
+                    ...SSH_MUX_OPTS,
+                    '-o',
+                    'BatchMode=yes',
+                    '-O',
+                    'check',
+                    'dummy_host',
+                ],
+                {
+                    stdio: 'ignore',
+                    detached: false,
+                },
+            );
+            checkProc.on('close', (code) => resolve(code === 0));
+        });
+
+        if (isMuxAlive) {
+            console.log('✓ SSH multiplexer is alive and healthy.');
+            this.lastCheckTime = Date.now();
+            return true;
+        }
+
+        // 2. Multiplexer is dead or hasn't started yet. Attempt to establish/refresh it.
+        console.log('Initialising master SSH connection...');
+
+        return new Promise<boolean>((resolve) => {
+            const target = `${this.config.username}@${this.config.loginHost}`;
+
+            // We add '-N' (Do not execute a remote command) and '-f' (Go to background after authentication)
+            // This causes SSH to establish the Master socket and cleanly daemonize locally.
+            const connectArgs = [
+                ...SSH_MUX_OPTS,
+                '-o',
+                'BatchMode=yes',
+                '-o',
+                'ConnectTimeout=10', // Give it a strict 10s network deadline
+                '-N',
+                '-f',
+                target,
+            ];
+
+            // Capture stderr to pull out the exact reason for failure (e.g., Auth denied, DNS failure, Host Unreachable)
+            const errorChunks: string[] = [];
+            const connProc = spawn('ssh', connectArgs, {
+                stdio: ['ignore', 'ignore', 'pipe'],
+                detached: false,
+            });
+
+            connProc.stderr?.on('data', (chunk) => {
+                errorChunks.push(chunk.toString());
+            });
+
+            connProc.on('close', (code) => {
+                if (code === 0) {
+                    console.log(
+                        '✓ Successfully established new SSH master connection.',
+                    );
+                    this.lastCheckTime = Date.now();
+                    resolve(true);
+                    return;
+                }
+
+                // 3. Extraction of Diagnostic Information on failure
+                const rawError = errorChunks.join('').trim();
+                console.error(
+                    '\n❌ CRITICAL: Failed to establish SSH connection to the login node.',
+                );
+                console.error(`Exit Code from SSH binary: ${code}`);
+
+                if (rawError) {
+                    console.error(`System Error Message:\n--> ${rawError}`);
+                } else {
+                    console.error(
+                        'No stderr reported. This usually indicates a silent local configuration issue or immediate network rejection.',
+                    );
+                }
+
+                // Provide actionable hints based on common SSH outputs
+                if (
+                    rawError.includes('401') ||
+                    rawError.includes('invalid_grant') ||
+                    rawError.includes('token')
+                ) {
+                    console.error(
+                        '💡 Hint: Check your SSH keys. Do you need to run keycloak authentication (e.g. clifton auth)?',
+                    );
+                } else if (rawError.includes('Permission denied')) {
+                    console.error(
+                        '💡 Hint: Check your SSH keys. BatchMode is active, so password prompts are disabled.',
+                    );
+                } else if (rawError.includes('Could not resolve hostname')) {
+                    console.error(
+                        '💡 Hint: DNS resolution failed. Check your cluster address or VPN connectivity.',
+                    );
+                } else if (rawError.includes('Connection timed out')) {
+                    console.error(
+                        `💡 Hint: Network timeout. Verify that you are connected to the network and ${this.config.loginHost} is online.`,
+                    );
+                } else if (rawError.includes('ControlSocket')) {
+                    console.error(
+                        '💡 Hint: Local filesystem issue. Ensure that /tmp/ is writable and your control path name length is valid.',
+                    );
+                }
+
+                process.exit(1);
+            });
+        });
     }
 }

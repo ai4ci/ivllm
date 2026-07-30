@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=1091
 # run_head_vllm.sh — Head node vLLM launcher.
 # Runs on a compute node
 

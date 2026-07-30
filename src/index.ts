@@ -4,6 +4,7 @@ import { program } from 'commander';
 import { getBackend } from './backends/backend-factory.ts';
 import { loadCredentials, assertConfigured, saveConfig } from './config.ts';
 import { formatJobRow, formatJobTable } from './utils.ts';
+import type { CloseableEventEmitter } from './types.ts';
 
 // Assign globally across Node.js/Browser using the universal globalThis object
 const { version } = await import('../package.json');
@@ -227,8 +228,32 @@ async function cmdConnect(
     const backend = getBackend(config);
     const localPort = parseInt(options.localPort);
 
-    if (!(await backend.isRunning(jobName))) {
+    // Track active background processes for the global Ctrl+C cleanup anchor
+    let logWatcher: CloseableEventEmitter | null = null;
+    let tunnel: CloseableEventEmitter | null = null;
+
+    // 1. Global Intercept Cleanup Handler
+    const cleanupAndExit = async () => {
+        console.log(
+            '\n\n[Ctrl+C] Cancelling connection routine. Cleaning up local resources...',
+        );
+
+        if (logWatcher && typeof logWatcher.kill === 'function') {
+            console.log('--> Stopping background log tailing...');
+            logWatcher.kill();
+        }
+        if (tunnel && typeof tunnel.kill === 'function') {
+            console.log('--> Disconnecting active SSH tunnel...');
+            tunnel.kill();
+        }
+        process.exit(0);
+    };
+
+    try {
         if (await backend.isStartable(jobName)) {
+            console.log(
+                `Job '${jobName}' is not active. Dispatching Slurm start allocation...`,
+            );
             await backend.requestStart(
                 jobName,
                 options.time,
@@ -236,29 +261,166 @@ async function cmdConnect(
                 options.batch,
                 options.config,
             );
-        } else {
-            if (await backend.isStarting(jobName)) {
-                // spawn auto closing log watcher deliberately in background
-                await backend.watchLog(
-                    jobName,
-                    '0',
-                    '[startup] Startup complete',
+            // Refresh to grab the updated transitional state
+        }
+
+        // 3. Conditional Background Log Tailing Setup
+        if (await backend.isStarting(jobName)) {
+            console.log(
+                `Job '${jobName}' is starting. Attaching background log watcher...`,
+            );
+
+            // Spawn the log stream. Because we do not 'await' its string completion natively,
+            // it runs concurrently in the background while the polling loop executes below.
+            logWatcher = await backend.watchLog(
+                jobName,
+                '0',
+                '[startup] startup complete',
+            );
+
+            logWatcher.on('error', (err) => {
+                console.error(`\n[Log Error]: ${err.message}`);
+            });
+
+            logWatcher.on('close', () => {
+                console.log(
+                    '\n--> Log sentinel reached or log process stopped.',
                 );
-            } else {
+                logWatcher = null;
+            });
+        }
+
+        // 4. Poll until the status switches cleanly to 'running'
+        let pollIntervalMs = 2000;
+        const maxPollIntervalMs = 10000;
+        const timeoutThresholdMs = 15 * 60 * 1000; // 15-minute absolute ceiling
+        const startTime = Date.now();
+
+        console.log(
+            `Polling status file for '${jobName}' to enter running state...`,
+        );
+
+        while (true) {
+            const lockfile = await backend
+                .getJobStatus(jobName)
+                .catch(() => null);
+            const status = lockfile?.status || 'unknown';
+
+            if (status === 'running') {
+                console.log(`\n✓ Job '${jobName}' is verified running.`);
+                break;
+            }
+
+            if (status === 'failed' || status === 'stopped') {
                 throw new Error(
-                    `job ${jobName} is not in a startable state (maybe it is in the middle of shutting down)`,
+                    `Job startup aborted: The cluster reported status [${status}].`,
                 );
             }
+
+            if (Date.now() - startTime > timeoutThresholdMs) {
+                throw new Error(
+                    `Timeout: Job failed to enter running state within 15 minutes.`,
+                );
+            }
+
+            process.stdout.write(
+                `\rCurrent state: [${status}]... polling next in ${pollIntervalMs / 1000}s`,
+            );
+            await new Promise((res) => setTimeout(res, pollIntervalMs));
+            pollIntervalMs = Math.min(pollIntervalMs + 1000, maxPollIntervalMs);
         }
+        process.stdout.write('\n');
+
+        // 5. If the log watcher is still trailing, terminate it cleanly now that we are running
+        if (logWatcher && typeof logWatcher.kill === 'function') {
+            logWatcher.kill();
+            logWatcher = null;
+        }
+
+        // 6. Establish and lock the SSH Tunnel
+        console.log(
+            `Opening SSH port forwarding tunnel to port ${localPort}...`,
+        );
+        tunnel = await backend.connect(jobName, localPort);
+        console.log(
+            `Tunnel will stay open until you press Ctrl-C ...`,
+
+        );
+
+        // Block CLI execution loop natively while the tunnel stays open
+        await new Promise<void>((resolve) => {
+            tunnel!.on('close', () => {
+                console.log('SSH forwarding tunnel disconnected.');
+                resolve();
+            });
+        });
+    } finally {
+        // Clean up listeners to prevent memory leaks if everything finished smoothly
+        process.off('SIGINT', cleanupAndExit);
+        process.off('SIGTERM', cleanupAndExit);
     }
 
-    if (await backend.isRunning(jobName)) {
-        await backend.connect(jobName, localPort);
-    } else {
-        throw new Error(
-            `job ${jobName} was not running (after attempted start)`,
-        );
-    }
+    // // Register intercept vectors immediately before doing any heavy operations
+    // process.once('SIGINT', cleanupAndExit);
+    // process.once('SIGTERM', cleanupAndExit);
+    //
+    // if (!(await backend.isRunning(jobName))) {
+    //     if (await backend.isStartable(jobName)) {
+    //         await backend.requestStart(
+    //             jobName,
+    //             options.time,
+    //             true,
+    //             options.batch,
+    //             options.config,
+    //         );
+    //     } else {
+    //         if (await backend.isStarting(jobName)) {
+    //             // spawn auto closing log watcher deliberately in background
+    //             await backend.watchLog(
+    //                 jobName,
+    //                 '0',
+    //                 '[startup] startup complete',
+    //             );
+    //         } else {
+    //             throw new Error(
+    //                 `job ${jobName} is not in a startable state (maybe it is in the middle of shutting down)`,
+    //             );
+    //         }
+    //     }
+    // }
+    //
+    // if (await backend.isRunning(jobName)) {
+    //     await backend.connect(jobName, localPort);
+    // } else {
+    //     throw new Error(
+    //         `job ${jobName} was not running (after attempted start)`,
+    //     );
+    // }
+    //
+    // // Establish and lock the SSH Tunnel
+    // console.log(`Opening SSH port forwarding tunnel to port ${localPort}...`);
+    // const tunnel = await backend.connect(jobName, localPort);
+    //
+    // // Handle Terminal Interruption (Ctrl+C / SIGINT)
+    // const cleanupAndExit = async () => {
+    //     console.log('\nDisconnecting SSH tunnel and terminating CLI client...');
+    //     if (typeof tunnel.kill === 'function') {
+    //         tunnel.kill();
+    //     }
+    //     process.exit(0);
+    // };
+    //
+    // process.once('SIGINT', cleanupAndExit); // Intercept Ctrl+C
+    // process.once('SIGTERM', cleanupAndExit); // Intercept system terminations
+    //
+    // // Block CLI execution loop natively while the tunnel stays open
+    // await new Promise<void>((resolve) => {
+    //     tunnel.on('close', () => {
+    //         console.log('SSH forwarding tunnel disconnected.');
+    //         process.off('SIGINT', cleanupAndExit); // Remove listener to avoid leaks
+    //         resolve();
+    //     });
+    // });
 }
 
 /**
