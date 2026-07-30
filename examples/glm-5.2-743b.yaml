@@ -3,6 +3,8 @@ metadata:
     created-by: Rob
     version: 0.1.0
     lifecycle: experimental
+min-vllm-version: "0.23.0"
+idle-timeout: 60
 
 # Recipe source: https://recipes.vllm.ai/zai-org/GLM-5.2
 # Model card: https://huggingface.co/zai-org/GLM-5.2
@@ -32,7 +34,6 @@ safetensors-load-strategy: lazy
 speculative-config: '{"method": "mtp", "num_speculative_tokens": 1}'
 compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}, "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32, 64]}'
 enable-prefix-caching: true
-min-vllm-version: "0.23.0"
 
 moe-backend: deep_gemm
 all2all-backend: deepep_low_latency

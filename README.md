@@ -216,7 +216,7 @@ This submits a SLURM job on a compute node to install the NVIDIA HPC SDK 26.3 (p
 
 ### Done ONCE per Team
 * **vLLM Setup:** Once *any* teammate runs `ivllm setup`, **no other team members need to run it**. Everyone instantly shares the same optimized installation.
-* **Model Downloads:** Model weights are stored in the shared Hugging Face cache at `$PROJECTDIR/engine/hf/`. One download serves everyone — avoids duplicate disk space and HF API rate-limiting (429) blocks.
+* **Model Downloads:** Model weights are stored in the shared Hugging Face cache at `$PROJECTDIR/model/hf/`. One download serves everyone — avoids duplicate disk space and HF API rate-limiting (429) blocks.
 
 ### Done ONCE per Individual User
 * **Tool Installation:** Each teammate runs `bun install && bun link` once on their local machine.

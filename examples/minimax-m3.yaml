@@ -3,6 +3,8 @@ metadata:
     created-by: Rob
     version: 0.1.0
     lifecycle: experimental
+min-vllm-version: "0.25.0"
+idle-timeout: 60
 
 # Hardware: NVIDIA GH200 (Grace Hopper) — 4×120GB per node, ~96 GiB usable per GPU
 # FP8 weights: ~743 GB total → ~62 GB/GPU (fp8) → fits on 9+ GPUs at 96 GiB
@@ -41,7 +43,6 @@ safetensors-load-strategy: lazy
 
 compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'
 enable-prefix-caching: true
-min-vllm-version: "0.25.0"
 
 speculative-config: '{"method":"eagle3","model":"Inferact/MiniMax-M3-EAGLE3","num_speculative_tokens":3}'
 

@@ -92,7 +92,6 @@ If the job doesn't exist, creates it and starts it.`,
             'SLURM time limit as <hh:mm:ss>',
             '08:00:00',
         )
-        .option('--dry-run', 'Preview without connecting to HPC', false)
         .action(cmdConnect);
 
     program
@@ -206,16 +205,18 @@ async function cmdStatus(jobName?: string) {
  * If the job is starting up, tails logs until running.
  * @param jobName — Job name
  * @param options — `{ port, timeLimit, configFile }`
- * @param options.port
- * @param options.timeLimit
- * @param options.configFile
+ * @param options.localPort
+ * @param options.time
+ * @param options.config
+ * @param options.batch
  */
 async function cmdConnect(
     jobName: string,
     options: {
-        port: string;
-        timeLimit: string;
-        configFile?: string;
+        localPort: string;
+        time: string;
+        config?: string;
+        batch: boolean;
     },
 ): Promise<void> {
     // TODO: rething the user experience here. Maybe better to
@@ -224,18 +225,20 @@ async function cmdConnect(
     const config = loadCredentials();
     assertConfigured(config);
     const backend = getBackend(config);
-    const localPort = parseInt(options.port);
+    const localPort = parseInt(options.localPort);
 
     if (!(await backend.isRunning(jobName))) {
         if (await backend.isStartable(jobName)) {
             await backend.requestStart(
                 jobName,
-                options.timeLimit,
+                options.time,
                 true,
-                options.configFile,
+                options.batch,
+                options.config,
             );
         } else {
             if (await backend.isStarting(jobName)) {
+                // spawn auto closing log watcher deliberately in background
                 await backend.watchLog(
                     jobName,
                     '0',

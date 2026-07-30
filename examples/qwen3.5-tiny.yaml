@@ -3,10 +3,11 @@ metadata:
     created-by: Rob
     version: 0.1.0
     lifecycle: experimental
+min-vllm-version: "0.17.0"
+idle-timeout: 60
 
 model: Qwen/Qwen3.5-0.8B
 trust-remote-code: true
-min-vllm-version: "0.17.0"
 tensor-parallel-size: 1
 pipeline-parallel-size: 1
 max-model-len: 262144

@@ -82,7 +82,7 @@ export class IsambardBareMetalBackend extends Backend {
             if (s == 'running') break;
             if (s == 'pending') console.log('Waiting for job to start');
             if (s == 'initialising') console.log('vLLM is starting up');
-            sleep(10_000);
+            await sleep(10_000);
         }
 
         if (jobStatus.computeHostname) {
@@ -115,13 +115,14 @@ export class IsambardBareMetalBackend extends Backend {
         job: string,
         maxTime: string = '08:00:00',
         monitor: boolean,
+        batch: boolean,
         config?: string,
     ): Promise<void> {
         await this.bootstrap();
 
         if (config) {
             if (fs.existsSync(config)) {
-                const remoteConfig = `${this.creds.projectDir}/engine/${job}/vllm.yaml`;
+                const remoteConfig = `${this.creds.projectDir}/engine/jobs/${job}/vllm.yaml`;
                 await this.ops.copyFile(config, remoteConfig);
             } else {
                 throw new Error(`no configuration file found at: ${config}`);
@@ -129,7 +130,7 @@ export class IsambardBareMetalBackend extends Backend {
         }
 
         const { stdout, exitCode } = await this.ops.runRemote(
-            `${this.remoteEngine}/ivllm-serve.sh -j "${job}" -t "${maxTime}"`,
+            `${this.remoteEngine}/ivllm-serve.sh -j "${job}" -t "${maxTime}${batch ? ' -b' : ''}"`,
             { env: this.envs, silent: false },
         );
 

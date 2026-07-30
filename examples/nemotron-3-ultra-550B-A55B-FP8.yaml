@@ -3,6 +3,8 @@ metadata:
     created-by: Rob
     version: 0.1.0
     lifecycle: experimental
+min-vllm-version: "0.22.0"
+idle-timeout: 60
 
 # NVIDIA Nemotron-3-Ultra-550B-A12B-FP8-block on Isambard AI
 
@@ -29,8 +31,6 @@ tool-call-parser: qwen3_coder
 reasoning-parser: nemotron_v3
 
 enable-prefix-caching: true
-min-vllm-version: 0.22.0
-
 
 enable-chunked-prefill: true
 

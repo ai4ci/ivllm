@@ -3,6 +3,8 @@ metadata:
     created-by: Rob
     version: 0.1.0
     lifecycle: experimental
+min-vllm-version: "0.23.0"
+idle-timeout: 60
 
 # vLLM config for deepseek-ai/DeepSeek-V4-Flash on Isambard AI
 # Model: 284B total parameters, 13B active parameters (MoE)
@@ -11,7 +13,6 @@ metadata:
 # Architecture: Mixture of Experts (MoE) with hybrid CSA+HCA attention
 #   Compressed Sparse Attention (CSA) and Heavily Compressed Attention (HCA)
 #   reduce the KV cache footprint to just 10% of V3.2.
-
 
 model: deepseek-ai/DeepSeek-V4-Flash-Base
 tensor-parallel-size: 1
@@ -41,9 +42,6 @@ tokenizer-mode: deepseek_v4
 
 # Prefix caching — valuable for repeated system prompts and CoT contexts.
 enable-prefix-caching: true
-
-min-vllm-version: "0.23.0"
-# min-vllm-version: DeepSeek-V4 support is present in vLLM 0.20.0+.
 
 moe-backend: deep_gemm_mega_moe
 # If we have to revert to FP4 quantised experts then

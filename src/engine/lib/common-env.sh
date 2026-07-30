@@ -98,7 +98,7 @@ LIBFABRIC_LIB_DIR="/opt/cray/libfabric/1.22.0/lib64"
 export CPATH="$RDMA_ROOT/include:${LIBFABRIC_INC_DIR}:${CPATH:-}"
 
 # 4. Synchronize compiler/linker variables
-export CFLAGS="-I$RDMA_ROOT/include -I{LIBFABRIC_INC_DIR} ${CFLAGS:-}"
+export CFLAGS="-I$RDMA_ROOT/include -I${LIBFABRIC_INC_DIR} ${CFLAGS:-}"
 export CPPFLAGS="-I$RDMA_ROOT/include -I${LIBFABRIC_INC_DIR} ${CPPFLAGS:-}"
 export CXXFLAGS="-I$RDMA_ROOT/include -I${LIBFABRIC_INC_DIR} ${CXXFLAGS:-}"
 export LDFLAGS="-L$RDMA_ROOT/lib64 -L$RDMA_ROOT/lib -L${LIBFABRIC_LIB_DIR} ${LDFLAGS:-}"

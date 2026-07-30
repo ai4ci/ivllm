@@ -334,15 +334,17 @@ $PROJECTDIR/engine/
 │   ├── vllm_logs.json
 │   ├── plugins/
 │   └── <version>/       ← vLLM venv (from `ivllm setup <version>`)
-├── hf/                   ← Shared HuggingFace cache
-│   └── hub/
-│       └── models--<name>/
 └── diagnostics/
     └── <jobname>/
         └── <date>/
             ├── vllm.<id>.log
             ├── vllm.yaml
             └── slurm.sh
+$PROJECTDIR/model/
+├── hf/                   ← Shared HuggingFace cache
+│   └── hub/
+│       └── models--<name>/
+└── venv/                 ← Hugginface cli
 ```
 
 **Rationale**:
@@ -715,13 +717,17 @@ Option 2 turned out to be a much better fit once examined closely:
   test request before the real measurement starts ("Starting initial single
   prompt test run..."), so the elaborate `monitor_startup` warmup-then-save-
   JIT-cache dance the persistent path needs isn't required for correctness.
+- **Profiling** - alongside performance, the models can be also profiled on
+  smaller runs with different profiling tools. Details here:
+  [https://docs.vllm.ai/en/stable/contributing/profiling/]. Profiling can run
+  after benchmarking to determine where a model is slow.
 
 **Decision**: Benchmarking is implemented **only** as ephemeral, disposable
 diagnostic jobs. This fully replaces (not complements) the idea of
 benchmarking an already-running persistent job — there is no `ivllm bench
 <job>` command. If someone wants numbers for a config, they submit a fresh
-disposable job with that config; there is no way to benchmark a job that is
-already serving real traffic without restarting it.
+disposable job with that config or configs; there is no way to benchmark a job
+that is already serving real traffic without restarting it.
 
 CLI surface: a two-phase command, `ivllm compare <comparisonName> --submit
 <config1.yaml> <config2.yaml> ...` and `ivllm compare <comparisonName>
@@ -810,6 +816,10 @@ sharing.
   matches the pre-existing "Log file failure recovery" roadmap item, so both
   can share the same directory convention and eventual rsync-to-local
   tooling (`copyDirectory(..., 'down')` already exists in `RemoteOps`).
+- Ephemeral benchmark jobs MUST use the existing `utils.sh` exit-trap
+  machinery (`tidy_up()` + `setup_traps()`) used by persistent jobs. This
+  guarantees that if a benchmark job crashes, logs/configs are archived to
+  the diagnostics directory.
 
 ---
 

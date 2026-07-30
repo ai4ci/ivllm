@@ -58,8 +58,22 @@ fi
 # tail -f handles multiple files natively, printing headers for each
 # tail -n +1 -f "${files[@]}"
 
-stdbuf -oL tail -f "${files[@]}" || awk -v target="$IVLLM_MATCH" '
-    target != "" && index($0, target) { print; exit }
-    1;
-    { fflush() }
-'
+# stdbuf -oL tail -f "${files[@]}" | awk -v target="$IVLLM_MATCH" '
+#     target != "" && index($0, target) { print; exit }
+#     1;
+#     { fflush() }
+# '
+
+# No marker — plain follow, runs until the client disconnects.
+if [[ -z "$IVLLM_MATCH" ]]; then
+    exec stdbuf -oL tail -f "${files[@]}"
+fi
+
+# Marker mode — stream until the marker appears, then stop the tail.
+coproc TAIL { stdbuf -oL tail -f "${files[@]}" 2>&1; }
+trap 'kill "$TAIL_PID" 2>/dev/null' EXIT INT TERM
+
+awk -v target="$IVLLM_MATCH" '
+    { print; fflush() }
+    index($0, target) { exit 0 }
+' <&"${TAIL[0]}"

@@ -87,9 +87,9 @@ else
                 (.jobName // "N/A"),
                 (.status // "N/A"),
                 (.user // "N/A"),
-                (.model // "N/A" | toString),
+                (.model // "N/A"),
                 (.stopTime // "N/A"),
-                (.reason // ""),
+                (.reason // "")
             ] | @tsv' "$status_file"
         fi
     done | awk -F'\t' -v fmt="$FMT" '{printf fmt, $1, $2, $3, $4, $5, $6}'

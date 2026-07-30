@@ -3,6 +3,8 @@ metadata:
     created-by: Rob
     version: 0.1.0
     lifecycle: experimental
+min-vllm-version: "0.17.0"
+idle-timeout: 60
 
 # vLLM config for Qwen/Qwen3.6-35B-A3B on Isambard AI
 #   KV cache at 262K context ≈ 2.7 GB total — very small footprint.
@@ -11,7 +13,6 @@ metadata:
 model: Qwen/Qwen3.6-35B-A3B-FP8
 tensor-parallel-size: 1
 max-model-len: 262144
-
 
 gpu-memory-utilization: 0.95
 max-num-seqs: 512
@@ -36,11 +37,6 @@ enable-expert-parallel: true
 
 # Caching
 enable-prefix-caching: true
-
-# Note: this model includes a vision encoder for image input.
-# To run text-only (frees ~a few GB of memory for extra KV cache), add:
-# language-model-only: true
-min-vllm-version: "0.17.0"
 
 moe-backend: flashinfer_b12x
 

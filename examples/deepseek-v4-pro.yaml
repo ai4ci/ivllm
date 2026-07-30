@@ -3,6 +3,8 @@ metadata:
     created-by: Rob
     version: 0.1.0
     lifecycle: failing
+min-vllm-version: "0.23.0"
+idle-timeout: 60
 
 # NOT WORKING
 #
@@ -72,10 +74,6 @@ tokenizer-mode: deepseek_v4
 
 # Prefix caching — disabled to avoid scheduler deadlock (upstream vLLM #41530)
 # enable-prefix-caching: true
-
-min-vllm-version: "0.23.0"
-# min-vllm-version: DeepSeek-V4-Pro requires vLLM 0.20.0+ (per vLLM recipes).
-# ivllm checks this before submitting; stripped before passing to vLLM.
 
 moe-backend: humming
 all2all-backend: deepep_low_latency

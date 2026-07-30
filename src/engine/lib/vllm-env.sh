@@ -114,7 +114,6 @@ export TORCHINDUCTOR_AUTOGRAD_REMOTE_CACHE="0"
 
 # ── Complier caches:
 # ─────────────────────────────────
-set_jit_caches
 export VLLM_COMPILE_CACHE_SAVE_FORMAT="unpacked"
 
 # ── HF Models flags:

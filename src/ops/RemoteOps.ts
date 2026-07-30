@@ -102,7 +102,8 @@ export abstract class RemoteOps {
      * @returns The command string with env vars as prefix
      */
     protected makeFullCommand(command: string, env: EnvVarEntry[]): string {
-        const envPrefix = env.map((v) => `${v.key}=${v.value}`).join(' ') + ' ';
+        const envPrefix =
+            env.map((v) => `${v.key}="${v.value}"`).join(' ') + ' ';
         const fullCommand = (envPrefix + command).trim();
         return fullCommand;
     }

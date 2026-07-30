@@ -3,6 +3,18 @@ metadata:
     created-by: Rob
     version: 0.1.0
     lifecycle: experimental
+min-vllm-version: "0.25.0"
+idle-timeout: 60
+
+# This requires a specific
+# pip install -U uv
+#
+# VLLM_PRECOMPILED_WHEEL_LOCATION="https://github.com/vllm-project/vllm/releases/download/v0.22.0/vllm-0.22.0%2Bcu129-cp38-abi3-manylinux_2_28_x86_64.whl" \
+# VLLM_USE_PRECOMPILED=1 \
+# uv pip install --reinstall-package vllm --torch-backend=cu129 \
+#   "git+https://github.com/UpstageAI/vllm.git@v0.22.0-solar-open2"
+# Its possible plugin mechanism could solve this.
+# The fork has 3 new python files which could maybe be distributed as plugins.
 
 model: upstage/Solar-Open2-250B
 kv-cache-dtype: fp8

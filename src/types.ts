@@ -170,7 +170,6 @@ export type LockfileState =
  * | `computeHostname` | Compute node hostname for SSH tunnel |
  * | `startTime` | ISO-8601 timestamp of job start |
  * | `stopTime` | ISO-8601 timestamp of job stop |
- * | `vllmPid` | vLLM process ID on the compute node |
  * | `reason` | Human-readable reason for stopping/failure |
  * | `exitCode` | vLLM exit code on failure |
  */
@@ -188,7 +187,6 @@ export interface LockfileV3 {
     computeHostname?: string;
     startTime?: string;
     stopTime?: string;
-    vllmPid?: number;
     reason?: string;
     exitCode?: number;
 }

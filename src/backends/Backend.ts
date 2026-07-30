@@ -1,8 +1,4 @@
-import type {
-    CloseableEventEmitter,
-    LockfileV3,
-    Credentials,
-} from '../types';
+import type { CloseableEventEmitter, LockfileV3, Credentials } from '../types';
 
 // ====== Beckend class definition =======
 
@@ -66,6 +62,7 @@ export abstract class Backend {
         job: string,
         maxTime: string,
         monitor: boolean,
+        batch: boolean,
         config?: string,
     ): Promise<void>;
 

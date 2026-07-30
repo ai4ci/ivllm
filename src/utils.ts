@@ -10,13 +10,12 @@ import type { LockfileV3 } from './types.ts';
 export function formatJobRow(job: LockfileV3): string {
     const parts: string[] = [
         job.jobName.padEnd(8),
-        job.status.padEnd(10),
-        job.user.padEnd(12),
-        job.model.padEnd(40),
-        (job.stopTime ?? '-').padEnd(16),
+        job.status.padEnd(14),
+        (job.user ?? 'unknown').padEnd(12),
+        (job.model ?? 'unknown').padEnd(40),
+        (job.stopTime ?? '-').padEnd(25),
         job.reason ?? '-',
     ];
-    if (job.reason) parts.push(job.reason!);
     return parts.join('  ').trimEnd();
 }
 
@@ -32,13 +31,13 @@ export function formatJobTable(jobs: LockfileV3[]): string {
     const header =
         'JOB'.padEnd(8) +
         '  ' +
-        'STATUS'.padEnd(10) +
+        'STATUS'.padEnd(14) +
         '  ' +
         'USER'.padEnd(12) +
         '  ' +
         'MODEL'.padEnd(40) +
         '  ' +
-        'UNTIL'.padEnd(16) +
+        'UNTIL'.padEnd(25) +
         '  ' +
         'INFO';
     const separator = '-'.repeat(header.length);

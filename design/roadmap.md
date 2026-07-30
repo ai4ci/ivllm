@@ -76,6 +76,13 @@ One-off installation of vLLM on the HPC:
 - Skipped automatically if that version is already installed
 - `--force` reinstalls even if the version exists
 
+#### `ivllm diagnostics <job> [--out <path>]`
+
+* On failure to start up the vllm config and vllm logs from the current run
+are need to be copied to /engine/diagnostics/<job>/<date-time> directory
+* This command syncs job diagnostics to a user local directory so that logs
+can be analysed by an agent on local.
+
 ### 2. Backend Abstraction
 
 An abstract `Backend` class in `src/backends/Backend.ts` (227 lines) defines the
@@ -241,21 +248,24 @@ binaries and mocked SLURM/vLLM commands (`sbatch`, `srun`, `scancel`, `vllm`, et
 The v3 architecture is designed to support these evolutions without structural
 changes. Each maps to one or more ADRs.
 
-### Log file failure recovery
-
-* On failure to start up the vllm config and vllm logs from the current run need to be copied to /engine/diagnostics/<job>/<date-time> directory
-* Job diagnostics need to be rsynced to a user local directory (TBD - probably a temp directory, maybe configurable)
-* So that logs can be analysed by an agent on local.
 
 ### Multinode disggregation strategies
 
-* Current multinode is not 100% data parallel friendly
+* Update current vllm config skill.
+* Current multinode is partly data parallel friendly in that it will allow Wide EP
+and calculates appropriate data-parallel configuration across multiple nodes
 * on multinode we have 4 slingshot x 4 NVlink x GH200
-* Need to shard experts in a way that miniminses internode traffic
+* Need to shard experts in a way that miniminses internode traffic but in which
+shared layers don't fill up whole 96Gb free of GPU. Hybrid parallelisation with
+experts is necessary where shared layers are significant size - TP4 in node to shard
+shared layers and DP or PP between nodes. Potentially more performant is Wide EP
+where TP=1 and DP for all the nodes. Only will work for models where shared
+layers are small
 * https://docs.vllm.ai/en/stable/serving/data_parallel_deployment/
 * https://docs.vllm.ai/en/stable/serving/expert_parallel_deployment/
-* when is DP better that TP.
-* Prefill decode disggregation maybe another route for sharding
+* when is DP better that TP. Wide EP strategies.
+* Prefill decode disggregation maybe another route for sharding this is currently
+not supported.
 * With the UCCL-P2P and EP we should have NIXL support:
 * https://docs.vllm.ai/en/stable/features/nixl_connector_usage/
 
@@ -309,12 +319,13 @@ complements, the earlier idea of benchmarking an already-running job).
 |------|-------------|--------------|
 | 1. | Extract `IVLLM_ARGS`-building logic out of `run_head_vllm.sh`/`run_worker_vllm.sh` into a shared function taking `port`/`model`/`config` as plain parameters (today they read `serverPort` from the lockfile, which an ephemeral job doesn't have) | — |
 | 2. | New ephemeral job script(s): launch vLLM (head + optional workers), health-poll (no lockfile), run `vllm bench serve --dataset-name random` against `localhost:$port`, save `bench.json`, kill everything, exit | Step 1 |
-| 3. | Worker coordination for multi-node ephemeral jobs via SLURM's own job-teardown semantics (no `monitor_worker`/lockfile polling needed) | Step 2 |
-| 4. | CLI: `ivllm compare <comparisonName> --submit <config1.yaml> <config2.yaml> ...` — non-blocking `sbatch` per config, writes `comparison.json` manifest (configName → slurmJobId, submittedAt, status) | Step 2 |
-| 5. | CLI: `ivllm compare <comparisonName> --analyse` — one-shot status check against the manifest, rsyncs down newly-completed configs' diagnostics, prints a status table with metrics inline; no verdict-picking | Step 4 |
-| 6. | Diagnostics stored at `$PROJECTDIR/engine/diagnostics/<comparisonName>/<configName>/{vllm.yaml,slurm.sh,vllm.log,bench.json}` | — |
-| 7. | Regular batch partition (not interactive) for `--submit` jobs — sidesteps the interactive reservation's 1-sbatch-job limit, enables true parallel submission across configs | — |
-| 8. | Default `--time` of 2 hours (large/multi-node model load + warmup can itself take 45–60+ min), overridable per comparison run | — |
+| 3. | Worker coordination for multi-node ephemeral jobs via SLURM's own job-teardown semantics (no `monitor_worker`/lockfile polling needed). | Step 2 |
+| 4. | Integrate `tidy_up` exit trap (from `utils.sh`) into the ephemeral runner to guarantee automatic failure diagnostics capture (logs + config) on crash. | Step 2 |
+| 5. | CLI: `ivllm compare <comparisonName> --submit <config1.yaml> <config2.yaml> ...` — non-blocking `sbatch` per config, writes `comparison.json` manifest (configName → slurmJobId, submittedAt, status) | Step 2 |
+| 6. | CLI: `ivllm compare <comparisonName> --analyse` — one-shot status check against the manifest, rsyncs down newly-completed configs' diagnostics, prints a status table with metrics inline; no verdict-picking | Step 5 |
+| 7. | Diagnostics stored at `$PROJECTDIR/engine/diagnostics/<comparisonName>/<configName>/{vllm.yaml,slurm.sh,vllm.log,bench.json}` | — |
+| 8. | Regular batch partition (not interactive) for `--submit` jobs — sidesteps the interactive reservation's 1-sbatch-job limit, enables true parallel submission across configs | — |
+| 9. | Default `--time` of 2 hours (large/multi-node model load + warmup can itself take 45–60+ min), overridable per comparison run | — |
 
 **Rationale:** No lockfile, no monitor triad, no SSH tunnel, no lingering
 GPU-hour risk (self-terminating by construction), trivially parallelisable
@@ -388,4 +399,12 @@ and environment variables — no custom YAML needed.
 **Rationale:** Eliminates the need for per-job config files for popular models;
 encodes hard-won tuning in shared recipes.
 
+### Concept: Plugins and patches
 
+On the original nemotron release there was a plugin specified for the reasoning
+parser. Solar open needs a specifc vllm fork to run as it includes parsers:
+https://github.com/vllm-project/vllm/compare/main...UpstageAI:vllm:v0.22.0-solar-open2
+It would be useful to be able to apply these as plugins to stock vllm at
+specific model runtime. We had a mechanism in v2 for doing this by linking
+plugins into the job directory, it might be useful to have model specific monkey
+patches.

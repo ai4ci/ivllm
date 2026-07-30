@@ -1,13 +1,21 @@
 #!/bin/bash
 # run_head_vllm.sh — Head node vLLM launcher.
-#
-# Sources utils.sh, resolves the environment, and runs the vLLM serve
-# command with proper logging. Only runs on SLURM head node (NODEID=0).
+# Runs on a compute node
 
-source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
+if [[ -z $SLURM_SUBMIT_DIR ]]; then
+    echo "ERROR: no slurm submit directory defined" >&2
+    exit 1
+fi
+
+# slurm srun node scripts are copied to a /var/run directory and executed from there
+# so we can;t rely on the script location to find the libraries
+source "$SLURM_SUBMIT_DIR/lib/utils.sh"
 
 IVLLM_JOB=${1?must set job name}
 IVLLM_HEAD_NODE_IP=${2?must set head node}
+
+restore_cache "$IVLLM_JOB"
+set_jit_caches "$IVLLM_JOB"
 
 minVllmVersion=$(get_job_config_setting "$IVLLM_JOB" ".min-vllm-version")
 vllmVersion=$(select_closest_version "$minVllmVersion")
@@ -29,10 +37,12 @@ nNodes=${SLURM_NNODES:-1}
 localDp=$(( totalDp / nNodes ))
 if [ "$localDp" -eq 0 ]; then localDp=1; fi
 
+# numaBindNodes="[${CUDA_VISIBLE_DEVICES:?...}]"
+
 IVLLM_ARGS=(
-    --numa-bind
+#   --numa-bind-nodes "$numaBindNodes"
     --config "$strippedConfig"
-    --port "$serverPort"
+    --port "${serverPort:-8000}"
     --served-model-name "$model" "default" "$IVLLM_JOB"
 )
 
@@ -40,7 +50,7 @@ IVLLM_ARGS=(
 if [ "$nNodes" -gt 1 ]; then
     IVLLM_ARGS+=(
         --nnodes "$nNodes"
-        --node-rank "$nodeRank"
+        --node-rank 0
         --master-addr "$IVLLM_HEAD_NODE_IP"
     )
 fi
@@ -57,21 +67,21 @@ if [ "$totalDp" -gt 1 ]; then
 fi
 
 source "$vllmVersionDir/bin/activate"
-source "$(dirname "${BASH_SOURCE[0]}")/common-env.sh"
-source "$(dirname "${BASH_SOURCE[0]}")/vllm-env.sh"
+source "$SLURM_SUBMIT_DIR/lib/common-env.sh"
+source "$SLURM_SUBMIT_DIR/lib/vllm-env.sh"
 
 echo "[serve-0] executing: vllm serve $(printf '%q ' "${IVLLM_ARGS[@]}")"
 
 # Evaluate env blocks in yaml file last to override defaults.
 eval "$envExports"
 
-vllm serve "${IVLLM_ARGS[@]}" &
+# make sure signals sent to this script via srun are propagated to vllm:
+trap 'kill_pid "$IVLLM_PID" "vllm head"' SIGUSR2 SIGUSR1 SIGTERM
+export PYTHONUNBUFFERED=1 # remove stdout buffering.
+stdbuf -oL -eL vllm serve "${IVLLM_ARGS[@]}" &
     IVLLM_PID=$!
 
 sleep 1
 echo "[serve-0] initialised head node $IVLLM_HEAD_NODE_IP - vllm pid: $IVLLM_PID; jobid: $SLURM_JOB_ID"
-update_status_initialise "$IVLLM_JOB" "$IVLLM_PID"
-setup_traps "$IVLLM_JOB"
-echo "[serve-0] initialised job $IVLLM_JOB"
 
-wait $IVLLM_PID
+wait_report "$IVLLM_JOB" "$IVLLM_PID"

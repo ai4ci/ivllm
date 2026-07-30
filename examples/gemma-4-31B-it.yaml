@@ -3,6 +3,8 @@ metadata:
     created-by: Rob
     version: 0.1.0
     lifecycle: experimental
+min-vllm-version: "0.19.1"
+idle-timeout: 60
 
 # vLLM config for google/gemma-4-31B-it on Isambard AI
 #
@@ -39,7 +41,3 @@ enable-prefix-caching: true
 # Text-only workload: uncomment to skip vision encoder memory allocation
 # and avoid multimodal profiling overhead.
 # limit-mm-per-prompt: "image=0,audio=0"
-
-min-vllm-version: "0.19.1"
-# min-vllm-version: Gemma 4 support is present in vLLM 0.19.1 (current stable).
-# ivllm checks this before submitting; stripped before passing to vLLM.

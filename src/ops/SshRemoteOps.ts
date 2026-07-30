@@ -23,9 +23,6 @@ import { spawn } from 'child_process';
  * | ControlPersist=600 | Keep master alive for 10 minutes after last connection closes |
  * | ControlPath | Per-user socket at /tmp/ivllm-ssh-%r@%h:%p |
  *
- * **Note**: streamSrun and spawnTunnel deliberately disable multiplexing
- * (ControlMaster=no) because the master process can interfere with TTY
- * output and tunnel lifecycle detection respectively.
  */
 const SSH_MUX_OPTS = [
     '-o',

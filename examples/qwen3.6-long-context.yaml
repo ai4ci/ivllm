@@ -5,12 +5,8 @@ metadata:
     lifecycle: experimental
 
 # vLLM config for Qwen/Qwen3.6-35B-A3B on Isambard AI
-# Architecture: MoE + Gated DeltaNet + Vision Encoder (multimodal)
-#   Only 10 of 40 layers use standard attention (2 KV heads, head_dim=256);
-#   the remaining 30 use Gated DeltaNet (linear attention, fixed state — no per-token KV).
-#   KV cache at 262K context ≈ 2.7 GB total — very small footprint.
-#
-# Parallelism: tp=2 (35 GB weights, ~150 GB remaining for KV cache across 2 GPUs) This could probably
+# Parallelism: tp=2 (35 GB weights, ~150 GB remaining for KV cache across 2 GPUs)
+# This could probably run in a single node.
 # Context: 1010000 tokens (full native context)
 
 model: Qwen/Qwen3.6-35B-A3B-FP8

@@ -137,6 +137,8 @@ echo "=== Stripped configuration ======="
 cat "$strippedConfig" | awk '{print "  " $0}'
 echo "=================================="
 
+pushd "$here"
+
 #shellcheck disable 2086
 slurmJobId=$(sbatch \
     --parsable \
@@ -153,6 +155,7 @@ slurmJobId=$(sbatch \
     $here/lib/slurm-vllm-serve.sh "$IVLLM_JOB" "$nGpusPerNode" "$memValue")
 
 echo "  Slurm Job ID: $slurmJobId"
+echo "  Submitted from: $here"
 echo "=================================="
 
 update_status_slurm_id "$IVLLM_JOB" "$slurmJobId"
@@ -162,3 +165,5 @@ echo "  Tail log: ./ivllm-show-log.sh -j $IVLLM_JOB"
 echo "  Check status: ./ivllm-status.sh -j $IVLLM_JOB"
 echo "=================================="
 echo ""
+
+popd
