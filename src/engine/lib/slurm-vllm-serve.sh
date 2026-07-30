@@ -84,6 +84,9 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
     wait_all "${SRUN_PIDS[@]}"
 ) & IVLLM_PARENT_PID=$!
 
+# Redirect slurm out of time signals to the parent orchestrator
+trap 'kill -s SIGUSR1 "$IVLLM_PARENT_PID" 2>/dev/null' SIGUSR1
+
 # Waits for user cancel via lockfile instruction, slurm timeout, or idle timeout:
 # This will idle timeout eventually
 echo "[serve] initialised head monitor for job $IVLLM_JOB"

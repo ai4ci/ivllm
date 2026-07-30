@@ -601,7 +601,7 @@ is_status() {
 # Returns 0 if squeue returns the job, 1 otherwise.
 # Usage: is_cancellable "$slurm_id" → returns 0 if job exists
 is_cancellable() {
-    if [[ -z ${1:-} ]]; then return 0; fi
+    if [[ -z ${1:-} ]]; then return 1; fi
     squeue -j "$1" -u "$(whoami)" -h -o "%i" | grep -q .
 }
 
@@ -729,7 +729,7 @@ wait_report() {
             if is_status "$job" "initialising"; then
                 # node specific RAM report uses $SLURM_NODEID and is scoped to
                 # current node.
-                report_memory "$IVLLM_JOB"
+                report_memory "$job"
             fi
             elapsed=0
         fi
@@ -761,11 +761,6 @@ tidy_up() {
 
     # clear traps to stop tidy-up being called twice in different contexts
     trap - SIGUSR1 SIGUSR2 ERR EXIT
-
-    if [[ -v IVLLM_UTILS ]] && declare -f resolve_localdir > /dev/null; then
-        return
-    fi
-    export IVLLM_UTILS=1
 
     slurm_job_id=$(get_job_status_setting "$job" ".slurmJobId")
 
@@ -968,12 +963,9 @@ monitor_startup() {
 monitor_head() {
     local job="$1"
     local vllm_parent="$2"
-    local vllm_pid=$(pgrep -P "$vllm_parent" -x "srun")
     local lockfile
     local log
     local idle_timeout
-
-    echo "[head] discovered srun process id for vllm head: $vllm_pid"
 
     lockfile=$(resolve_job_status "$job")
     log=$(resolve_job_log "$job")

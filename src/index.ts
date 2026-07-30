@@ -249,6 +249,10 @@ async function cmdConnect(
         process.exit(0);
     };
 
+    // // Register intercept vectors immediately before doing any heavy operations
+    process.once('SIGINT', cleanupAndExit);
+    process.once('SIGTERM', cleanupAndExit);
+
     try {
         if (await backend.isStartable(jobName)) {
             console.log(

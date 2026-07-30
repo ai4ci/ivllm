@@ -243,6 +243,7 @@ export class SshRemoteOps extends RemoteOps {
         // return true;
 
         const now = Date.now();
+        const target = `${this.config.username}@${this.config.loginHost}`;
 
         // 1. Return cached check if a query is active or resolved recently
         if (now - this.lastCheckTime < this.CACHE_TTL_MS) {
@@ -253,14 +254,7 @@ export class SshRemoteOps extends RemoteOps {
         const isMuxAlive = await new Promise<boolean>((resolve) => {
             const checkProc = spawn(
                 'ssh',
-                [
-                    ...SSH_MUX_OPTS,
-                    '-o',
-                    'BatchMode=yes',
-                    '-O',
-                    'check',
-                    'dummy_host',
-                ],
+                [...SSH_MUX_OPTS, '-o', 'BatchMode=yes', '-O', 'check', target],
                 {
                     stdio: 'ignore',
                     detached: false,
@@ -279,8 +273,6 @@ export class SshRemoteOps extends RemoteOps {
         console.log('Initialising master SSH connection...');
 
         return new Promise<boolean>((resolve) => {
-            const target = `${this.config.username}@${this.config.loginHost}`;
-
             // We add '-N' (Do not execute a remote command) and '-f' (Go to background after authentication)
             // This causes SSH to establish the Master socket and cleanly daemonize locally.
             const connectArgs = [

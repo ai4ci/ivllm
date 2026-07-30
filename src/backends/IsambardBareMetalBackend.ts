@@ -130,7 +130,7 @@ export class IsambardBareMetalBackend extends Backend {
         }
 
         const { stdout, exitCode } = await this.ops.runRemote(
-            `${this.remoteEngine}/ivllm-serve.sh -j "${job}" -t "${maxTime}${batch ? ' -b' : ''}"`,
+            `${this.remoteEngine}/ivllm-serve.sh -j "${job}" -t "${maxTime}"${batch ? ' -b' : ''}`,
             { env: this.envs, silent: false },
         );
 
