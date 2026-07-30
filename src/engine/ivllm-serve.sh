@@ -1,4 +1,5 @@
 #!/bin/bash
+#shellcheck disable=2031,2155
 # ivllm-serve.sh — Start or reconnect to a vLLM job.
 #
 # On the login node: submits a SLURM job via sbatch to run the compute-side
@@ -134,12 +135,12 @@ echo "  Target vllm version: $vllmVersion"
 echo "=== Custom environment exports ==="
 echo "$envExports" | awk '{print "  " $0}'
 echo "=== Stripped configuration ======="
-cat "$strippedConfig" | awk '{print "  " $0}'
+awk '{print "  " $0}' < "$strippedConfig"
 echo "=================================="
 
-pushd "$here"
+pushd "$here" || exit 1
 
-#shellcheck disable 2086
+#shellcheck disable=2086
 slurmJobId=$(sbatch \
     --parsable \
     --job-name "$IVLLM_JOB" \
@@ -166,4 +167,4 @@ echo "  Check status: ./ivllm-status.sh -j $IVLLM_JOB"
 echo "=================================="
 echo ""
 
-popd
+popd || exit 1

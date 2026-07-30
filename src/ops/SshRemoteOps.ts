@@ -7,6 +7,8 @@ import type {
 } from '../types';
 import { RemoteOps } from './RemoteOps';
 import { spawn } from 'child_process';
+import { EventEmitter } from 'events';
+import net from 'net';
 
 /**
  * Reusable SSH multiplexing options for SSH/SCP commands.
@@ -182,7 +184,18 @@ export class SshRemoteOps extends RemoteOps {
             },
         );
 
-        return proc;
+        return Object.assign(proc, {
+            isAlive: async () => proc.exitCode === null && !proc.killed,
+            close: () =>
+                new Promise<void>((resolve) => {
+                    if (proc.exitCode !== null) {
+                        resolve();
+                        return;
+                    }
+                    proc.once('close', () => resolve());
+                    proc.kill();
+                }),
+        });
     }
 
     /**
@@ -202,27 +215,82 @@ export class SshRemoteOps extends RemoteOps {
         remotePort: number,
     ): CloseableEventEmitter {
         const target = `${this.config.username}@${this.config.loginHost}`;
-        const proc = spawn(
-            'ssh',
-            [
-                ...SSH_MUX_OPTS,
-                '-N',
-                '-o',
-                'BatchMode=yes',
-                '-o',
-                'ServerAliveInterval=10',
-                '-o',
-                'ServerAliveCountMax=3',
-                '-o',
-                'ExitOnForwardFailure=yes',
-                '-L',
-                `${localPort}:${remoteHost}:${remotePort}`,
-                target,
-            ],
-            { stdio: 'ignore', detached: false },
-        );
+        const forwardSpec = `${localPort}:${remoteHost}:${remotePort}`;
+        const emitter = new EventEmitter() as unknown as CloseableEventEmitter;
 
-        return proc;
+        let closed = false;
+        let pollTimer: ReturnType<typeof setInterval> | undefined;
+
+        const runControl = (args: string[]) =>
+            new Promise<number>((resolve) => {
+                const p = spawn(
+                    'ssh',
+                    [...SSH_MUX_OPTS, '-o', 'BatchMode=yes', ...args, target],
+                    { stdio: 'ignore' },
+                );
+                p.on('close', (code) => resolve(code ?? 1));
+                p.on('error', () => resolve(1));
+            });
+
+        // Registers the forward on the existing multiplexed master. Kicked off
+        // immediately; every call below awaits this instead of re-issuing it.
+        const registered = runControl(['-O', 'forward', '-L', forwardSpec]);
+
+        const checkPortListening = () =>
+            new Promise<boolean>((resolve) => {
+                const sock = net.createConnection({
+                    port: localPort,
+                    host: '127.0.0.1',
+                });
+                sock.once('connect', () => {
+                    sock.destroy();
+                    resolve(true);
+                });
+                sock.once('error', () => resolve(false));
+                sock.setTimeout(2000, () => {
+                    sock.destroy();
+                    resolve(false);
+                });
+            });
+
+        const markClosed = () => {
+            if (closed) return;
+            closed = true;
+            if (pollTimer) clearInterval(pollTimer);
+            emitter.emit('close');
+        };
+
+        emitter.isAlive = async () => {
+            if ((await registered) !== 0) return false;
+            return checkPortListening();
+        };
+
+        emitter.close = async () => {
+            if (closed) return;
+            await registered;
+            await runControl(['-O', 'cancel', '-L', forwardSpec]);
+            markClosed();
+        };
+
+        registered.then((code) => {
+            if (code !== 0) {
+                emitter.emit(
+                    'error',
+                    new Error(`Failed to register SSH forward (exit ${code})`),
+                );
+                markClosed();
+                return;
+            }
+
+            // Poll independently of any process handle — catches the master
+            // dying, or the forward being cancelled out from under us.
+            pollTimer = setInterval(async () => {
+                if (closed) return;
+                if (!(await checkPortListening())) markClosed();
+            }, 5000);
+        });
+
+        return emitter;
     }
 
     /**

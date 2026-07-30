@@ -37,7 +37,8 @@ export abstract class Backend {
      * Connect to or start a vLLM job.
      * @param job — Job name
      * @param localPort — Local port for the SSH tunnel
-     * @returns A closeable event emitter representing the SSH tunnel
+     * @returns A {@link CloseableEventEmitter} — poll `isAlive()` or listen
+     *   for `'close'`, and call `close()` to tear the tunnel down.
      */
     abstract connect(
         job: string,

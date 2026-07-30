@@ -72,6 +72,11 @@ export abstract class RemoteOps {
 
     /**
      * Spawn a persistent forward SSH tunnel (localPort → remoteHost:remotePort).
+     *
+     * Tunnel-specific mechanics (registration, liveness checks, teardown) are
+     * entirely internal to the implementation — callers only see
+     * {@link CloseableEventEmitter}'s isAlive()/close()/event surface.
+     *
      * @param localPort - Port to listen on locally
      * @param remoteHost - Remote host (typically a compute node)
      * @param remotePort - Remote port (e.g. vLLM server port)

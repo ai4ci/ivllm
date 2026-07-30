@@ -81,23 +81,32 @@ export type RunRemoteResult = {
 };
 
 /**
- * An {@link EventEmitter} that can be forcefully terminated.
+ * An {@link EventEmitter} representing a long-running client-side resource
+ * (SSH tunnel, log tailer, etc.) that can be polled for liveness and asked
+ * to shut down.
  *
- * Used to represent long-running child processes (SSH tunnels, srun commands)
- * that may need to be killed during shutdown. Extends Node's `EventEmitter`
- * and adds a `kill()` method for process termination.
+ * Implementations are free to also emit `'close'` (e.g. when a poll loop
+ * detects the resource died, or once `close()` completes) — `isAlive()`/
+ * `close()` are the primitives every implementation must provide; events
+ * are an optional convenience on top.
  *
  * | Member | Description |
  * |--------|-------------|
- * | `kill()` | Terminate the underlying process, optionally with a signal |
+ * | `isAlive()` | Check whether the resource is still active |
+ * | `close()` | Request shutdown; idempotent, resolves once fully stopped |
  */
 export interface CloseableEventEmitter extends EventEmitter {
     /**
-     * Terminate the underlying process.
-     * @param signal - Optional signal to send (default `'SIGTERM'`)
-     * @returns true if the process was successfully targeted
+     * Check whether the underlying resource is still active.
+     * Safe to call repeatedly (e.g. from a polling loop).
      */
-    kill(signal?: NodeJS.Signals | number): boolean;
+    isAlive(): Promise<boolean>;
+
+    /**
+     * Request shutdown of the underlying resource. Idempotent — safe to
+     * call more than once. Resolves once the resource has fully stopped.
+     */
+    close(): Promise<void>;
 }
 
 // =================================

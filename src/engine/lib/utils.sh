@@ -806,10 +806,13 @@ tidy_up() {
     # Send kill to vLLM process if still alive
     # The srun is guaranteed to be on the same node as the monitors and manages the
     # possiblity that the vllm head node is not on the same machine as the
-    # slurm step host. This is highly unlikely but this is cleaner.
+    # slurm step host. This is highly unlikely but this is belt and braces.
     for pid in "$@"; do
         kill_pid "$pid" "srun vLLM process $pid"
     done
+
+    # Pretty sure everything is shutdown now.
+    echo "[shutdown] cancel complete"
 
     return 0
 }
@@ -883,7 +886,7 @@ monitor_startup() {
 
     while true; do
 
-        if kill -0 "$vllm_parent" > /dev/null 2>&1; then
+        if ! kill -0 "$vllm_parent" > /dev/null 2>&1; then
             echo "[startup] parent process ($vllm_parent) for job $job has exited."
             echo "[startup] startup complete: vLLM parent process exited."
             return 1
@@ -901,8 +904,8 @@ monitor_startup() {
                 # Could save cache before warmup which may help in certain
                 # circumstances if the model starts but fails warm up.
                 # however this is likely to cause cache pollution so currently disabled.
-                # echo "[startup] vLLM /health active — saving JIT cache"
-                # save_cache "$job"
+                echo "[startup] vLLM /health active — saving JIT cache"
+                save_cache "$job"
 
                 # Warmup: send a test request to trigger JIT compilation
                 local max_retries=5
@@ -912,15 +915,19 @@ monitor_startup() {
                 echo "[startup] sending warmup request..."
                 while (( attempt <= max_retries )); do
 
-                    if run_vllm_warmup "$model" "$server_port"; then break; fi
+                    if run_vllm_warmup "$model" "$server_port"; then
+                        warmup_ok=0
+                        break;
+                    fi
                     echo "[startup] WARNING: warmup attempt $attempt/$max_retries failed, retrying..."
                     (( attempt++ ))
                     sleep 10
                 done
 
                 if (( warmup_ok == 0 )); then
-                    echo "[startup] warmup complete — saving JIT cache after warmup"
-                    save_cache "$job"
+                    # echo "[startup] warmup complete — saving JIT cache after warmup"
+                    # save_cache "$job"
+                    echo "[startup] warmup complete"
                     echo "[startup] job $job startup complete."
                     update_status_running "$job"
                     echo "[startup] startup complete: vLLM is running."
