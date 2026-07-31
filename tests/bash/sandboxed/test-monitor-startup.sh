@@ -74,21 +74,25 @@ sandbox_run_test "startup_health_then_succeeds" compute '
 # (Skipped — warmup retries 5× with 10s gaps = 50s, exceeds sandbox 30s
 # timeout. The failure path is verified implicitly by exit-trap tests.)
 
-# ── Test: non-head node (SLURM_NODEID=1) returns immediately ──────────
-sandbox_run_test "startup_non_head_node" compute '
-    # Create lockfile on head node first
-    create_status_pending "nonhead-job" "model" 30 > /dev/null 2>&1
+# ── Test: monitor_startup returns once the vLLM parent process has exited ──
+# monitor_startup has no SLURM_NODEID gating of its own — in the current
+# architecture it is only ever invoked once, by the orchestrator on the
+# SLURM step host (see slurm-vllm-serve.sh), so there is no separate
+# "non-head node" scenario for it to handle. What it does need to do
+# correctly is notice promptly when its vllm_parent pid has genuinely died,
+# rather than looping forever waiting for a job that will never leave
+# "pending" — this guards the kill -0 liveness check at the top of the loop.
+sandbox_run_test "startup_returns_when_parent_exits" compute '
+    create_status_pending "orphan-job" "model" 30 > /dev/null 2>&1
 
-    # Now switch to worker node and call monitor_startup
-    export SLURM_NODEID=1
-    monitor_startup "nonhead-job" $$
+    # Short-lived stand-in for the vLLM parent pid.
+    sleep 1 &
+    FAKE_PARENT_PID=$!
+
+    monitor_startup "orphan-job" "$FAKE_PARENT_PID"
     rc=$?
-    export SLURM_NODEID=0
 
-    lockfile=$(resolve_job_status "nonhead-job")
-    # Should stay in pending — monitor_startup returns 0 without checking
-    assert_status "$lockfile" "pending" || exit 1
-    [ "$rc" -eq 0 ] || { echo "FAIL: expected exit 0, got $rc"; exit 1; }
+    [ "$rc" -eq 1 ] || { echo "FAIL: expected exit 1 once parent exited, got $rc"; exit 1; }
     exit 0
 '
 

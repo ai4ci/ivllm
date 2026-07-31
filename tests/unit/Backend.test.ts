@@ -19,20 +19,21 @@ class InMemoryBackend extends Backend {
     async bootstrap(): Promise<void> {}
     async setup(_version: string): Promise<void> {}
     async connect(_job: string, _port: number): Promise<any> {
-        return { kill: () => true };
+        return { isAlive: async () => true, close: async () => {} };
     }
     async requestCancel(_job: string, _force: boolean): Promise<void> {}
     async requestStart(
         _job: string,
         _maxTime: string,
         _monitor: boolean,
+        _batch: boolean,
         _config?: string,
     ): Promise<void> {}
     async getAllJobStatus(): Promise<LockfileV3[]> {
         return Array.from(this.lockfiles.values());
     }
     async watchLog(_job: string, _node?: string, _until?: string): Promise<any> {
-        return { kill: () => true };
+        return { isAlive: async () => true, close: async () => {} };
     }
     async fetchDiagnostics(_job: string, _localDest?: string): Promise<string> {
         return '';

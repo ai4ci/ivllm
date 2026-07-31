@@ -54,6 +54,11 @@ sandbox_run_test "common_env_missing_nvhpc_falls_through_empty" compute '
 
 sandbox_run_test "vllm_env_sources_and_sets_vars" compute "
     $_NVHPC_FIXTURE
+    # set_jit_caches is called explicitly by run_head_vllm.sh/
+    # run_worker_vllm.sh before sourcing common-env.sh/vllm-env.sh — it is
+    # not sourced automatically by either of those files. Job argument is
+    # required (utils.sh has no default).
+    set_jit_caches 'test-job'
     source /work/project/engine/lib/common-env.sh
     source /work/project/engine/lib/vllm-env.sh
 
@@ -63,8 +68,8 @@ sandbox_run_test "vllm_env_sources_and_sets_vars" compute "
     [[ \"\$VLLM_LOGGING_CONFIG_PATH\" == */vllm_logs.json ]] || { echo \"FAIL: VLLM_LOGGING_CONFIG_PATH wrong: \$VLLM_LOGGING_CONFIG_PATH\"; exit 1; }
     assert_file_exists \"\$VLLM_LOGGING_CONFIG_PATH\" || exit 1
 
-    # set_jit_caches (called at the end of vllm-env.sh) should point cache
-    # dirs at the per-job node-local scratch dir.
+    # set_jit_caches should point cache dirs at the per-job node-local
+    # scratch dir.
     [[ \"\$VLLM_CACHE_ROOT\" == /local/* ]] || { echo \"FAIL: VLLM_CACHE_ROOT not under /local: \$VLLM_CACHE_ROOT\"; exit 1; }
 "
 

@@ -84,7 +84,8 @@ class TestRemoteOps extends RemoteOps {
     runRemoteSync(_cmd: string, _env: EnvVarEntry[]): any {
         this.calls.push({ method: 'runRemoteSync', args: [_cmd, _env] });
         return Object.assign(new (require('events').EventEmitter)(), {
-            kill: () => true,
+            isAlive: async () => true,
+            close: async () => {},
         });
     }
 
@@ -94,7 +95,8 @@ class TestRemoteOps extends RemoteOps {
             args: [_port, _host, _rport],
         });
         return Object.assign(new (require('events').EventEmitter)(), {
-            kill: () => true,
+            isAlive: async () => true,
+            close: async () => {},
         });
     }
 
@@ -156,11 +158,12 @@ class TestBackend extends Backend {
         job: string,
         maxTime: string = '08:00:00',
         _monitor: boolean,
+        batch: boolean,
         _config?: string,
     ): Promise<void> {
         await this.bootstrap();
         await this.ops.runRemote(
-            `${this.remoteEngine}/ivllm-serve.sh -j "${job}" -t "${maxTime}"`,
+            `${this.remoteEngine}/ivllm-serve.sh -j "${job}" -t "${maxTime}"${batch ? ' -b' : ''}`,
             { env: this.envs, silent: false },
         );
     }
@@ -233,7 +236,7 @@ const CRED: Credentials = {
 describe('Backend — requestStart', () => {
     it('calls ivllm-serve.sh with correct args', async () => {
         const backend = new TestBackend(CRED);
-        await backend.requestStart('test-job', '04:00:00', true);
+        await backend.requestStart('test-job', '04:00:00', true, false);
 
         const ops = backend.getOps();
         const call = ops.calls.find(
@@ -244,6 +247,20 @@ describe('Backend — requestStart', () => {
         expect(call).toBeDefined();
         expect(call!.args[0]).toContain('test-job');
         expect(call!.args[0]).toContain('04:00:00');
+        expect(call!.args[0]).not.toContain('-b');
+    });
+
+    it('appends -b when batch is true', async () => {
+        const backend = new TestBackend(CRED);
+        await backend.requestStart('test-job', '04:00:00', true, true);
+
+        const ops = backend.getOps();
+        const call = ops.calls.find(
+            (c) =>
+                c.method === 'runRemote' &&
+                c.args[0]?.includes('ivllm-serve.sh'),
+        );
+        expect(call!.args[0]).toContain('-b');
     });
 });
 

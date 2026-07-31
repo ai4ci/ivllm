@@ -47,12 +47,11 @@ sandbox_run_test "create_pending_default_timeout" compute '
 
 sandbox_run_test "update_initialise_basic" compute '
     create_status_pending "init-job" "model" 30 > /dev/null 2>&1
-    update_status_initialise "init-job" 12345
+    update_status_initialise "init-job"
     lockfile=$(resolve_job_status "init-job")
 
     assert_status "$lockfile" "initialising" || exit 1
     assert_json_eq "$lockfile" ".slurmJobId" "99999" || exit 1
-    assert_json_eq "$lockfile" ".vllmPid" "12345" || exit 1
 
     hostname=$(get_job_status_setting "init-job" ".computeHostname")
     [ -n "$hostname" ] && [ "$hostname" != "null" ] || { echo "FAIL: computeHostname not set"; exit 1; }
@@ -68,7 +67,7 @@ sandbox_run_test "update_initialise_does_not_create_log" compute '
     # test incorrectly asserted the file was created by this call — see
     # design/issues.md for the convention of fixing such findings.)
     create_status_pending "log-job" "model" 30 > /dev/null 2>&1
-    update_status_initialise "log-job" 12345
+    update_status_initialise "log-job"
     logfile=$(resolve_job_log "log-job")
     assert_file_not_exists "$logfile" || exit 1
 '
@@ -76,7 +75,7 @@ sandbox_run_test "update_initialise_does_not_create_log" compute '
 sandbox_run_test "update_initialise_worker_only" compute '
     create_status_pending "worker-job" "model" 30 > /dev/null 2>&1
     export SLURM_NODEID=1
-    update_status_initialise "worker-job" 12345
+    update_status_initialise "worker-job"
     export SLURM_NODEID=0
 
     lockfile=$(resolve_job_status "worker-job")
@@ -85,7 +84,7 @@ sandbox_run_test "update_initialise_worker_only" compute '
 
 sandbox_run_test "update_running" compute '
     create_status_pending "run-job" "model" 30 > /dev/null 2>&1
-    update_status_initialise "run-job" 12345
+    update_status_initialise "run-job"
     update_status_running "run-job"
     lockfile=$(resolve_job_status "run-job")
     assert_status "$lockfile" "running" || exit 1
@@ -102,7 +101,7 @@ sandbox_run_test "update_running_worker_only" compute '
 
 sandbox_run_test "clean_shutdown" compute '
     create_status_pending "clean-job" "model" 30 > /dev/null 2>&1
-    update_status_initialise "clean-job" 12345
+    update_status_initialise "clean-job"
     update_status_running "clean-job"
     update_status_stopped "clean-job"
 
@@ -116,7 +115,7 @@ sandbox_run_test "clean_shutdown" compute '
 
 sandbox_run_test "unclean_shutdown" compute '
     create_status_pending "fail-job" "model" 30 > /dev/null 2>&1
-    update_status_initialise "fail-job" 12345
+    update_status_initialise "fail-job"
     update_status_failed "fail-job" "GPU error" 42
 
     lockfile=$(resolve_job_status "fail-job")
@@ -127,7 +126,7 @@ sandbox_run_test "unclean_shutdown" compute '
 
 sandbox_run_test "request_cancel" compute '
     create_status_pending "cancel-job" "model" 30 > /dev/null 2>&1
-    update_status_initialise "cancel-job" 12345
+    update_status_initialise "cancel-job"
     update_status_running "cancel-job"
     request_cancel "cancel-job"
 
@@ -142,21 +141,23 @@ sandbox_run_test "request_cancel_no_lockfile" compute '
     fi
 '
 
-sandbox_run_test "request_cancel_from_worker" compute '
-    create_status_pending "worker-cancel" "model" 30 > /dev/null 2>&1
-    export SLURM_NODEID=1
-    request_cancel "worker-cancel"
-    export SLURM_NODEID=0
+sandbox_run_test "request_cancel_pending_job" compute '
+    create_status_pending "pending-cancel" "model" 30 > /dev/null 2>&1
+    request_cancel "pending-cancel"
 
-    lockfile=$(resolve_job_status "worker-cancel")
-    assert_status "$lockfile" "cancel" || { echo "FAIL: cancel should work from any node"; exit 1; }
+    # A still-pending job has no monitor running yet to notice a "cancel"
+    # flag, so request_cancel tears it down immediately via tidy_up instead
+    # of writing "cancel" — see the is_status "pending" branch in
+    # request_cancel() in utils.sh.
+    lockfile=$(resolve_job_status "pending-cancel")
+    assert_status "$lockfile" "stopped" || { echo "FAIL: pending-job cancel should tear down via tidy_up"; exit 1; }
 '
 
 sandbox_run_test "is_status" compute '
     create_status_pending "status-job" "model" 30 > /dev/null 2>&1
     is_status "status-job" "pending" || { echo "FAIL: should be pending"; exit 1; }
 
-    update_status_initialise "status-job" 12345
+    update_status_initialise "status-job"
     is_status "status-job" "initialising" || { echo "FAIL: should be initialising"; exit 1; }
 
     update_status_running "status-job"
@@ -205,7 +206,7 @@ sandbox_run_test "full_lifecycle" compute '
     create_status_pending "lifecycle-job" "lifecycle-model" 60 > /dev/null 2>&1
     is_status "lifecycle-job" "pending" || { echo "FAIL: not pending"; exit 1; }
 
-    update_status_initialise "lifecycle-job" 54321
+    update_status_initialise "lifecycle-job"
     is_status "lifecycle-job" "initialising" || { echo "FAIL: not initialising"; exit 1; }
 
     update_status_running "lifecycle-job"
@@ -223,7 +224,7 @@ sandbox_run_test "full_lifecycle" compute '
 
 sandbox_run_test "lifecycle_cancel" compute '
     create_status_pending "cancel-lifecycle" "model" 30 > /dev/null 2>&1
-    update_status_initialise "cancel-lifecycle" 12345
+    update_status_initialise "cancel-lifecycle"
     update_status_running "cancel-lifecycle"
     request_cancel "cancel-lifecycle"
 
@@ -239,7 +240,7 @@ sandbox_run_test "lifecycle_cancel" compute '
 
 sandbox_run_test "lifecycle_fail_during_startup" compute '
     create_status_pending "fail-startup" "model" 30 > /dev/null 2>&1
-    update_status_initialise "fail-startup" 12345
+    update_status_initialise "fail-startup"
     update_status_failed "fail-startup" "failed to start" 1
 
     lockfile=$(resolve_job_status "fail-startup")
