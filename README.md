@@ -230,7 +230,8 @@ This submits a SLURM job on a compute node to install the NVIDIA HPC SDK 26.3 (p
 
 ### Shared Job Lifecycle
 * **Any project member can `connect` to any running job** — no session ownership.
-* **Any project member can `cancel` any job** — graceful shutdown via lockfile.
+* **Any project member can request a `cancel` on any job** — graceful shutdown via lockfile.
+* The original job owner only can force a cancel of a job
 * Lockfiles use `umask 0002` and `chmod g+w` for group-writable permissions.
 
 ---
