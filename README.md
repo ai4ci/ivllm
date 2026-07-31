@@ -24,8 +24,8 @@ http://localhost:11434/v1   ←→   ssh tunnel   ←→   vLLM on COMPUTE node
 
 ```bash
 # Clone the repository
-git clone https://github.com/ai4ci/isambard-vllm.git
-cd isambard-vllm
+git clone https://github.com/ai4ci/ivllm.git
+cd ivllm
 
 # Option A: Using Bun (Recommended)
 bun install

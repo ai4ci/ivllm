@@ -1,11 +1,11 @@
 {
-  "name": "isambard-vllm",
-  "version": "2.14.7",
+  "name": "ivllm",
+  "version": "3.0.0",
   "module": "src/index.ts",
   "type": "module",
   "private": true,
   "bin": {
-    "ivllm2": "src/index.ts"
+    "ivllm": "src/index.ts"
   },
   "scripts": {
     "start": "bun run src/index.ts",
