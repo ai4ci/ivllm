@@ -6,6 +6,7 @@ import { loadCredentials, assertConfigured, saveConfig } from './config.ts';
 import { formatJobRow, formatJobTable } from './utils.ts';
 import type { CloseableEventEmitter } from './types.ts';
 import { sleep } from 'bun';
+import { isLocalPortInUse } from './local-ops.ts';
 
 // Assign globally across Node.js/Browser using the universal globalThis object
 const { version } = await import('../package.json');
@@ -138,12 +139,9 @@ async function cmdCancel(
 
     // 1. Global Intercept Cleanup Handler
     const cleanupAndExit = async () => {
-        console.log(
-            '\n\n[Ctrl+C] Cancelling connection routine. Cleaning up local resources...',
-        );
+        console.log('\n\n[Ctrl+C] close cancel monitor...');
 
         if (logWatcher) {
-            console.log('--> Stopping background log tailing...');
             await logWatcher.close();
         }
         process.exit(0);
@@ -159,7 +157,7 @@ async function cmdCancel(
         '[shutdown] cancel complete',
     );
 
-    while (logWatcher.isAlive()) {
+    while (await logWatcher.isAlive()) {
         await sleep(1000);
     }
 }
@@ -258,6 +256,12 @@ async function cmdConnect(
     const backend = getBackend(config);
     const localPort = parseInt(options.localPort);
 
+    if (await isLocalPortInUse(localPort)) {
+        console.log(`port ${localPort} is in use`);
+        console.log(`try: fuser -k ${localPort}/tcp`);
+        process.exit(1);
+    }
+
     // Track active background processes for the global Ctrl+C cleanup anchor
     let logWatcher: CloseableEventEmitter | null = null;
     let tunnel: CloseableEventEmitter | null = null;
@@ -326,9 +330,9 @@ async function cmdConnect(
 
         // 4. Poll until the status switches cleanly to 'running'
         let pollIntervalMs = 2000;
-        const maxPollIntervalMs = 10000;
-        const timeoutThresholdMs = 15 * 60 * 1000; // 15-minute absolute ceiling
-        const startTime = Date.now();
+        // const maxPollIntervalMs = 10000;
+        // const timeoutThresholdMs = 15 * 60 * 1000; // 15-minute absolute ceiling
+        // const startTime = Date.now();
 
         console.log(
             `Polling status file for '${jobName}' to enter running state...`,
@@ -351,17 +355,17 @@ async function cmdConnect(
                 );
             }
 
-            if (Date.now() - startTime > timeoutThresholdMs) {
-                throw new Error(
-                    `Timeout: Job failed to enter running state within 15 minutes.`,
-                );
-            }
+            // if (Date.now() - startTime > timeoutThresholdMs) {
+            //     throw new Error(
+            //         `Timeout: Job failed to enter running state within 15 minutes.`,
+            //     );
+            // }
 
             process.stdout.write(
                 `\rCurrent state: [${status}]... polling next in ${pollIntervalMs / 1000}s`,
             );
             await new Promise((res) => setTimeout(res, pollIntervalMs));
-            pollIntervalMs = Math.min(pollIntervalMs + 1000, maxPollIntervalMs);
+            // pollIntervalMs = Math.min(pollIntervalMs + 1000, maxPollIntervalMs);
         }
         process.stdout.write('\n');
 
@@ -373,7 +377,7 @@ async function cmdConnect(
 
         // 6. Establish and lock the SSH Tunnel
         console.log(
-            `SSH port forwarding tunnel - OpenAI api: http://localhost:${localPort}/v1 ...`,
+            `SSH tunnel connected - OpenAI api: http://localhost:${localPort}/v1 ...`,
         );
         tunnel = await backend.connect(jobName, localPort);
         console.log(`Tunnel will stay open until you press Ctrl-C ...`);
