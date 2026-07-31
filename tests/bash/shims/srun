@@ -1,0 +1,55 @@
+#!/bin/bash
+# Mock srun. Two modes, controlled by MOCK_SRUN_MODE:
+#
+#   log-only (default) — records the call and returns MOCK_SRUN_EXIT
+#                         (default 0) without executing anything. Use this
+#                         for LOGIN-node tests (ivllm-setup.sh,
+#                         ivllm-get-model.sh) where we deliberately do not
+#                         want to run the heavy installation scripts srun
+#                         would otherwise submit.
+#
+#   exec               — finds the wrapped command (everything after srun's
+#                         own flags — every call site in this codebase uses
+#                         '--flag=value' form, so the first argument that
+#                         does not start with '-' is unambiguously the start
+#                         of the wrapped command) and actually runs it in
+#                         the background, forwarding TERM/INT/USR1/USR2 to
+#                         it and waiting. Use this for COMPUTE-node tests
+#                         (slurm-vllm-serve.sh, run_head_vllm.sh,
+#                         run_worker_vllm.sh) where srun is simply launching
+#                         a task step on already-allocated resources.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
+
+shim_log srun "$*"
+
+mode="${MOCK_SRUN_MODE:-log-only}"
+
+if [[ "$mode" != "exec" ]]; then
+    exit "${MOCK_SRUN_EXIT:-0}"
+fi
+
+args=("$@")
+cmd=()
+found=0
+for a in "${args[@]}"; do
+    if [[ $found -eq 0 && "$a" == -* ]]; then
+        continue
+    fi
+    found=1
+    cmd+=("$a")
+done
+
+if [[ ${#cmd[@]} -eq 0 ]]; then
+    echo "[mock srun] no wrapped command found in: $*" >&2
+    exit 1
+fi
+
+"${cmd[@]}" &
+child=$!
+
+trap 'kill -TERM '"$child"' 2>/dev/null' TERM INT
+trap 'kill -USR1 '"$child"' 2>/dev/null' USR1
+trap 'kill -USR2 '"$child"' 2>/dev/null' USR2
+
+wait "$child"
+exit $?

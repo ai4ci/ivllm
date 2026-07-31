@@ -1,0 +1,23 @@
+metadata:
+    target: Isambard-AI GH200
+    created-by: Rob
+    version: 0.1.0
+    lifecycle: experimental
+min-vllm-version: "0.18.0"
+idle-timeout: 60
+
+gpu-memory-utilization: 0.95
+max-model-len: 262144
+max_num_batched_tokens: 16384
+max_num_seqs: 128
+
+model: mistralai/Mistral-Medium-3.5-128B
+tokenizer_mode: mistral
+config_format: mistral
+load_format: mistral
+tensor-parallel-size: 4
+enable-auto-tool-choice: true
+tool-call-parser: mistral
+reasoning-parser: mistral
+
+speculative-config: '{"model":"mistralai/Mistral-Medium-3.5-128B-EAGLE","num_speculative_tokens":3,"method":"eagle","max_model_len":"65536"}'

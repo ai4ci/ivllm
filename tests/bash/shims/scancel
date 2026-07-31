@@ -1,0 +1,7 @@
+#!/bin/bash
+# Mock scancel — logs the request and no-ops (or fails, if configured).
+# Configure via: MOCK_SCANCEL_EXIT (default 0)
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
+
+shim_log scancel "$*"
+exit "${MOCK_SCANCEL_EXIT:-0}"

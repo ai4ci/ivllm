@@ -1,0 +1,58 @@
+metadata:
+    target: Isambard-AI GH200
+    created-by: Rob
+    version: 0.1.0
+    lifecycle: experimental
+min-vllm-version: "0.22.0"
+idle-timeout: 60
+
+# NVIDIA Nemotron-3-Ultra-550B-A12B-FP8-block on Isambard AI
+
+# alternative more accurate
+# model: RedHatAI/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8-block
+# moe-backend: trtllm
+
+model: RedHatAI/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8-dynamic
+tensor-parallel-size: 4
+data-parallel-size: 2
+enable-expert-parallel: true
+
+quantization: fp8
+
+max-model-len: 1048576
+gpu-memory-utilization: 0.92
+kv-cache-dtype: fp8
+max-num-seqs: 16
+max-num-batched-tokens: 8192
+
+enable-auto-tool-choice: true
+tool-call-parser: qwen3_coder
+
+reasoning-parser: nemotron_v3
+
+enable-prefix-caching: true
+
+enable-chunked-prefill: true
+
+# Mixture of experts models need to be forced to use triton
+# gdn-prefill-backend: "triton"
+# moe-backend: triton             # Forces vLLM to use pre-compiled Triton MoE kernels
+# attention-config: '{"backend":"TRITON_ATTN"}'
+# enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
+
+# suggested on the huggingface card (but not vllm recipes)
+async-scheduling: true
+trust-remote-code: true
+
+# https://huggingface.co/RedHatAI/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8-block
+# mamba-backend: triton
+mamba-backend: flashinfer
+mamba-ssm-cache-dtype: float16
+enable-mamba-cache-stochastic-rounding: true
+mamba-cache-philox-rounds: 5
+
+speculative-config: '{"method": "nemotron_h_mtp", "num_speculative_tokens": 5}'
+model-loader-extra-config: '{"enable_multithread_load": true, "num_threads": 96}'
+
+compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}, "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32, 64]}'
+

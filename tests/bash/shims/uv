@@ -1,0 +1,60 @@
+#!/bin/bash
+# Mock uv. Supports the invocations this codebase uses:
+#   uv venv <dir> --python 3.12   — creates a fake venv (bin/activate, bin/pip)
+#   uv pip install ...            — no-op success/failure
+#   uv pip list --format=json     — prints a configurable JSON package list
+#   uv pip show <pkg>              — exit 0 if "installed", 1 otherwise
+#
+# Configure via:
+#   MOCK_UV_PIP_INSTALL_EXIT   exit code for `uv pip install` (default: 0)
+#   MOCK_UV_PIP_LIST_JSON       JSON to print for `uv pip list` (default: [])
+#   MOCK_UV_PIP_SHOW_PRESENT    space-separated package names considered
+#                                already installed (default: none)
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
+
+shim_log uv "$*"
+
+sub="${1:-}"
+
+case "$sub" in
+    venv)
+        dir="${2:-}"
+        mkdir -p "$dir/bin"
+        cat > "$dir/bin/activate" <<'ACT'
+# mock venv activate — no-op, just marks the venv as "active" for tests.
+export MOCK_VENV_ACTIVE=1
+ACT
+        cat > "$dir/bin/pip" <<'PIPSH'
+#!/bin/bash
+echo "[mock pip] $*"
+PIPSH
+        chmod +x "$dir/bin/pip"
+        exit 0
+        ;;
+    pip)
+        action="${2:-}"
+        case "$action" in
+            install)
+                exit "${MOCK_UV_PIP_INSTALL_EXIT:-0}"
+                ;;
+            list)
+                echo "${MOCK_UV_PIP_LIST_JSON:-[]}"
+                exit 0
+                ;;
+            show)
+                pkg="${3:-}"
+                present=" ${MOCK_UV_PIP_SHOW_PRESENT:-} "
+                [[ "$present" == *" $pkg "* ]] && exit 0
+                exit 1
+                ;;
+            *)
+                echo "[mock uv pip] unsupported action: $action" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    *)
+        echo "[mock uv] unsupported subcommand: $sub" >&2
+        exit 1
+        ;;
+esac

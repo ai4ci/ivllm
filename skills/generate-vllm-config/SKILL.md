@@ -15,6 +15,39 @@ Generates a ready-to-use `vllm.yaml` config file for running a HuggingFace model
 
 > Read this first. These are the decisions that cause the most problems when done wrong.
 
+### Quantization
+
+FP8 is King on Isambard-AI: The absolute fastest way to run quantized models on a GH200 is FP8 W8A8 (8-bit weights, 8-bit activations). This precision format triggers the GH200's native Hopper Transformer Engine tensor cores, achieving roughly double the tokens-per-second compared to running smaller quantisations.
+
+If you are picking out checkpoints to run on Isambard-AI, look for models compressed using LLM Compressor into FP8 format (often labeled as neuralmagic or vllm-compatible-fp8 on Hugging Face) for maximum scaling performance.
+
+NVFP4 is not supported on the GH200. The NVIDIA GH200 Grace Hopper Superchip is based on the Hopper architecture (Compute Capability 9.0). Hopper natively supports standard FP16, BF16, and FP8 (E4M3/E5M2) precisions, but it lacks the specialized execution units required for 4-bit floating-point data.
+
+For Maximum VRAM Savings (4-Bit): GPTQ INT4 or AWQ INT4. If you must shrink a model down to 4-bit to fit into memory, use standard integer-based quantization formats like AWQ or GPTQ. vLLM handles these formats smoothly on Hopper by mapping them to optimized Machete or Marlin GPU inference kernels. This is only worth doing where a model has about 400B parameters and would be too large for one node unquantised.
+
+
+```
+                     Is your target model > 70B parameters?
+                                       │
+                      ┌────────────────┴────────────────┐
+                      ▼ YES                             ▼ NO
+        Can it fit into 1 Node at FP8?         Run on a SINGLE NODE
+          (Available VRAM ~380GB total)         with TP=4 or lower.
+                      │                        Maximum performance.
+             ┌────────┴────────┐
+             ▼ YES             ▼ NO
+     Use FP8 Quantization.     Can it fit into 1 Node at AWQ-INT4?
+     Keep it on ONE node.      (e.g., MiniMax-M3 ~258GB Model Footprint)
+     Set TP=4. Max speed.                      │
+                                      ┌────────┴────────┐
+                                      ▼ YES             ▼ NO
+                              Use AWQ-INT4 Quantization. Must scale to MULTI-NODE.
+                              Keep it on ONE node.       (e.g., GLM-5.2 FP8)
+                              Set TP=4. Avoids network   Set TP=4 (within node)
+                              packet latency penalty.    & PP across nodes via
+                                                         optimized Slingshot fabric.
+```
+
 ### Parallelism (the #1 most common mistake)
 
 | GPUs needed | Default `tensor-parallel-size` | Notes |
@@ -46,7 +79,21 @@ Generates a ready-to-use `vllm.yaml` config file for running a HuggingFace model
 
 ### CPU offload threshold
 
-If `params_B × 2 > 96 GB` and you want a single-node job, suggest `cpu-offload-gb`. Example: Llama-3-70B at 140 GB vs 96 GB GPU.
+The OffloadingConnector extends the prefix cache by offloading completed KV blocks to slower but larger tiers (CPU host memory, plus optional secondary tiers) as they are produced. Hits in the offload tiers are promoted back to GPU on demand. Transfers between GPU and CPU use DMA (cudaMemcpyAsync) and run asynchronously alongside model computation, so offloading adds minimal CPU- and GPU-core overhead.
+
+```
+vllm serve <model> \
+  --kv-transfer-config '{
+    "kv_connector": "OffloadingConnector",
+    "kv_role": "kv_both",
+    "kv_connector_extra_config": {
+      "block_size": 64,
+      "cpu_bytes_to_use": 1000000000
+    }
+  }'
+```
+
+cpu_bytes_to_use: a bigger CPU tier means fewer trips to slower secondary tiers and a higher hit rate. The value is total across all workers, not per-worker. Leave headroom for the rest of the host workload. For single-tier (CPU-only) setups, set cpu_bytes_to_use larger than the aggregate GPU KV cache. Because offloading is immediate, a smaller CPU tier just mirrors what the GPU already holds and adds no hit rate.
 
 ---
 

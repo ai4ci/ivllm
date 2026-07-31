@@ -1,0 +1,37 @@
+metadata:
+    target: Isambard-AI GH200
+    created-by: Rob
+    version: 0.1.0
+    lifecycle: experimental
+min-vllm-version: "0.25.0"
+idle-timeout: 60
+
+# This requires a specific
+# pip install -U uv
+#
+# VLLM_PRECOMPILED_WHEEL_LOCATION="https://github.com/vllm-project/vllm/releases/download/v0.22.0/vllm-0.22.0%2Bcu129-cp38-abi3-manylinux_2_28_x86_64.whl" \
+# VLLM_USE_PRECOMPILED=1 \
+# uv pip install --reinstall-package vllm --torch-backend=cu129 \
+#   "git+https://github.com/UpstageAI/vllm.git@v0.22.0-solar-open2"
+# Its possible plugin mechanism could solve this.
+# The fork has 3 new python files which could maybe be distributed as plugins.
+
+model: upstage/Solar-Open2-250B
+kv-cache-dtype: fp8
+gpu-memory-utilization: 0.95
+max-num-seqs: 512
+max-model-len: 1048576
+max-num-batched-tokens: 16384
+enable-chunked-prefill: true
+
+tensor-parallel-size: 4
+data-parallel-size: 2
+enable-expert-parallel: true
+# moe-backend: triton
+moe-backend: deep_gemm
+all2all-backend: deepep_low_latency
+default-chat-template-kwargs: '{"think_render_option":"preserved"}'
+reasoning-parser: solar_open2
+tool-call-parser: solar_open2
+enable-auto-tool-choice: true
+logits-processors: vllm.v1.sample.logits_processor.solar_open2:SolarOpen2TemplateLogitsProcessor

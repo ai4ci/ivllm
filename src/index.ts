@@ -1,74 +1,421 @@
 #!/usr/bin/env bun
-import { cmdSetup } from './commands/setup.ts';
-import { cmdStart } from './commands/start.ts';
-import { cmdStatus } from './commands/status.ts';
-import { cmdStop } from './commands/stop.ts';
-import { cmdList } from './commands/list.ts';
-import { cmdInteractive } from './commands/interactive.ts';
-import { cmdAgent } from './commands/agent.ts';
-import { cmdConfig } from './commands/config.ts';
+import { program } from 'commander';
+
+import { getBackend } from './backends/backend-factory.ts';
+import { loadCredentials, assertConfigured, saveConfig } from './config.ts';
+import { formatJobRow, formatJobTable } from './utils.ts';
+import type { CloseableEventEmitter } from './types.ts';
+import { sleep } from 'bun';
+import { isLocalPortInUse } from './local-ops.ts';
 
 // Assign globally across Node.js/Browser using the universal globalThis object
 const { version } = await import('../package.json');
 (globalThis as any).__VERSION__ = version;
 
-const [, , command, ...args] = process.argv;
+/**
+ * CLI entry point — registers all commands with Commander and parses argv.
+ *
+ * Commands: `setup`, `cancel`, `config`, `connect`, `status`.
+ */
+async function main() {
+    program.name('ivllm').version(version).description(`run llms on HPCs`);
 
-const USAGE = `
-Usage: ivllm <command> [options]
+    program
+        .command('setup')
+        .description('Install vLLM <version> on the HPC (one-off)')
+        .argument('<version>', 'the vLLM version to install (e.g. 0.19.1)')
+        .option(
+            '--force',
+            'Force reinstallation of the vLLM version even if it exists',
+            false,
+        )
+        .action(cmdSetup);
 
-Commands:
-  setup <version>         Install vLLM <version> on the HPC (one-off, e.g. ivllm setup 0.19.1)
-  start <job>             Start an inference session and monitor it
-  interactive <job>       Start an interactive inference session (bound to terminal)
-  list                    List stored vLLM job configs
-  status [job]            Show status of a job (or all jobs)
-  stop <job>              Stop a job and clean up (recovery)
-  config                  Show or set configuration
-  agent                   Launch AI assistant connected to local vLLM server (interactive menu)
+    program
+        .command('cancel')
+        .description(
+            `Cancel a running vLLM inference job.
 
-Options:
-  --version, -v           Show version
+Graceful cancel (default):
+Writes "cancel" to the job's lockfile. The compute-side monitor detects the
+request and shuts down vLLM cleanly, preserving logs and diagnostics.
 
-Run 'ivllm <command> --help' for command-specific options.
+Force cancel (--force):
+Runs scancel on the SLURM job directly and updates the lockfile. Use this
+when graceful shutdown fails or the monitor is unresponsive.`,
+        )
+        .argument(
+            '<jobName>',
+            'the short name of the job, e.g. qwen36, from `ivllm status`',
+        )
+        .option(
+            '--force',
+            'Use slurm scancel directly instead of graceful cancel',
+            false,
+        )
+        .action(cmdCancel);
 
-For command-specific help, run:
-  ivllm start --help      Start options (including --no-launch)
-  ivllm setup --help      Setup options
-  ivllm agent --help      Agent options (including --port)
-  ivllm config --help     Config options
-`.trim();
+    program
+        .command('config')
+        .description('configure user credentials for isambard')
+        .option(
+            '--login-host <host>',
+            'SSH login node (e.g. XXXX.aip2.isambard)',
+        )
+        .option('--username <user>', 'HPC username (e.g. YYYY.XXXX)')
+        .option('--project-dir <path>', 'HPC project dir (e.g. /projects/XXXX)')
+        .option('--hf-token <token>', 'HuggingFace token for gated models')
+        .action(cmdConfig);
 
-switch (command) {
-  case '--version':
-  case '-v':
-    console.log(`ivllm ${__VERSION__}`);
-    process.exit(0);
-  case 'setup':
-    await cmdSetup(args);
-    break;
-  case 'start':
-    await cmdStart(args);
-    break;
-  case 'status':
-    await cmdStatus(args);
-    break;
-  case 'stop':
-    await cmdStop(args);
-    break;
-  case 'interactive':
-    await cmdInteractive(args);
-    break;
-  case 'list':
-    await cmdList(args);
-    break;
-  case 'config':
-    await cmdConfig(args);
-    break;
-  case 'agent':
-    await cmdAgent(args);
-    break;
-  default:
-    console.log(USAGE);
-    process.exit(command ? 1 : 0);
+    program
+        .command('connect')
+        .description(
+            `Start or connect to a vLLM inference session.
+
+If the job is already running, establishes an SSH tunnel.
+If the job is stopped or failed, restarts it.
+If the job doesn't exist, creates it and starts it.`,
+        )
+        .argument(
+            '<jobName>',
+            'the short name of the job, e.g. qwen36, from `ivllm status`',
+        )
+        .option(
+            '--config <configFile>',
+            'vLLM config YAML (required for first use)',
+        )
+        .option('--local-port [port]', 'Local port for API', '11434')
+        .option(
+            '--batch',
+            'Submit to standard partition instead of interactive',
+            false,
+        )
+        .option(
+            '--time <duration>',
+            'SLURM time limit as <hh:mm:ss>',
+            '08:00:00',
+        )
+        .action(cmdConnect);
+
+    program
+        .command('status')
+        .description('Show the status of llm jobs on the HPC')
+        .argument(
+            '[jobName]',
+            'show status of specific job (if omitted, show all jobs)',
+        )
+        .action(cmdStatus);
+
+    program
+        .command('diagnostics')
+        .description('Download diagnostics for a failed or crashed job')
+        .argument('<jobName>', 'name of the job')
+        .option('--out <path>', 'local destination directory')
+        .action(cmdDiagnostics);
+
+    await program.parseAsync(process.argv);
 }
+
+/**
+ * Cancel command handler.
+ *
+ * Loads credentials, creates the backend, and delegates to
+ * {@link Backend.requestCancel} for graceful or forced cancellation.
+ * @param jobName — Job name to cancel
+ * @param options — `{ force: boolean }` — force kill via scancel
+ * @param options.force
+ */
+async function cmdCancel(
+    jobName: string,
+    options: { force: boolean },
+): Promise<void> {
+    // Load and validate credentials
+    const config = loadCredentials();
+    let logWatcher: CloseableEventEmitter | null = null;
+
+    assertConfigured(config);
+    const backend = getBackend(config);
+    await backend.requestCancel(jobName, options.force);
+
+    // 1. Global Intercept Cleanup Handler
+    const cleanupAndExit = async () => {
+        console.log('\n\n[Ctrl+C] close cancel monitor...');
+
+        if (logWatcher) {
+            await logWatcher.close();
+        }
+        process.exit(0);
+    };
+
+    // // Register intercept vectors immediately before doing any heavy operations
+    process.once('SIGINT', cleanupAndExit);
+    process.once('SIGTERM', cleanupAndExit);
+
+    logWatcher = await backend.watchLog(
+        jobName,
+        '0',
+        '[shutdown] cancel complete',
+    );
+
+    while (await logWatcher.isAlive()) {
+        await sleep(1000);
+    }
+}
+
+/**
+ * Config command handler.
+ *
+ * Loads current credentials, applies any provided options, and saves.
+ * @param options — Optional credential fields to update:
+ *   `loginHost`, `username`, `projectDir`, `hfToken`
+ * @param options.loginHost
+ * @param options.username
+ * @param options.projectDir
+ * @param options.hfToken
+ */
+async function cmdConfig(options: {
+    loginHost?: string;
+    username?: string;
+    projectDir?: string;
+    hfToken?: string;
+}): Promise<void> {
+    const config = loadCredentials();
+    if (options.loginHost) config.loginHost = options.loginHost;
+    if (options.username) config.username = options.username;
+    if (options.projectDir) config.projectDir = options.projectDir;
+    if (options.hfToken) config.hfToken = options.hfToken;
+    saveConfig(config);
+    // TODO: Test configuration with checkSSH before saving
+    console.log('Configuration saved.');
+}
+
+/**
+ * Setup command handler.
+ *
+ * Loads credentials, creates the backend, and delegates to
+ * {@link Backend.setup} to install vLLM on the HPC.
+ * @param vllmVersion — Version string (e.g. `'0.19.1'`)
+ * @param options — `{ force: boolean }` — force reinstall
+ * @param options.force
+ */
+async function cmdSetup(
+    vllmVersion: string,
+    options: { force: boolean },
+): Promise<void> {
+    const config = loadCredentials();
+    assertConfigured(config);
+    const backend = getBackend(config);
+    await backend.setup(vllmVersion, options.force);
+}
+
+/**
+ * Status command handler.
+ *
+ * Shows lockfile status for a specific job or all jobs.
+ * @param jobName — Optional job name; if omitted, lists all jobs
+ */
+async function cmdStatus(jobName?: string) {
+    const config = loadCredentials();
+    assertConfigured(config);
+    const backend = getBackend(config);
+    if (jobName) {
+        // TODO: better formatting of a single job.
+        console.log(formatJobRow(await backend.getJobStatus(jobName)));
+    } else {
+        console.log(formatJobTable(await backend.getAllJobStatus()));
+    }
+}
+
+/**
+ * Connect command handler.
+ *
+ * If the job is running, establishes an SSH tunnel.
+ * If the job is stopped/failed, starts it.
+ * If the job is starting up, tails logs until running.
+ * @param jobName — Job name
+ * @param options — `{ port, timeLimit, configFile }`
+ * @param options.localPort
+ * @param options.time
+ * @param options.config
+ * @param options.batch
+ */
+async function cmdConnect(
+    jobName: string,
+    options: {
+        localPort: string;
+        time: string;
+        config?: string;
+        batch: boolean;
+    },
+): Promise<void> {
+    // TODO: rething the user experience here. Maybe better to
+    // have a specific start command and defer to it if the job
+    // is not already running, rather than try and start it.
+    const config = loadCredentials();
+    assertConfigured(config);
+    const backend = getBackend(config);
+    const localPort = parseInt(options.localPort);
+
+    if (await isLocalPortInUse(localPort)) {
+        console.log(`port ${localPort} is in use`);
+        console.log(`try: fuser -k ${localPort}/tcp`);
+        process.exit(1);
+    }
+
+    // Track active background processes for the global Ctrl+C cleanup anchor
+    let logWatcher: CloseableEventEmitter | null = null;
+    let tunnel: CloseableEventEmitter | null = null;
+
+    // 1. Global Intercept Cleanup Handler
+    const cleanupAndExit = async () => {
+        console.log(
+            '\n\n[Ctrl+C] Cancelling connection routine. Cleaning up local resources...',
+        );
+
+        if (logWatcher) {
+            console.log('--> Stopping background log tailing...');
+            await logWatcher.close();
+        }
+        if (tunnel) {
+            console.log('--> Disconnecting active SSH tunnel...');
+            await tunnel.close();
+        }
+        process.exit(0);
+    };
+
+    // // Register intercept vectors immediately before doing any heavy operations
+    process.once('SIGINT', cleanupAndExit);
+    process.once('SIGTERM', cleanupAndExit);
+
+    try {
+        if (await backend.isStartable(jobName)) {
+            console.log(
+                `Job '${jobName}' is not active. Dispatching Slurm start allocation...`,
+            );
+            await backend.requestStart(
+                jobName,
+                options.time,
+                true,
+                options.batch,
+                options.config,
+            );
+            // Refresh to grab the updated transitional state
+        }
+
+        // 3. Conditional Background Log Tailing Setup
+        if (await backend.isStarting(jobName)) {
+            console.log(
+                `Job '${jobName}' is starting. Attaching background log watcher...`,
+            );
+
+            // Spawn the log stream. Because we do not 'await' its string completion natively,
+            // it runs concurrently in the background while the polling loop executes below.
+            logWatcher = await backend.watchLog(
+                jobName,
+                '0',
+                '[startup] startup complete',
+            );
+
+            logWatcher.on('error', (err) => {
+                console.error(`\n[Log Error]: ${err.message}`);
+            });
+
+            logWatcher.on('close', () => {
+                console.log(
+                    '\n--> Log sentinel reached or log process stopped.',
+                );
+                logWatcher = null;
+            });
+        }
+
+        // 4. Poll until the status switches cleanly to 'running'
+        let pollIntervalMs = 2000;
+        // const maxPollIntervalMs = 10000;
+        // const timeoutThresholdMs = 15 * 60 * 1000; // 15-minute absolute ceiling
+        // const startTime = Date.now();
+
+        console.log(
+            `Polling status file for '${jobName}' to enter running state...`,
+        );
+
+        while (true) {
+            const lockfile = await backend
+                .getJobStatus(jobName)
+                .catch(() => null);
+            const status = lockfile?.status || 'unknown';
+
+            if (status === 'running') {
+                console.log(`\n✓ Job '${jobName}' is verified running.`);
+                break;
+            }
+
+            if (status === 'failed' || status === 'stopped') {
+                throw new Error(
+                    `Job startup aborted: The cluster reported status [${status}].`,
+                );
+            }
+
+            // if (Date.now() - startTime > timeoutThresholdMs) {
+            //     throw new Error(
+            //         `Timeout: Job failed to enter running state within 15 minutes.`,
+            //     );
+            // }
+
+            process.stdout.write(
+                `\rCurrent state: [${status}]... polling next in ${pollIntervalMs / 1000}s`,
+            );
+            await new Promise((res) => setTimeout(res, pollIntervalMs));
+            // pollIntervalMs = Math.min(pollIntervalMs + 1000, maxPollIntervalMs);
+        }
+        process.stdout.write('\n');
+
+        // 5. If the log watcher is still trailing, terminate it cleanly now that we are running
+        if (logWatcher) {
+            await logWatcher.close();
+            logWatcher = null;
+        }
+
+        // 6. Establish and lock the SSH Tunnel
+        console.log(
+            `SSH tunnel connected - OpenAI api: http://localhost:${localPort}/v1 ...`,
+        );
+        tunnel = await backend.connect(jobName, localPort);
+        console.log(`Tunnel will stay open until you press Ctrl-C ...`);
+
+        //TODO: Follow up actions after tunnel created here
+        // e.g. spawn agents, query model endpoint etc.
+
+        // Block CLI execution loop natively while the tunnel stays open
+        await new Promise<void>((resolve) => {
+            tunnel!.on('close', () => {
+                console.log('SSH forwarding tunnel disconnected.');
+                resolve();
+            });
+        });
+    } finally {
+        // Clean up listeners to prevent memory leaks if everything finished smoothly
+        process.off('SIGINT', cleanupAndExit);
+        process.off('SIGTERM', cleanupAndExit);
+    }
+}
+
+/**
+ * Diagnostics command handler.
+ *
+ * Downloads remote diagnostics for a failed or crashed job.
+ * @param jobName — Job name
+ * @param options — Command options
+ * @param options.out — Optional local destination path
+ */
+async function cmdDiagnostics(
+    jobName: string,
+    options: { out?: string },
+): Promise<void> {
+    const config = loadCredentials();
+    assertConfigured(config);
+    const backend = getBackend(config);
+    const localPath = await backend.fetchDiagnostics(jobName, options.out);
+    console.log(`✓ Diagnostics saved to: ${localPath}`);
+}
+
+main();

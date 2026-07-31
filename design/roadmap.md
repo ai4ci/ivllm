@@ -1,100 +1,422 @@
-## Future Phases (post-MVP)
+# Roadmap — isambard-vllm (ivllm) v3
 
-### MVP
-- as described in [design/mvp-requirements.md]
+This document captures the current scope of the v3 rewrite and maps out
+future directions derived from the architecture document (`architecture.md`)
+and the Architecture Decision Records (`adr.md`).
 
-### Phase F1 — MVP Open issues
-- Address github issues
+### NEXT STEPS
 
-### Phase F2 — CUDA forward compatibility via NVIDIA HPC SDK
-See ADR-011.
-- [x] Remove `venvPath` from `~/.ivllm/config.yaml`
-- [x] Remove `vllmVersion` from `~/.ivllm/config.yaml`; `ivllm setup` now takes version as positional arg; `ivllm start` discovers installed versions at runtime (see ADR-014)
-- [x] Rewrite `ivllm setup` SLURM template: download HPC SDK 26.3 to `$PROJECTDIR/ivllm/nvhpc/`, create versioned venv at `$PROJECTDIR/ivllm/<version>/`, pip-install vLLM (cu129 wheels) with `gcc-native`; `chmod g+w $PROJECTDIR/ivllm` for multi-user access (ADR-013)
-- [x] Add optional `min-vllm-version` field to per-job `vllm.yaml`; `ivllm start` discovers and selects best installed version satisfying the minimum
-- [x] Update single-node and multi-node SLURM inference templates: prepend full HPC SDK preamble (`NVHPC_ROOT`, `CUDA_HOME`, `PATH`, `CPATH`, `LD_LIBRARY_PATH`, `CC`, `CXX`, flashinfer cache symlink, `HF_HUB_OFFLINE=1`) before venv activation and vLLM/Ray invocations
-- [x] Store HuggingFace token in `~/.config/ivllm/config.json`; use in model download and setup script (ADR-007 update)
-- [x] `UV_CACHE_DIR=$LOCALDIR/uv_cache` to prevent multi-user permission conflicts (ADR-013)
-- [x] Update `ivllm start` pre-flight: discover installed versions; enforce `min-vllm-version` if set
-- [x] Dry-run verification: review generated SLURM scripts
-- [x] Single-node end-to-end test on Isambard AI (Qwen2.5-0.5B-Instruct — passing)
+* N.B. WHEN THESE ARE COMPLETED UPDATE CURRENT SCOPE SECTION:
 
-### Phase F2-alt — Singularity container support (on hold)
-Preserved as ADR-010 for future consideration (single-node clean versioning; multi-node unproven with Ray).
-- Revisit if bare-metal pip install proves fragile across vLLM updates.
-- See `design/implementation.md` Phase F2-alt for full implementation plan.
+These items tighten quality and robustness before broader features are
+added.
 
-### Phase F2.6 — AI coding assistant integration via scoder
+- [ ] **CLI handler unit tests** — `cmdConnect`, `cmdSetup`, `cmdConfig`,
+      `cmdStatus`, `cmdCancel` in `src/index.ts` have no unit tests. Only
+      the Backend contract is covered via integration tests.
+- [x] **ESLint / linting** — Configured (jsdoc + prettier + typescript-eslint). Excluded `design/` from scanning. 0 errors, ~16 warnings (JSDoc minor issues).
+- [x] **TypeScript type check** — `tsconfig.json` has `strict: true` and `noEmit`. Runs cleanly with 0 errors.
+- [ ] **Monitor idle timeout unit test** — `monitor_head` log-parsing idle
+      check works end-to-end but lacks a focused unit test for the
+      time-pattern matching logic.
+- [ ] **Version bump to v3** — Package.json still shows `v2.14.0`;
+      the binary is named `ivllm2`. Needs a coherent version strategy.
 
-When `ivllm start` reaches running state, offer to launch the user's AI coding assistant with the vLLM endpoint pre-configured.
+## Current Scope
 
-- [x] `src/assistant.ts`: utilities for assistant detection (`binaryExists`, `getAvailableAssistants`, `getScoderAvailable`), config generation (`generateOpencodeConfig`, `generateCopilotEnv`, `generateClaudeEnv`), menu building (`buildAssistantMenuOptions`), launch command generation (`getLaunchCommand`)
-- [x] `launchAssistantMenu()` in `src/commands/start.ts`: initial interactive menu loop — displays cwd, detects available assistants, offers direct/scoder launch options, configures assistant env, launches in new tmux window, loops back on exit
-- [x] Change directory option `[-1]` — prompts for path, validates existence, updates cwd for all subsequent launches
-- [x] `--no-launch` flag — suppresses auto-launch, shows config snippet only
-- [x] Exit flow: `0` pressed once shows snippet, pressed again exits cleanly
-- [x] Scoder integration: `--llm-port <port>` flag opens localhost in sandbox; env vars passed through; scoder autodetects port 11434 but port is always specified explicitly
-- [x] Fallback: if remote tmux fails, falls back to local tmux
-- [x] 56 unit tests across 5 test files (assistant.test.ts, launch-assistant.test.ts, assistant-menu.test.ts, f26-integration.test.ts, f26-menu.test.ts)
+The v3 rewrite from v2 is **functionally complete**. All core commands, the
+backend abstraction, the bash lifecycle framework, and the test harness are
+implemented and tested.
 
-### Phase F2.6b — Launcher wrapper UX and sbx support
+### 1. CLI Commands
 
-- [x] Replace the flattened assistant menu with a 3-layer flow:
-  1. target (`change directory` / `OpenCode` / `Copilot` / `Claude` / `shutdown ivllm`)
-  2. wrapper (`none` / `scoder` / `sbx` / `back`)
-  3. action (`launch now` / `show command` / `back`)
-- [x] Always render a shell-ready copy-paste command, including environment variables, for every wrapper mode
-- [x] Keep OpenCode on `OPENCODE_CONFIG_CONTENT` runtime overrides instead of writing `opencode.json`
-- [x] Add `sbx` wrapper support using `sbx exec -it -w <cwd> -e ... <sandbox> <agent>`
-- [x] Resolve sandboxes by agent + workspace, creating them with `sbx create --name <agent>-<basename>` when absent
-- [x] Treat `sbx policy allow network localhost:<port>` as a documented user prerequisite; do not mutate sandbox policy automatically
-- [x] Preserve direct launch and scoder auto-launch behaviour after command display
+Five commands, all registered via Commander.js in `src/index.ts`.
 
-### ⚠ Multi-node inference via Ray (code complete; E2E debugging in progress)
-- `resolveGpuCount` returns `{ gpuCount, nodeCount }` from `pipeline-parallel-size`
-- `renderInferenceScript` with `nodeCount > 1` generates a Ray cluster bootstrap SLURM script: `#SBATCH --nodes=N`, Ray head/worker startup via `srun bash -c`, `vllm serve --distributed-executor-backend ray`
-- `ivllm start` prints `⚠ Multi-node job: N nodes requested` when applicable
-- No manual SLURM setup required — pipeline-parallel-size in the vllm.yaml is sufficient
-- Extensive environment fixes applied for Isambard AI multi-node (see Phase F2.9 in implementation.md)
-- [x] 2-node run of Qwen3.5-397B-A17B-FP8 to confirm fully working end-to-end (Tested & Validated Successfully)
+#### `ivllm connect <job>`
 
-### Phase F2.9 — Multi-node E2E debugging
-See implementation.md Phase F2.9 for full bug list. All known bugs (JIT cache races, umask permissions, and custom all-reduce) are successfully resolved, end-to-end multi-node execution validated.
+Primary entry point. Handles all job states in a single flow:
 
-### Phase F3 — Model routing server
+| Job State | Behaviour |
+|-----------|-----------|
+| **Never run** (no lockfile) | Creates `pending` lockfile → submits via `sbatch` → tails logs → establishes SSH tunnel once healthy |
+| **Running** | Establishes SSH tunnel immediately, prints endpoint, exits |
+| **Stopped / Failed** | Restarts from the stopped state (same as never-run) |
+| **Initialising / Pending** | Tails remote logs and waits for `running` |
 
-**Status:** Design complete (see `design/phase-f3-router.md`), implementation pending.
+Options:
+- `--config <file>` — vLLM YAML config (required for first use)
+- `--local-port [port]` — Local port for the API (default `11434`)
+- `--batch` — Submit to standard non-interactive queue (default: interactive partition)
+- `--time <hh:mm:ss>` — SLURM time limit (default `08:00:00`)
 
-**Concept:** HTTP server that acts as an OpenAI API-compatible proxy, managing multiple vLLM instances on Isambard COMPUTE nodes. Designed for agent orchestration scenarios.
+#### `ivllm cancel <job> [--force]`
 
-**Architecture (MVP):**
-- Router runs on user's laptop at `http://localhost:11434`
-- Manages SLURM jobs via SSH to Isambard LOGIN
-- Agents connect to router, router proxies to vLLM backends on COMPUTE nodes
-- Future: router can run on LOGIN node (no SSH timeout)
+| Mode | Behaviour |
+|------|-----------|
+| **Graceful** (default) | Writes `cancel` to the lockfile; the compute-side monitor detects it and shuts down vLLM cleanly |
+| **Force** (`--force`) | Runs `scancel` directly on the SLURM job, then updates the lockfile |
 
-**Key features:**
-- `GET /v1/models` — OpenAI-compatible model discovery
-- `POST /v1/chat/completions` — Proxied to vLLM with lazy startup
-- Admin API: `/admin/models/*` for model lifecycle management
-- Model registry: `~/.config/ivllm/models.json`
-- Auto port assignment (11435–11534 pool)
-- Idle timeout per model (configurable, -1 = never shutdown)
-- Lazy startup: agent request triggers SLURM job submission
-- Hard cleanup: router shutdown cancels all managed SLURM jobs
+#### `ivllm status [job]`
 
-**Implementation phases:**
-- [ ] F3.1 — Project scaffold (HTTP server, config loader)
-- [ ] F3.2 — Model registry (CRUD, port pool, state tracking)
-- [ ] F3.3 — SLURM integration (reuse existing templates, SSH abstraction)
-- [ ] F3.4 — OpenAI API proxy (model listing, chat completions)
-- [ ] F3.5 — Admin API (add/remove/start/stop/logs/provider endpoints)
-- [ ] F3.6 — Lifecycle management (lazy startup, idle timeout, health checks)
-- [ ] F3.7 — CLI wrapper (`ivllm router` command)
-- [ ] F3.8 — Documentation (API reference, agent integration examples)
-- [ ] F3.9 — End-to-end testing (lazy startup, concurrent models, cleanup)
+- Without arguments: shows a table of all known jobs (status, model, port, timestamps, reason)
+- With `<job>`: shows a formatted row for that specific job
 
-**Known limitations (MVP):**
-- 12-hour SSH timeout (requires reconnection or login-node deployment)
-- No persistence (router restart loses model state)
-- Single-user (no authentication)
+#### `ivllm config [--login-host <host>] [--username <user>] [--project-dir <path>] [--hf-token <token>]`
+
+- With no arguments: displays current configuration
+- With flags: updates and persists the given fields to `~/.config/ivllm/config.json`
+
+#### `ivllm setup <version> [--force]`
+
+One-off installation of vLLM on the HPC:
+- Submits a SLURM job on a compute node
+- Installs NVIDIA HPC SDK 26.3 (CUDA 12.9 forward compatibility) and the specified vLLM version
+- Stores the venv in a shared versioned directory at `$PROJECTDIR/engine/<version>/`
+- Progress streamed to terminal; ~10–20 min on first run
+- Skipped automatically if that version is already installed
+- `--force` reinstalls even if the version exists
+
+#### `ivllm diagnostics <job> [--out <path>]`
+
+* On failure to start up the vllm config and vllm logs from the current run
+are need to be copied to /engine/diagnostics/<job>/<date-time> directory
+* This command syncs job diagnostics to a user local directory so that logs
+can be analysed by an agent on local.
+
+### 2. Backend Abstraction
+
+An abstract `Backend` class in `src/backends/Backend.ts` (227 lines) defines the
+lifecycle contract. A single concrete implementation — `IsambardBareMetalBackend` —
+implements it for the Isambard AI HPC.
+
+| Abstract method | Purpose |
+|-----------------|---------|
+| `bootstrap()` | Verify SSH, deploy engine scripts to HPC |
+| `setup(version, force)` | Install vLLM on the HPC |
+| `connect(job, port)` | Establish SSH tunnel to a running job |
+| `requestCancel(job, force)` | Graceful or forced cancellation |
+| `requestStart(job, maxTime, monitor, batch, config)` | Submit a new SLURM job |
+| `getAllJobStatus()` | List all jobs as lockfile objects |
+| `watchLog(job, node, until)` | Tail log output |
+| `getJobStatus(job)` | Get status of a single job |
+| `isRunning / isStopped / isStartable / isStarting` | Lifecycle state helpers |
+
+The `getBackend()` factory selects the implementation from a compile-time
+`backendRegistry`. Currently only `isambard` is registered.
+
+### 3. SSH Layer
+
+`SshRemoteOps` (`src/ops/SshRemoteOps.ts`, 252 lines) provides a reusable
+SSH/SCP/rsync layer with multiplexing:
+
+- **Multiplexed connections** via `ControlMaster` — first connection spawns a
+  background master; subsequent connections within 10 minutes reuse it, avoiding
+  repeated handshakes and login rate-limits
+- **`runRemote()`** — execute a login-node command and capture stdout
+- **`runRemoteSync()`** — execute a command and stream output to the terminal
+- **`copyFile()`** — SCP a single file to the login node
+- **`copyDirectory()`** — rsync a directory up or down to the login node
+- **`spawnTunnel()`** — persistent SSH port-forward: `localhost:<port>` →
+  `<computeHost>:<serverPort>`, registered on the existing multiplexed
+  `ControlMaster` via `ssh -O forward` (not a dedicated `-N -L` session — a
+  dedicated session's process lifetime isn't a reliable stand-in for the
+  tunnel's once a `ControlMaster` is involved). Liveness is polled directly
+  (local port check) and teardown uses `ssh -O cancel`, so the tunnel can be
+  closed without touching the shared master connection
+- **`checkSSH()`** — verify connectivity before any operation
+
+### 4. Bash Framework (HPC Runtime)
+
+15 standalone bash scripts deployed to the HPC by `ivllm setup`. They are
+separate from TypeScript — editable directly on the HPC without recompilation.
+
+#### Login-node wrapper scripts (`engine/ivllm-*.sh`)
+
+| Script | Purpose |
+|--------|---------|
+| `ivllm-serve.sh` | Submit a new SLURM job for a model |
+| `ivllm-cancel.sh` | Write cancel to lockfile or force scancel |
+| `ivllm-status.sh` | List all lockfiles as JSON |
+| `ivllm-setup.sh` | One-off vLLM installation |
+| `ivllm-show-log.sh` | Tail remote log files |
+| `ivllm-get-model.sh` | Query model info from a running instance |
+
+#### Shared libraries (`engine/lib/`)
+
+| Library | Purpose |
+|---------|---------|
+| `utils.sh` | Lockfile management, cache, monitors, exit traps, diagnostics — 44+ documented functions |
+| `common-env.sh` | NVHPC/NCCL/Slingshot environment setup and tuning |
+| `vllm-env.sh` | vLLM-specific environment variables |
+| `slurm-vllm-serve.sh` | SLURM job script for running vLLM |
+| `slurm-vllm-setup.sh` | SLURM job script for vLLM installation |
+| `slurm-hf-download.sh` | Model download via `srun` on interactive partition |
+| `run_head_vllm.sh` | Head node vLLM launcher |
+| `run_worker_vllm.sh` | Worker node vLLM launcher |
+| `vllm_logs.json` | vLLM logging configuration for idle timeout detection |
+
+### 5. Lockfile Protocol
+
+The `status.json` lockfile is the single source of truth for a job's lifecycle.
+It lives on the shared parallel filesystem under
+`$PROJECTDIR/engine/jobs/<job>/`.
+
+**6-state machine:**
+
+```
+pending → initialising → running → stopped | failed
+                ↑                     ↓
+                └── cancel (request) ──┘
+```
+
+**Schema:** `status`, `jobName`, `model`, `serverPort`, `user`, `requestedTime`,
+`idleTimeout`, `slurmJobId`, `computeHostname`, `startTime`, `stopTime`,
+`reason`, `exitCode`. (No per-vLLM-process PID is tracked in the lockfile —
+process lifecycle is owned by a single orchestrator process per job that
+holds every node's `srun` PID directly.)
+
+**Atomic writes:** lockfiles are created with `set -C` (fail if exists) and
+updated via write-to-tmp + `mv` (atomic rename) for safe concurrent access.
+
+**Permissions:** `umask 0002` and `chmod g+w` for group-writable multi-user access.
+
+### 6. Process Orchestration and Monitoring
+
+A single orchestrator process (a background subshell within
+`slurm-vllm-serve.sh`, running on the SLURM step host) `srun`-launches vLLM
+on the head node and each worker node, holding every node's `srun` client PID
+directly. Two monitors run alongside it, both on the step host — there is no
+separate per-worker monitor; worker nodes just run vLLM and report memory
+usage (`wait_report`) while the orchestrator centrally decides when to shut
+down and kills each node's `srun` PID to do so.
+
+| Monitor | Location | Role |
+|---------|----------|------|
+| `monitor_startup` | Step host, foreground | Blocks until vLLM is healthy (polls `/health` every 10s), saves JIT cache, sends warmup request, transitions to `running`, then detaches. Returns early if the orchestrator process has already exited. |
+| `monitor_head` | Step host, background | Runs for entire job lifetime. Checks: lockfile exists, status is `cancel` → clean shutdown, orchestrator process alive, idle timeout (incremental log-parsing, no `/health` false positives). Signals the orchestrator (`SIGUSR2`) on any shutdown condition, which runs the exit-trap (`tidy_up`) that kills every tracked `srun` PID. |
+
+**Exit traps:** All exit paths (SIGUSR1 from SLURM timeout, non-zero exit,
+`tidy_up` trap) ensure clean shutdown, diagnostics capture, and lockfile update.
+
+### 7. Shared Multi-User Architecture
+
+- **vLLM setup is per-team, not per-user.** Once any member runs `ivllm setup
+  <version>`, all team members share the same venv, NCCL build, and JIT cache.
+- **Model downloads go to a shared HuggingFace cache** at `$PROJECTDIR/engine/hf/`.
+  One download serves everyone — avoids duplicate disk space and HF API rate
+  limits (429 errors).
+- **Any project member can `connect` to or `cancel` any running job.** No
+  session ownership — lifecycle is owned by the compute node, not the CLI.
+- **JIT kernel caches** are saved as `jit-cache.tar.gz` on shared storage, so
+  warm startup is fast for any user.
+
+### 8. Example Configs
+
+16 ready-to-use `vllm.yaml` configs in `examples/` covering:
+
+| Model family | Examples |
+|--------------|----------|
+| Qwen | 2.5 (0.5B→3.6-35B), 3.5 (397B-A17B FP8, 3.5T Long Context), 3 Coder (Next Long Context) |
+| DeepSeek | V4 (Flash, Pro) |
+| Google | Gemma-4 (31B IT) |
+| Other | GPT-OSS-120B, GLM-5.2-743B, MiniMax-M2.5, Nemotron-3-Super-120B |
+
+Each specifies model, tensor parallelism, memory, dtype, and vLLM serving args.
+
+### 9. Model Recipe Generator Skill
+
+An [Agent Skill](https://agentskills.io) shipped in `skills/generate-vllm-config/`
+that lets AI coding agents (Cursor, Claude, Windsurf, etc.) generate optimised
+`vllm.yaml` configs for any HuggingFace model on Isambard hardware. Installable
+via `bunx skills ai4ci/isambard-vllm`.
+
+### 10. Test Suite
+
+| Type | Files | Assertions | Status |
+|------|-------|------------|--------|
+| Bash unit | `tests/bash/unit/` | Part of 74 | ✅ Green |
+| Bash sandboxed | `tests/bash/sandboxed/` (10 files) | Part of 74 | ✅ Green |
+| TypeScript unit | `tests/unit/` (3 files) | Part of 62 | ✅ Green |
+| TypeScript integration | `tests/integration/` (1 file) | Part of 62 | ✅ Green |
+| **Total** | **14 files** | **136** | **0 failures** |
+
+Bash tests use a bubblewrap (`bwrap`) sandbox with real `jq 1.7` and `yq 3.4.1`
+binaries and mocked SLURM/vLLM commands (`sbatch`, `srun`, `scancel`, `vllm`, etc.).
+
+### 11. Documentation
+
+| Document | Content |
+|----------|---------|
+| `design/architecture.md` | Full system architecture: layers, lockfile protocol, monitor triad, multi-backend roadmap |
+| `design/adr.md` | 15 Architecture Decision Records (ADR-101 through ADR-115) |
+| `design/coding-standards.md` | TypeScript + bash conventions |
+| `design/test-scripts.md` | Test coverage and harness details |
+| `design/README.md` | Design index and contributor guide |
+| Source JSDoc | All public functions documented (44+ bash functions, all TypeScript modules) |
+| GitHub Pages | Auto-deployed API docs from `typedoc` on `main` push |
+
+## Future Directions
+
+The v3 architecture is designed to support these evolutions without structural
+changes. Each maps to one or more ADRs.
+
+
+### Multinode disggregation strategies
+
+* Update current vllm config skill.
+* Current multinode is partly data parallel friendly in that it will allow Wide EP
+and calculates appropriate data-parallel configuration across multiple nodes
+* on multinode we have 4 slingshot x 4 NVlink x GH200
+* Need to shard experts in a way that miniminses internode traffic but in which
+shared layers don't fill up whole 96Gb free of GPU. Hybrid parallelisation with
+experts is necessary where shared layers are significant size - TP4 in node to shard
+shared layers and DP or PP between nodes. Potentially more performant is Wide EP
+where TP=1 and DP for all the nodes. Only will work for models where shared
+layers are small
+* https://docs.vllm.ai/en/stable/serving/data_parallel_deployment/
+* https://docs.vllm.ai/en/stable/serving/expert_parallel_deployment/
+* when is DP better that TP. Wide EP strategies.
+* Prefill decode disggregation maybe another route for sharding this is currently
+not supported.
+* With the UCCL-P2P and EP we should have NIXL support:
+* https://docs.vllm.ai/en/stable/features/nixl_connector_usage/
+
+### Model routing server
+
+**Architecture: "Model routing server"** section
+
+A local HTTP proxy that listens on `localhost:11434` and routes OpenAI-API
+requests to multiple inference backends (multiple Isambard jobs, local Ollama,
+etc.) based on model name.
+
+| Step | Description | Dependencies |
+|------|-------------|--------------|
+| 1. | Build a lightweight router that reads `status.json` files from all backends | Backend abstraction |
+| 2. | Auto-connect stopped models on first request (lazy startup) | `connect()` working |
+| 3. | Short idle timeouts for infrequently-used models | Idle timeout (Phase 0) |
+| 4. | Stateless router: restart rediscovers models from lockfiles | Lockfile protocol |
+
+**Rationale:** Single entry point for agent harnesses. Manages port allocation,
+multi-model concurrency, and lazy startup transparently.
+
+### Multi-backend support
+
+**ADR-110** (Backend-agnostic lockfile) · **ADR-111** (Backend interface)
+
+Add the ability to run vLLM on backends other than Isambard bare-metal —
+for example, Ollama (local), a different HPC, or container-based deployment.
+
+| Step | Description | Dependencies |
+|------|-------------|--------------|
+| 1. | Add `backend` and `backendConfig` fields to `LockfileV3` | — |
+| 2. | Extend `Credentials` to support multiple named backends | — |
+| 3. | Register additional backends in `backendRegistry` | `Backend` abstract class exists |
+| 4. | CLI: `ivllm connect <job> --backend <name>` | — |
+| 5. | Each backend implements its own runtime (bash framework, local exec, container) | — |
+
+**Rationale:** Keeps the lockfile protocol shared so a future model router can
+discover and dispatch to any backend.
+
+### Model performance benchmarking — `ivllm compare`
+
+**ADR-118** (Ephemeral diagnostic jobs for model benchmarking)
+
+Let an agent submit several candidate vLLM configs, get throughput/latency
+numbers for each, and compare them — without ever creating a persistent,
+connectable `ivllm connect`-managed job. Benchmarking is implemented
+**only** as ephemeral, disposable diagnostic jobs (this replaces, not
+complements, the earlier idea of benchmarking an already-running job).
+
+| Step | Description | Dependencies |
+|------|-------------|--------------|
+| 1. | Extract `IVLLM_ARGS`-building logic out of `run_head_vllm.sh`/`run_worker_vllm.sh` into a shared function taking `port`/`model`/`config` as plain parameters (today they read `serverPort` from the lockfile, which an ephemeral job doesn't have) | — |
+| 2. | New ephemeral job script(s): launch vLLM (head + optional workers), health-poll (no lockfile), run `vllm bench serve --dataset-name random` against `localhost:$port`, save `bench.json`, kill everything, exit | Step 1 |
+| 3. | Worker coordination for multi-node ephemeral jobs via SLURM's own job-teardown semantics (no `monitor_worker`/lockfile polling needed). | Step 2 |
+| 4. | Integrate `tidy_up` exit trap (from `utils.sh`) into the ephemeral runner to guarantee automatic failure diagnostics capture (logs + config) on crash. | Step 2 |
+| 5. | CLI: `ivllm compare <comparisonName> --submit <config1.yaml> <config2.yaml> ...` — non-blocking `sbatch` per config, writes `comparison.json` manifest (configName → slurmJobId, submittedAt, status) | Step 2 |
+| 6. | CLI: `ivllm compare <comparisonName> --analyse` — one-shot status check against the manifest, rsyncs down newly-completed configs' diagnostics, prints a status table with metrics inline; no verdict-picking | Step 5 |
+| 7. | Diagnostics stored at `$PROJECTDIR/engine/diagnostics/<comparisonName>/<configName>/{vllm.yaml,slurm.sh,vllm.log,bench.json}` | — |
+| 8. | Regular batch partition (not interactive) for `--submit` jobs — sidesteps the interactive reservation's 1-sbatch-job limit, enables true parallel submission across configs | — |
+| 9. | Default `--time` of 2 hours (large/multi-node model load + warmup can itself take 45–60+ min), overridable per comparison run | — |
+
+**Rationale:** No lockfile, no monitor triad, no SSH tunnel, no lingering
+GPU-hour risk (self-terminating by construction), trivially parallelisable
+across many configs, and sidesteps the interactive-reservation single-job
+limit entirely. Sits deliberately outside the `Backend` lifecycle contract
+defined in `design/backend-contract.md` — a one-shot benchmark run doesn't
+need any of the properties (detach/reattach, multi-user sharing, idle
+timeout) that contract exists to guarantee.
+
+### Advanced scheduling
+
+**Architecture: "Scheduling vLLM starts with SLURM"** section
+
+Expose SLURM native scheduling features: deferred start, job dependencies,
+and job arrays for batch evaluation.
+
+| Step | Description | Dependencies |
+|------|-------------|--------------|
+| 1. | `--begin <datetime>` for deferred start | — |
+| 2. | `--dependency=afterok:<job-id>` for job chaining | — |
+| 3. | `--script=eval.py` pattern: start vLLM, wait for health, run script | — |
+| 4. | Job arrays: batch start multiple models in parallel | — |
+
+### Container-based installation
+
+**ADR-114** (Dual installation path)
+
+Support pre-built Apptainer images alongside the current bare-metal path.
+Users choose via an environment variable or config flag.
+
+| Step | Description | Dependencies |
+|------|-------------|--------------|
+| 1. | Add `CONTAINER` env var to SLURM scripts — if set, use `singularity exec` | Bash framework |
+| 2. | Test container path with existing `isambard_containers` images | — |
+| 3. | Recipe database (Phase 2) can specify preferred runtime per model | — |
+| 4. | Maintain both paths through testing | — |
+
+**Trade-off:** Container path is easier to deploy (pre-built, newer CUDA 13)
+but harder to debug (inside container). Bare-metal is the default.
+
+### Maybe: Multiple models per node
+
+**ADR-113** (Each model is independent job)
+
+Run multiple vLLM instances on a single node (e.g. Qwen3.6 + Gemma4 sharing
+4 GPUs) with independent lockfiles, ports, and idle timeouts.
+
+| Step | Description | Dependencies |
+|------|-------------|--------------|
+| 1. | Add GPU affinity (`CUDA_VISIBLE_DEVICES`) to SLURM scripts | — |
+| 2. | Add `resources` block to `backendConfig` in lockfile | ADR-110 |
+| 3. | Monitor must be GPU-aware: shutdown of one model doesn't affect others | Monitor triad |
+| 4. | Integrate with router (Phase 4) for multi-model discovery | — |
+
+### Maybe: Model recipe database
+
+**ADR-115**
+
+Ship a built-in `models.yaml` with 100+ model configurations (inspired by
+`model_recipes.yaml` in `isambard_containers`). Users type `ivllm connect
+Qwen/Qwen3.6-35B-A3B-FP8` and the tool auto-configures vLLM args, parallelism,
+and environment variables — no custom YAML needed.
+
+| Step | Description | Dependencies |
+|------|-------------|--------------|
+| 1. | Design recipe schema with inheritance (`_base` configs) | — |
+| 2. | Ship `models.yaml` bundled with ivllm, installed by `ivllm setup` | — |
+| 3. | CLI: auto-resolve model ID to recipe when `--config` is omitted | — |
+| 4. | Allow local override recipes via `~/.config/ivllm/models.yaml` | — |
+
+**Rationale:** Eliminates the need for per-job config files for popular models;
+encodes hard-won tuning in shared recipes.
+
+### Concept: Plugins and patches
+
+On the original nemotron release there was a plugin specified for the reasoning
+parser. Solar open needs a specifc vllm fork to run as it includes parsers:
+https://github.com/vllm-project/vllm/compare/main...UpstageAI:vllm:v0.22.0-solar-open2
+It would be useful to be able to apply these as plugins to stock vllm at
+specific model runtime. We had a mechanism in v2 for doing this by linking
+plugins into the job directory, it might be useful to have model specific monkey
+patches.

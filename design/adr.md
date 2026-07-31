@@ -1,455 +1,862 @@
-# Architecture Decision Records — isambard-vllm
+# Architecture Decision Records — isambard-vllm v3
 
-## References
-
-* [design/references/cuda.md] - using newer CUDA versions on isambard
-* [design/references/vllm-serve-0.19.1] - vllm serve commarnd reference for v0.19.1
-* [design/references/vllm-distributed.md] - describes the process of setting up inferencing on COMPUTE node and testing via a second COMPUTE node job on Isambard. This is useful for the details of how to interactively set up and start vllm. This is what we are trying to automate.
-* [design/references/vllm-parallel.md] - describes the process of setting up vllm in parallel on general hardware.
-* [design/references/storage.md] - info about where Isambard storage is.
-
-## ADR-001: LOCAL CLI language — Node.js + bun
-
-**Status**: Accepted
-
-**Context**: The LOCAL CLI needs to manage async processes (SSH tunnel child process, heartbeat timer, stdin for user input), handle SSH subprocess execution, and potentially evolve into a lightweight API routing server.
-
-**Decision**: Implement the LOCAL CLI in Node.js using bun as the runtime and package manager.
-
-**Rationale**:
-- Bun provides fast startup, built-in TypeScript support, and a single-binary distribution — good for a CLI tool.
-- Node.js has mature primitives for managing child processes (`child_process.spawn`), async I/O, and timers, all needed for the session-owner pattern.
-- Aligns with the future routing server direction (an HTTP server is trivial to add).
-- LOGIN and COMPUTE scripts remain plain bash — no runtime dependency on the HPC side.
-
-**Consequences**: Requires bun installed on LOCAL. Not natively portable to Windows (out of MVP scope).
+This document records architectural decisions for the v3 redesign.
+Older decisions from v1-v2 are archived in `design/old/adr.md`.
 
 ---
 
-## ADR-002: Session-owner pattern for `ivllm start`
+## ADR-101: Lifecycle ownership on COMPUTE node
 
 **Status**: Accepted
 
-**Context**: The vLLM inference session has a clear lifecycle: SLURM job submission → initialisation → running → shutdown. The SSH tunnel and heartbeat must be active for the duration and cleaned up reliably on exit.
+**Context**: In v2, the LOCAL client owned the full inference lifecycle
+(session-owner pattern, ADR-002). This meant the vLLM instance was
+tightly coupled to the client's SSH session — if the client disconnected,
+the job was cancelled. This prevented detach/reattach, multi-user access,
+and made the system fragile.
 
-**Decision**: `ivllm start` is a long-running foreground process that owns the entire session lifecycle. It does not exit until the session ends.
+**Decision**: Move lifecycle ownership from LOCAL to COMPUTE. The bash
+framework on the compute node manages its own lifecycle: startup monitoring,
+health checks, idle timeout detection, and graceful shutdown. The LOCAL
+client is a thin coordinator that can connect or disconnect freely.
 
 **Rationale**:
-- Keeps tunnel management, heartbeat, and cleanup co-located in one process with straightforward signal handling.
-- Avoids the complexity of a background daemon and IPC.
-- Natural UX: the terminal running `ivllm start` shows live status; Ctrl+C or typing "exit" cleanly shuts down.
-- `ivllm stop` exists purely as a recovery tool for unclean exits.
+- Enables detach/reattach: client comes and goes, job persists
+- Enables multi-user: any project member can connect to a running job
+- Eliminates SSH as a single point of failure for job lifetime
+- Compute node is the natural authority for whether to keep running
+- Simplifies LOCAL code: no more heartbeat, no more session ownership
 
-**Consequences**: The user must keep the terminal open for the duration of the session. A background/detach mode is a future consideration.
+**Consequences**:
+- Bash framework must be robust (tested with mock harness)
+- Exit traps are critical — must handle all exit paths
+- Lockfile becomes the single source of truth for job state
+- v2's `shutdown()` function in `session-helper.ts` is replaced by bash `tidy_up`
 
 ---
 
-## ADR-003: `job_details.json` as the SLURM ↔ LOCAL communication channel
+## ADR-102: Lockfile-driven communication protocol
 
 **Status**: Accepted
 
-**Context**: LOCAL needs to know when vLLM is ready and what hostname/port to tunnel to. The SLURM job runs on a COMPUTE node with no direct connection back to LOCAL.
+**Context**: v2 used `job_details.json` as a simple status channel (4 states:
+pending → initialising → running → failed/timeout). It was written by the
+SLURM script and polled by LOCAL. There was no mechanism for the user to
+request shutdown through the lockfile, and no idle timeout tracking.
 
-**Decision**: The SLURM script writes status updates and connection details to `job_details.json` in the job's working directory on the HPC (parallel filesystem, visible to both LOGIN and COMPUTE). LOCAL polls this file via SSH.
+**Decision**: Replace `job_details.json` with `status.json` using a richer
+schema and a 6-state model:
 
-**Schema**:
+States: `pending → initialising → running → (failed | stopped)`
+Request state: `cancel` (written by user, consumed by monitor)
+
+Full schema in `design/architecture.md`. Key additions:
+- `cancel` as a non-terminal request state
+- `idleTimeout` for automatic shutdown after inactivity
+- `vllmPid`, `requestedTime`, `startTime`, `stopTime`, `reason`, `exitCode`
+- `jobName`, `model`, `serverPort` for discovery
+
+**Rationale**:
+- `cancel` allows graceful shutdown without `scancel` — the job cleans up
+- Enables idle timeout: monitor reads timeout config from lockfile
+- Enriches diagnostics: `reason` and `exitCode` help debug failures
+- Discovery: `ivllm list` reads lockfiles to show all jobs
+
+**Consequences**:
+- Lockfile must be atomically created (`set -C`) and safely updated (`tmp + mv`)
+- `cancel` state is not terminal — monitors must detect it and transition to `stopped`
+- Bash `jq` is the only dependency (already assumed in v2)
+- Old `job_details.json` format must be migrated
+
+**Update**: `vllmPid` was later dropped from the schema — process lifecycle
+moved to a single per-job orchestrator process that tracks every node's
+`srun` PID directly, so no per-vLLM-process PID needs publishing through the
+lockfile. See §1.2 of `design/backend-contract.md` for the current schema.
+
+---
+
+## ADR-103: Bash framework as the HPC runtime
+
+**Status**: Accepted
+
+**Context**: v2 embedded SLURM/bash scripts inside TypeScript template
+strings (`src/templates/inference.ts`, 1,176 lines). This made the bash
+code unlintable, untestable, and hard to evolve. Every change required
+TypeScript recompilation.
+
+**Decision**: Extract all HPC-side logic into standalone bash scripts
+under `$PROJECTDIR/engine/lib/`:
+
+| File | Responsibility |
+|------|---------------|
+| `src/engine/lib/utils.sh` | Lockfile management, cache save/restore, monitor triad, exit trap, diagnostics |
+| `src/engine/lib/common-env.sh` | NVHPC/NCCL/Slingshot environment setup |
+| `src/engine/lib/vllm-env.sh` | vLLM-specific environment variables |
+| `src/engine/lib/slurm-vllm-serve.sh` | Run a model on one or more nodes |
+| `src/engine/lib/slurm-vllm-setup.sh` | vLLM installation |
+| `src/engine/lib/slurm-hf-download.sh` | Model download via `srun` |
+| `src/engine/lib/run_head_vllm.sh` | Head node vLLM launcher |
+| `src/engine/lib/run_worker_vllm.sh` | Worker node vLLM launcher |
+| `src/engine/ivllm-*.sh` | Login-node wrapper scripts (serve, status, setup, cancel, show-log, get-model) |
+
+SLURM job scripts become thin wrappers that `source` these libraries.
+
+**Rationale**:
+- Bash code is testable independently (`test-vllm.sh` mock framework)
+- No TypeScript recompilation needed for HPC-side changes
+- Scripts can be edited directly on the HPC for rapid iteration
+- Separation of concerns: TypeScript handles user interaction and SSH;
+  bash handles compute-side orchestration
+- The v2 `renderNVHPCPreamble()` function contains years of trial-and-error
+  tuning — moving it to `vllm-env.sh` preserves it in a directly usable form
+
+**Consequences**:
+- Must maintain a `test-vllm.sh` harness that mocks `srun`, `scancel`, and `vllm`
+- Scripts must be idempotent and safe to source multiple times
+- Must handle `bash -u` / `set -euo pipefail` for robustness
+- Scripts are installed by `ivllm setup` alongside the vLLM venv
+
+---
+
+## ADR-104: Detach/Reattach model
+
+**Status**: Accepted
+
+**Context**: v2's session-owner pattern meant the LOCAL process had to stay
+alive for the entire inference session. This was fragile (network issues,
+laptop sleep, accidental Ctrl+C) and single-user.
+
+**Decision**: The LOCAL client can safely disconnect at any point. The
+compute job continues to run. Reconnection is a simple `ivllm connect <job>`:
+
+1. Read `status.json`
+2. If `running` → establish SSH tunnel, print endpoint, exit (or stay in monitor mode)
+3. If `stopped` or `failed` → re-run `slurm.sh`
+4. If `cancel` → warn that shutdown is in progress
+
+No reconnection state is needed on the compute side — the lockfile is
+the only coordination point.
+
+**Rationale**:
+- Drop-dead simple: no state machines, no session tokens, no PID files
+- Lockfile already contains everything needed (compute hostname, port, model)
+- SSH tunnel is stateless — creating a new one on reconnect is trivial
+- Works seamlessly with multi-user: any user can `connect` to any running job
+
+**Consequences**:
+- The `ivllm connect` command must handle all lockfile states gracefully
+- Idle timeout is essential to prevent abandoned jobs consuming GPU hours
+- No heartbeat from LOCAL — `monitor_head` on COMPUTE is the only authority
+- COMPUTE must manage shutdowns and write state changes on crashes and slurm timeouts
+- Force cancel (using slurm scancel) and clean up from the client in case of inconsistent state.
+
+---
+
+## ADR-105: Idle timeout monitoring (backend-specific)
+
+**Status**: Accepted (design intent — open issue)
+
+**Context**: Without idle timeout, a job started and abandoned by a
+disconnected client would run until its SLURM time limit (default 4h,
+potentially 8h+). This wastes expensive GPU hours on Isambard.
+
+However, idle timeout detection is inherently **backend-specific**. The
+Isambard backend uses vLLM access logs with known timestamp formats, but
+other backends (containers, Ollama, different HPCs) will have different
+logging, different process models, and different ways to detect idleness.
+
+Approaches considered (and their limitations):
+
+| Approach | Problem |
+|----------|--------|
+| **Parse access log timestamps** | Backend-specific log format. Fragile across vLLM versions. |
+| **Check log file mtime** | Health check heartbeats and `/health` probes also write to the log, giving false positives. A filter could exclude `/health` lines but this adds complexity. |
+| **Poll vLLM `/metrics` endpoint** | Requires the backend to expose Prometheus metrics (not universal). Adds extra request load. |
+| **Sidecar that tracks requests per model** | Another process to manage. Adds deployment complexity. |
+| **Process-level monitoring (/proc/net)** | OS-specific. Doesn't work inside containers. |
+| **inotify on log file** | Lustre (parallel filesystem) doesn't support inotify. Linux-specific. | **clients periodically touch lockfile & check logfile mtime** | places responsibility on clients to keep connection alive but could be backend independent
+
+**Decision**: Idle timeout is a per-backend responsibility. The lockfile
+carries `idleTimeout` (in minutes, or `-1` for never) as a cross-backend
+contract. Each backend's monitoring process enforces it however it sees fit.
+
+For the **Isambard vLLM backend** (the bash framework's `monitor_head`):
+
+Parse the vLLM access log incrementally:
+1. Track the last byte offset read from the log file
+2. Each cycle, read only new bytes (`tail -c +$LAST_OFFSET`)
+3. If new lines contain "real" API endpoints (`/v1/chat/completions`,
+   `/v1/models`, `/v1/completions`, not `/health`), record the current time
+4. If time since last real request > idleTimeout → shutdown
+
+Baseline VLLM log line format does not include dates unless configured - requires vllm_logs.json configuration file and `export VLLM_LOGGING_CONFIG_PATH="vllm_logs.json"` to be present on the HPC. With this in place we get logs like (confirmed from live vLLM run):
+
+```
+(APIServer pid=34633) [2026-07-14 22:37:50,765] INFO:     10.242.0.28:38194 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+(APIServer pid=34633) [2026-07-14 22:37:50,935] INFO:     10.242.0.28:45178 - "GET /health HTTP/1.1" 200 OK
+```
+
+**Rationale**:
+- Decouples idle detection from the generic lockfile protocol
+- Each backend uses the most natural approach for its environment
+- The Isambard backend's log parsing is simple, proven, and doesn't require
+  changes to vLLM
+- Incremental reading (byte offset) is efficient even on Lustre
+
+**Consequences**:
+- The `idleTimeout` lockfile field is a contract, not an implementation
+- Backend implementations document their idle detection strategy
+- For Isambard: `VLLM_LOGGING_CONFIG_PATH` + `vllm_logs.json` are required
+- `idleTimeout: -1` means "never timeout" (explicit choice)
+- This remains an open design area — better approaches may emerge
+
+---
+
+## ADR-106: Multi-user access via shared filesystem
+
+**Status**: Accepted
+
+**Context**: v2 supported multi-user vLLM installation (ADR-013) but the
+session-owner pattern meant only one user could interact with a running job
+at a time.
+
+**Decision**: All artifacts in `$PROJECTDIR/engine/` use group-writable
+permissions (`umask 0002`, `chmod g+w`). Any project member can:
+
+- Run `ivllm list` to see all jobs
+- Run `ivllm connect <job>` to attach to a running instance
+- Run `ivllm cancel <job>` to request shutdown
+- View logs and diagnostics for any job
+
+The only restriction is that SLURM `scancel` requires job ownership
+(or `--uid` with appropriate permissions).
+
+**Rationale**:
+- Maximises utilisation: a single 4-node job can serve the whole team
+- Eliminates HuggingFace rate limits: one download serves everyone
+- Simplifies onboarding: new team members just configure their CLI
+
+**Consequences**:
+- Lockfiles must be created with group-writable permissions
+- JIT caches must be group-readable (already handled by tar `--mode='g+rwX'`)
+- SLURM timeouts from one user's session affect all connected users
+- Must document the multi-user workflow clearly
+
+---
+
+## ADR-107: Unified CLI — `connect` replaces `start`/`interactive`
+
+**Status**: Accepted
+
+**Context**: v2 had two separate commands for starting a job:
+`ivllm start` (sbatch, background) and `ivllm interactive` (srun, TTY-bound).
+They shared most of the same code path but had different submission
+mechanisms and different user experiences. The distinction confused users.
+
+**Decision**: Replace both with a single `ivllm connect` command that:
+
+1. If the job doesn't exist or is in a terminal state (`stopped`/`failed`):
+   - Submit via `sbatch` (background) by default
+   - Offer `--batch` flag for submission to standard non-interactive queue
+   - tail remote logfiles over SSH to monitor startup progress.
+2. When the job is `running`:
+   - Establish SSH tunnel immediately
+   - Print endpoint URL
+   - Stay in foreground with optional monitoring mode
+3. If the job is `initialising` or `pending`:
+   - Tail logs and wait for `running`
+   - Then establish tunnel
+
+**Rationale**:
+- Single mental model: "I want to connect to my model"
+- default is interactive reservation (can use slurm )
+- Handles all job states (new, running, stopped, failed)
+- No confusion about which command to use
+
+**Consequences**:
+- `ivllm start` and `ivllm interactive` are deprecated and removed
+- `ivllm stop` is replaced by `ivllm cancel` (with `--force` for hard kill)
+- Documentation must be updated to use `connect` everywhere
+
+---
+
+## ADR-108: Preserve v2 TypeScript patterns that work
+
+**Status**: Accepted
+
+**Context**: The v2 codebase has several well-tested, well-designed
+TypeScript modules that don't need rewriting.
+
+**Decision**: Preserve the following components with minimal changes:
+
+| Module | Justification |
+|--------|--------------|
+| `src/config.ts` | Clean interface, file-based persistence, CLI flag parsing |
+| `src/ops/RemoteOps.ts` + `src/ops/SshRemoteOps.ts` | Multiplexed SSH, SCP, tunnel spawning — all battle-tested |
+| `src/local-ops.ts` | Port check, health check, model query |
+| `src/semver.ts` | Version comparison, sorting (recreated for v3) |
+| `src/backends/Backend.ts` | Abstract Backend class for lifecycle management |
+
+**Rationale**:
+- Rewriting working code is wasted effort
+- These modules have ~300 tests covering them
+- The bugs and edge cases are already fixed
+- They are naturally separated from the session-owner pattern
+
+**Consequences**:
+- Codebase retains a mix of TypeScript and bash — clear module boundaries
+- New commands (`connect`, `cancel`) reuse existing modules
+- Only the session-owner modules are replaced
+
+---
+
+## ADR-109: Project structure on HPC
+
+**Status**: Accepted
+
+**Context**: v2 stored job data in `$HOME/<job>/` (lockfiles, logs, scripts,
+configs). This made it hard for team members to find each other's jobs and
+mixed job artifacts with user home data.
+
+**Decision**: Define a fixed structure under `$PROJECTDIR/engine/`:
+
+```
+$PROJECTDIR/engine/
+├── lib/
+│   ├── utils.sh         ← Lockfile management, monitors, cache, shutdown
+│   ├── vllm-env.sh      ← NVHPC/NCCL/Slingshot environment
+│   ├── hf.sh            ← Model download
+│   └── vllm-setup.sh         ← vLLM installation (one-off, run by `ivllm setup`)
+├── jobs/
+│   └── <jobname>/
+│       ├── status.json
+│       ├── jit-cache.tar.gz
+│       ├── vllm.<nodeid>.log
+│       ├── vllm.yaml
+│       └── slurm.sh
+├── vllm/
+│   ├── vllm-setup.sh
+│   ├── vllm_logs.json
+│   ├── plugins/
+│   └── <version>/       ← vLLM venv (from `ivllm setup <version>`)
+└── diagnostics/
+    └── <jobname>/
+        └── <date>/
+            ├── vllm.<id>.log
+            ├── vllm.yaml
+            └── slurm.sh
+$PROJECTDIR/model/
+├── hf/                   ← Shared HuggingFace cache
+│   └── hub/
+│       └── models--<name>/
+└── venv/                 ← Hugginface cli
+```
+
+**Rationale**:
+- Predictable paths: CLI doesn't need to ask where things are
+- Multi-user: `jobs/` and `diagnostics/` are group-readable
+- Self-contained: everything for a job is in one directory
+- Clean separation: framework libs, job data, model cache, diagnostics
+
+**Consequences**:
+- `ivllm setup` must create the `engine/` directory structure
+- Old `$HOME/<job>/` directories must be migrated or deprecated
+- All path resolution in `src/job.ts` must be updated
+- `diagnostics/` captures logs and configs from failed jobs automatically
+
+---
+
+## ADR-110: Backend-agnostic lockfile protocol
+
+**Status**: Accepted (design intent)
+
+**Context**: The lockfile protocol (ADR-102) currently has mechanism-specific
+fields like `slurmJobId`, `computeHostname`, and `vllmPid`. Future backends
+(Ollama, other HPCs, containers) will have different runtime metadata.
+
+**Decision**: The `status.json` schema is backend-agnostic at the top level.
+Backend-specific metadata lives in a `backend` namespace object (optional).
+
+Top-level fields (every backend):
+- `status`, `jobName`, `model`, `serverPort`, `user`, `requestedTime`, `idleTimeout`
+- `startTime`, `stopTime`, `reason`, `exitCode`
+- `slurmJobId`, `computeHostname` (Isambard-specific, at top level for convenience —
+  `vllmPid` was also here at the time this ADR was written but has since been dropped,
+  see the Update note on ADR-102)
+- `backend`: string identifier (e.g. `"isambard-vllm"`, `"ollama"`) — **planned, not yet implemented**
+- `backendConfig`: optional JSON object (backend-specific, opaque to the CLI) — **planned, not yet implemented**
+
+Example for Isambard:
 ```json
 {
-  "status": "pending" | "initialising" | "running" | "failed" | "timeout",
-  "job_name": "<job>",
-  "slurm_job_id": "<id>",
-  "compute_hostname": "<hostname>",
-  "server_port": 8000,
-  "model": "<model-name>",
-  "error": "<optional error message>"
+  "status": "running",
+  "jobName": "qwen36",
+  "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+  "serverPort": 49153,
+  "user": "testuser",
+  "requestedTime": "2026-07-14T12:00:00+00:00",
+  "idleTimeout": 30,
+  "slurmJobId": "123456",
+  "computeHostname": "nid12345"
 }
 ```
 
-**Rationale**:
-- Simple, no additional infrastructure. The parallel filesystem (`$HOME` or `$PROJECTDIR`) is visible to all nodes.
-- `jq` on the HPC makes atomic field updates straightforward in bash.
-- Acts as a lockfile: existence of the file prevents duplicate jobs with the same name.
-
-**Consequences**: LOCAL must poll via SSH (small overhead). File must be cleaned up on shutdown — handled by the shutdown sequence in `ivllm start` and as recovery in `ivllm stop`.
-
----
-
-## ADR-004: Forward SSH tunnel from LOCAL
-
-**Status**: Accepted
-
-**Context**: COMPUTE nodes on Isambard AI cannot initiate outbound SSH connections, ruling out reverse tunnels.
-
-**Decision**: LOCAL establishes a forward SSH tunnel once `job_details.json` reports `status: "running"`:
-```
-ssh -N -L <local_port>:<compute_hostname>:<server_port> <user>@<login_node>
-```
-This is spawned as a child process of `ivllm start` and killed as part of the shutdown sequence.
+**Note**: The `backend` and `backendConfig` fields are planned for future multi-backend support
+but are not yet implemented in the actual lockfile schema (`LockfileV3` in `src/types.ts`).
+`vllmPid` (shown above at the time this ADR was written) has since been
+dropped from the schema entirely — see the Update note on ADR-102.
 
 **Rationale**:
-- The only viable tunnelling direction given HPC network constraints.
-- Spawning as a child process ties tunnel lifetime to the `ivllm start` process.
-
-**Consequences**: LOCAL must have SSH access to LOGIN (prerequisite, out of scope). The `ssh` binary must be available on LOCAL (standard on Linux/macOS).
-
----
-
-## ADR-005: vLLM installation location on HPC
-
-**Status**: Superseded by ADR-010
-
-**Context**: vLLM must be installed once and reused across inference jobs. The `uv` venv created during setup must be activatable by the SLURM script.
-
-**Decision (original)**: Install vLLM into a `uv` venv at a fixed path under `$HOME` or `$PROJECTDIR`.
-
-**Why superseded**: The GH200 GPU driver on Isambard AI (565.57.01) only supports CUDA 12.7. Recent vLLM builds require CUDA 12.9+. pip installation of nightly vLLM either fails to build dependencies (e.g. `fastsafetensors`) or hits CUDA library version conflicts at runtime. The Isambard support team recommends using container images instead — see ADR-010.
-
----
-
-## ADR-006: Fixed local port for MVP
-
-**Status**: Accepted
-
-**Context**: Multiple concurrent jobs with auto-assigned ports require a local registry and add complexity around OpenCode configuration.
-
-**Decision**: MVP uses a single fixed local port (default: 11434, overridable with `--local-port`). No local registry in MVP.
-
-**Rationale**:
-- Keeps MVP scope minimal and testable.
-- Port is parameterised throughout the implementation so the multi-job registry can be added in a future phase without refactoring.
-
-**Consequences**: Running two jobs simultaneously in MVP is not supported (port conflict). Multi-job support is a tracked future phase.
-
----
-
-## ADR-007: Model pre-download on LOGIN node
-
-**Status**: Accepted
-
-**Context**: vLLM will automatically download a model from HuggingFace if not cached, but this would occur during the SLURM job on a COMPUTE node. This wastes expensive GPU allocation time during download. COMPUTE nodes do have internet access.
-
-**Decision**: `ivllm start` checks the shared HuggingFace cache (`$PROJECTDIR/hf`) on LOGIN before submitting the SLURM job. If the model is not cached, it runs `huggingface-cli download <model>` on LOGIN via SSH, streaming progress to the user. The SLURM script sets `HF_HOME=$PROJECTDIR/hf` so vLLM uses the pre-populated cache.
-
-**Rationale**:
-- LOGIN nodes have internet access and are not metered against GPU allocations.
-- `$PROJECTDIR/hf` is shared parallel storage — one download serves all project members and all COMPUTE nodes.
-- `huggingface-cli` is installed as a dependency of vLLM in the existing venv, so no extra setup is needed.
-- Storing `HF_TOKEN` in `~/.config/ivllm/config.json` (via `ivllm config --hf-token`) avoids requiring the user to export an environment variable on every session; the env var is still accepted as a fallback.
-
-**Consequences**: `ivllm start` requires a `--config` YAML containing `model:`. For gated models, run `ivllm config --hf-token <token>` once to persist the token. The token is used inline in the SSH download command and embedded in the setup SLURM script. Cache check is a simple directory existence test (`$PROJECTDIR/hf/hub/models--<org>--<name>`); a failed check falls through to `huggingface-cli download`. `HF_HUB_OFFLINE=1` is set in the inference SLURM script so the already-cached model is used without any HuggingFace API calls at inference time (prevents 429 rate-limit errors).
-
----
-
-## ADR-008: vLLM config YAML as single source of truth for model and parallelism options
-
-**Status**: Accepted
-
-**Context**: `ivllm start` originally accepted `--model` and `--tensor-parallel-size` as CLI flags, which duplicated options that can also appear in the vLLM `--config` YAML. Passing conflicting values on both the CLI and in the YAML creates undefined behaviour.
-
-**Decision**: All vLLM serving options (model, tensor-parallel-size, pipeline-parallel-size, max-model-len, etc.) are expressed exclusively in the vLLM config YAML. The `--model` and `--tensor-parallel-size` flags are removed from `ivllm start`. `ivllm start` parses the YAML locally (using `js-yaml`) to extract `model` (for the HuggingFace pre-download) and the parallelism sizes (to set `#SBATCH --gpus`). The SLURM script runs `vllm serve --config <file> --host 0.0.0.0 --port <port>` — the `host` and `port` flags are retained as explicit CLI overrides because they are infrastructure concerns (required for the SSH tunnel to work) rather than model configuration.
-
-**Rationale**:
-- A single config file is easier to audit, version, and share than a mix of CLI flags and YAML.
-- Eliminates risk of conflicting values (e.g. `--tensor-parallel-size 4` on CLI vs `tensor-parallel-size: 2` in YAML).
-- The vLLM YAML format already supports all options; users familiar with vLLM docs can use it directly.
-
-**Consequences**: Users must include `model:` in their YAML config. `tensor-parallel-size` (and `pipeline-parallel-size`) in the YAML are used to derive the SLURM GPU allocation; `--gpus` remains as an explicit CLI override. The `--mock` mode retains `--model` as a CLI flag since it does not use a vLLM config file.
-
----
-
-## ADR-009: Chat template support out of scope for MVP
-
-**Status**: Accepted
-
-**Context**: vLLM's `--chat-template` option accepts either a file path (a Jinja2 template file) or an inline single-line string. Some older models do not embed a chat template in their `tokenizer_config.json` and require one to be supplied explicitly.
-
-**Decision**: Chat template file copying is out of scope for MVP. The single-line inline form is already supported at no cost (it is a plain YAML value in the config file). File-based templates are not supported — users who need them must copy the file to the HPC manually and reference its remote path in the YAML.
-
-**Rationale**:
-- Modern models (Llama 3, Qwen 2.5, Mistral, etc.) embed their chat template in the tokeniser config; vLLM picks it up automatically from the HuggingFace cache.
-- The inline single-line form covers the remaining cases without requiring any additional file-copy logic.
-- Adding file detection (is the `chat-template:` value a local path?) and an extra `scp` call adds complexity for an edge case that is unlikely to arise in practice on Isambard AI.
-
-**Consequences**: If a user needs a file-based chat template, they must `scp` it to the HPC themselves and set `chat-template: /remote/path/template.jinja` in their YAML. This can be revisited if it becomes a recurring pain point during E2E testing.
-
----
-
-## ADR-010: Singularity container for vLLM on HPC
-
-**Status**: On hold — superseded by ADR-011. Preserved for future reference; Singularity remains a viable path for single-node and potentially multi-node if bare-metal limitations arise.
-
-**Context**: The GH200 GPU driver on Isambard AI (565.57.01) supports CUDA 12.7 at most. Recent vLLM releases require CUDA 12.9+. pip installation of vLLM nightly fails:
-- Build-time: `fastsafetensors` C++ extension fails to compile against system GCC
-- Runtime: CUDA library version mismatches (`libnvJitLink`, `libcuda`) even with the forward-compat package
-
-The Isambard support team recommends using Singularity/Apptainer with NGC container images. The official vLLM Docker images (`vllm/vllm-openai:<version>`) ship CUDA forward-compatibility libraries and support `VLLM_ENABLE_CUDA_COMPATIBILITY=1` to activate them automatically.
-
-**Decision**: Replace pip/venv-based vLLM installation with a Singularity image:
-
-1. **`ivllm setup`** submits a CPU-only SLURM job that runs `singularity pull` to convert the Docker image to a `.sif` file. The image is stored in shared project space (`/projects/<project>/ivllm/images/`). This is a one-time team operation, not per-user.
-
-2. **SLURM inference template** runs:
-   ```bash
-   singularity run --nv \
-     --env VLLM_ENABLE_CUDA_COMPATIBILITY=1 \
-     <image.sif> vllm serve --config <config> --host 0.0.0.0 --port <port>
-   ```
-   instead of activating a venv.
-
-3. **Version is specified** in `~/.ivllm/config.yaml` as `vllmImage` (default: `docker://vllm/vllm-openai:latest`). The per-job `vllm.yaml` config may specify `min-vllm-version: X.Y.Z` to reject an image that is too old; `ivllm start` reads the version label from the `.sif` and fails early if the requirement is not met.
-
-4. **Image path** is configurable as `vllmImagePath` in `~/.ivllm/config.yaml`, defaulting to `/projects/<project>/ivllm/images/vllm-openai.sif`. Users who want a private image can point at `~/ivllm/images/` instead.
-
-**Rationale**:
-- Official vLLM images include CUDA compat libs; `VLLM_ENABLE_CUDA_COMPATIBILITY=1` handles `LD_LIBRARY_PATH` setup automatically — no manual library wrangling.
-- Singularity/Apptainer is Isambard's recommended and supported container runtime for GPU jobs.
-- `brics/apptainer-multi-node` module is available on Isambard for multi-node container workloads.
-- Shared image in `/projects/` avoids each user pulling a multi-GB image independently.
-- `singularity pull` is CPU-intensive and takes several minutes — must run on COMPUTE, not LOGIN.
-- Versioned images pin the vLLM version, improving reproducibility; `min-vllm-version` in `vllm.yaml` provides a safety check.
+- The CLI reads only top-level fields (`status`, `jobName`, `model`, `serverPort`)
+  to determine what to display and how to connect
+- Backend-specific metadata is opaque to the CLI but essential for the backend
+  runtime (monitors, diagnostics, cancellation)
+- Adding a new backend doesn't require changing the lockfile schema
 
 **Consequences**:
-- `ivllm setup` now submits a SLURM job rather than running pip install. It no longer has a venv to activate.
-- SLURM templates (single-node and multi-node) replace `source .venv/bin/activate && vllm serve` with `singularity run --nv`.
-- `ivllm start` validates the `.sif` exists (and meets `min-vllm-version` if specified) before submitting the inference job.
-- `ivllm setup` is idempotent: if the `.sif` already exists and matches the configured version, it skips the pull.
-- HuggingFace model cache (`$PROJECTDIR/hf`) and job working directories are bind-mounted into the container at runtime (`--bind $PROJECTDIR`).
-- `huggingface-cli` used for pre-download (ADR-007) must be available outside the container on LOGIN — this may require a separate lightweight Python install for `huggingface_hub`. Alternatively, pre-download can run inside the container via `singularity exec`.
+- The CLI must use `backend` field to select which backend implemention to use
+- Backend implementations must write their own `backendConfig` format
+- Migration: existing `slurmJobId` and `computeHostname` move into `backendConfig`
+- The lockfile always has a `backend` field (even for single-backend setups)
 
 ---
 
-## ADR-011: NVIDIA HPC SDK bare-metal approach for CUDA forward compatibility
+## ADR-111: Backend interface abstraction
 
-**Status**: Accepted (supersedes ADR-010)
+**Status**: Accepted (design intent)
 
-**Context**: Two viable options were identified to run vLLM (which requires CUDA 12.9+) on Isambard AI (driver 565.57.01, max CUDA 12.7):
+**Context**: Currently all backend logic (SSH, SLURM, vLLM lifecycle) is
+interwoven in the CLI code. Adding new backends requires touching the same
+files and risks breaking Isambard support.
 
-1. **Singularity containers** (ADR-010): clean single-node, but multi-node via Ray requires unproven `source /host/adapt.sh` pattern inside every `srun` task; large image (~10-15 GB); more `ivllm` code changes.
-2. **NVIDIA HPC SDK bare-metal**: install the HPC SDK once to shared project space; set `LD_LIBRARY_PATH` to activate CUDA 12.9 forward compatibility; keep existing pip/venv + Ray architecture unchanged.
+**Decision**: Define a standard `Backend` interface in TypeScript. The
+Isambard backend is the first implementation; new backends implement the
+same interface.
 
-The Isambard AI documentation now explicitly documents the HPC SDK approach with the exact `LD_LIBRARY_PATH` to use, making it a low-risk, well-supported path. Multi-node Ray remains unchanged.
-
-**Decision**: Use NVIDIA HPC SDK 26.3 (provides CUDA 12.9) installed once to shared project space. pip-install vLLM into a per-version shared venv using `cu129` wheels. The vLLM version is specified in `~/.ivllm/config.yaml`; the venv path is derived from it — no separate path config.
-
-**Installation layout** (all under `$PROJECTDIR/ivllm/`, managed by `ivllm setup`):
-
-```
-$PROJECTDIR/ivllm/
-  nvhpc/          ← NVIDIA HPC SDK 26.3 (shared, installed once)
-  0.19.1/         ← uv venv with vLLM 0.19.1 (cu129)
-  flashinfer_cache/  ← flashinfer JIT kernel cache (Lustre, persistent)
-  uv_cache/          ← uv package cache (Lustre, enables hard links into venv)
-```
-
-The active venv path is always `$PROJECTDIR/ivllm/<vllmVersion>/`.
-
-**`NVHPC_PREAMBLE` in all SLURM scripts** (set before `vllm serve` or `ray start`):
-```bash
-export NVHPC_ROOT=$PROJECTDIR/ivllm/nvhpc/Linux_aarch64/26.3
-export CUDA_HOME=$NVHPC_ROOT/cuda/12.9
-export PATH=$CUDA_HOME/bin:$PATH
-export CPATH=$NVHPC_ROOT/math_libs/12.9/include:${CPATH:-}
-export LD_LIBRARY_PATH=$NVHPC_ROOT/cuda/12.9/compat:$NVHPC_ROOT/cuda/12.9/lib64:$NVHPC_ROOT/compilers/lib:$NVHPC_ROOT/comm_libs/12.9/nccl/lib:$NVHPC_ROOT/comm_libs/12.9/nvshmem/lib:$NVHPC_ROOT/math_libs/12.9/lib64:${LD_LIBRARY_PATH:-}
-export CC=gcc
-export CXX=g++
-export FLASHINFER_JIT_CACHE_DIR=$PROJECTDIR/ivllm/flashinfer_cache
-# symlink ~/.cache/flashinfer → Lustre so Ray actors inherit it without env var propagation
-ln -sfn $PROJECTDIR/ivllm/flashinfer_cache ~/.cache/flashinfer
+```typescript
+abstract class Backend {
+  abstract bootstrap(): Promise<void>;
+  abstract setup(version: string): Promise<void>;
+  abstract connect(job: string, port: number): Promise<CloseableEventEmitter>;
+  abstract requestCancel(job: string, force: boolean): Promise<void>;
+  abstract requestStart(job: string, maxTime: string, monitor: boolean, batch: boolean, config?: string): Promise<void>;
+  abstract getAllJobStatus(): Promise<LockfileV3[]>;
+  abstract watchLog(job: string, node?: string, until?: string): Promise<CloseableEventEmitter>;
+  getJobStatus(job: string): Promise<LockfileV3>;
+  isRunning(job: string): Promise<boolean>;
+  isStopped(job: string): Promise<boolean>;
+  isStartable(job: string): Promise<boolean>;
+  isStarting(job: string): Promise<boolean>;
+}
 ```
 
-**`ivllm setup`** submits a GPU SLURM job that:
-1. Downloads the HPC SDK aarch64 tarball (~3 GB) and installs it to `$PROJECTDIR/ivllm/nvhpc/` (skipped if already present)
-2. Sets up the compat `LD_LIBRARY_PATH` and `CUDA_HOME`
-3. Loads `gcc-native` module (required to compile `fastsafetensors` and flashinfer JIT kernels)
-4. Creates a uv venv at `$PROJECTDIR/ivllm/<vllmVersion>/` and pip-installs that specific vLLM version (cu129 wheels):
-   ```bash
-   UV_CACHE_DIR=$PROJECTDIR/ivllm/uv_cache uv pip install vllm==<version> ray[default] \
-     --extra-index-url https://wheels.vllm.ai/<version>/cu129
-   ```
-   Note: `UV_CACHE_DIR` on Lustre enables hard links into the venv (same filesystem), avoiding slow NFS→Lustre copies.
-
-**Per-job `vllm.yaml`** may specify `min-vllm-version: X.Y.Z`. `ivllm start` compares this against the configured `vllmVersion` and fails early if the installed version does not meet the minimum.
+**Note**: The actual `Backend` class (in `src/backends/Backend.ts`) evolved from the
+interface shown above. The final signature uses `requestCancel`/`requestStart`/`getAllJobStatus`
+instead of `cancel`/`forceCancel`/`status`/`list`/`tailLogs`. The `bootstrap()` and
+state-helpers (`isRunning`, `isStopped`, etc.) were added during implementation.
 
 **Rationale**:
-- HPC SDK approach is officially documented by Isambard AI with exact commands and `LD_LIBRARY_PATH`.
-- Multi-node Ray architecture is unchanged — just env vars added to SLURM templates.
-- Fewer `ivllm` code changes than container approach: only SLURM templates and setup script change.
-- Shared project install (`$PROJECTDIR/ivllm/`) means one setup per team, not per user — same benefit as Singularity.
-- Versioned venv directories allow multiple vLLM versions to coexist; upgrading is a second `ivllm setup` call.
-- `vllmVersion` in config is the single source of truth; venv path is always derived — no path duplication.
-- `cu129` wheels (CUDA 12.9) match the CUDA 12.9 forward compat environment provided by HPC SDK 26.3.
-- Eliminates library ordering confusion: `compat` is first in `LD_LIBRARY_PATH` → `libcuda.so` from compat shadows the system stub.
-- `CPATH` must include `math_libs/12.9/include` because NVHPC stores math library headers (cuBLAS, cuSPARSE, cublasLt) separately from the CUDA SDK headers — flashinfer JIT kernels include `cublasLt.h`.
+- Clean separation: new backends don't touch existing code
+- The `connect` method is the key abstraction — it owns the full startup
+  sequence and returns a tunnel-able endpoint
+- CLI commands (`connect`, `cancel`, `list`) delegate to the backend
 
 **Consequences**:
-- `venvPath` removed from `~/.ivllm/config.yaml`; `vllmVersion` was initially retained but is now also removed (see ADR-014).
-- `ivllm setup` takes the vLLM version as a positional argument (`ivllm setup 0.19.1`); `ivllm start` discovers installed versioned venvs by listing `$PROJECTDIR/ivllm/*/bin` on the remote and selects the highest that satisfies `min-vllm-version` (see ADR-014).
-- SLURM templates (single-node and multi-node) prepend the full NVHPC preamble before activating the venv and calling `vllm serve` or `ray start`.
-- `ivllm setup` is idempotent: skips HPC SDK install if `$PROJECTDIR/ivllm/nvhpc` already exists; skips venv creation if `$PROJECTDIR/ivllm/<vllmVersion>` already exists.
-- `fastsafetensors` and flashinfer JIT kernel build require `module load gcc-native` during setup and inference — added to both SLURM scripts.
-- HuggingFace pre-download (ADR-007) uses `huggingface-cli` from the versioned venv on LOGIN.
-- `ray[default]` must be explicitly installed alongside `vllm` — vLLM does not declare it as a hard dependency.
-- `UV_CACHE_DIR` uses `$LOCALDIR` (per-user in-job scratch) rather than shared project space — see ADR-013.
+- Existing `remote-ops.ts` and bash framework become the Isambard backend
+- The CLI needs a backend registry (default + named backends)
+- `ivllm connect <job> --backend <name>` selects an alternative
+- The `Backend` interface may evolve as new backends are added
 
 ---
 
-## ADR-012: Multi-node Ray actor environment propagation via filesystem symlink
+## ADR-112: Port pool for multi-model routing
 
-**Status**: Accepted
+**Status**: Accepted (design intent)
 
-**Context**: vLLM's `ray_env.py` propagates only a fixed set of environment variable prefixes to Ray actors (`VLLM_*`, `NCCL_*`, `HF_*`, `UCX_*`, `LMCACHE_*`, plus `LD_LIBRARY_PATH` explicitly). Variables not in this list — including `FLASHINFER_JIT_CACHE_DIR`, `PATH`, `CPATH`, `CUDA_HOME`, `CC`, `CXX` — are not propagated.
+**Context**: Running multiple models requires a registory of local port
+assignments per model and needs to manage conflict
+avoidance when multiple models share a node and support a router to know
+where each model is.
 
-When Ray actors on worker nodes call flashinfer's JIT build machinery, `FileLock` uses `fcntl.flock()` on a lock file in the flashinfer cache directory. The default cache is `~/.cache/flashinfer/` which is on NFS home on Isambard AI. NFS does not support `fcntl.flock` reliably and returns `ESTALE` (errno 116). This causes:
-1. GDN prefill kernel warmup failure
-2. The flashinfer autotuner runs without bounds during `determine_available_memory`
-3. The Ray actor is OOM-killed
-4. The actor's gRPC socket closes: `RpcError: Socket closed rpc_code: 14`
+There are 2 types of port assignment:
 
-Setting `FLASHINFER_JIT_CACHE_DIR` to Lustre in the SLURM preamble fixes the login-node and head-node srun steps, but `ray_env.py` does not propagate `FLASHINFER_JIT_CACHE_DIR` to the worker actor processes.
+1) server port where vllm is exposed on compute node.
+This is strictly the responsibility of the backend to decide, and can used a
+random high port (preferred) or vllm default 8000. This is up to the backend
+but must be communicated to clients via the lockfile. In the context of a single
+node running multiple models the backend will have to make sure there are no
+conflicts.
 
-**Decision**: Symlink `~/.cache/flashinfer` → `$PROJECTDIR/ivllm/flashinfer_cache` (Lustre) in the SLURM preamble. This runs before any Ray actor is spawned and ensures that all processes — regardless of how they were launched and regardless of env var propagation — resolve `~/.cache/flashinfer` to Lustre.
+2) Local ports: localhost endpoints for ssh tunnel (or passthrough when backend is local ollama).
+We need a port per model running. This should default to 11434 if only a single
+model is connected. The user can override this with a --local-port cli flag to
+`ivllm connect`. Currently it is the users responsibility to manage local ports in multiple connections.
+
+In the future a model router will handle multiple local ports and ssh tunnels:
+
+Local port assignment (router mode):
+- Discover running models from backends.
+- Construct multiple ssh tunnels to endpoints using random high local ports.
+- Maintain an emphemeral mapping in router, from model name to local port.
+- Serve router on 11434, and route requests from client to backend depending on
+model name
+- Some routing heuristics on model name collision across backends will be required
+
+**Rationale**:
+- Stable port for client in pre-router world: agents can be configured once and
+  keep working across restarts
+- Port range is known by user: firewall rules, `sbx policy allow`, and SSH config
+  can target the full range
+
+**Consequences**:
+Backend:
+- If a single node is running multiple models the backend will need heuristics
+  to prevent vllm server port collisions.
+- Lockfile schema unchanged (already has `serverPort`)
+Client (pre-router):
+- Default single-model mode uses port 11434 unless overridden
+- Client needs to check for existing ssh tunnels and port usage when connecting.
+Future router implementation:
+- Router runs on local but outside of any sandboxes.
+- The router reads remote port allocations to build its model catalog dynamically
+- Router listens on 11434.
+
+---
+
+## ADR-113: Each model is an independent job
+
+**Status**: Accepted (design intent)
+
+**Context**: Running multiple models on a single node (e.g. Qwen3.6 and
+Gemma4 sharing 4 GPUs) could be implemented as a single SLURM job managing
+multiple vLLM processes, or as independent SLURM jobs at the project level.
+
+**Decision**: Each model is a completely independent job. Multiple models
+on one node use the `interactive` partition with explicit GPU affinity
+(`CUDA_VISIBLE_DEVICES`). Each gets its own:
+
+- `status.json` in `$PROJECTDIR/engine/jobs/<name>/`
+- SLURM job allocation (or share a single srun for the interactive partition)
+- vLLM process with its own port
+- `monitor_head` process
+- JIT cache
+- Idle timeout timer
+
+**Rationale**:
+- Independence: one model crashing doesn't affect others
+- Simplicity: the same code path handles single-model and multi-model cases
+- Resource control: GPU and memory limits are explicit per model
+- Clean-up: cancelling one model doesn't cancel others
+- The monitor triad works per-model without changes
+
+**Consequences**:
+- Must support `CUDA_VISIBLE_DEVICES` in the SLURM script preamble
+- Resource tracking (`gpus`, `memoryGb`, `cpuCores`) in lockfile's
+  `backendConfig` helps the router/node manage allocation
+- Multi-model on a single node requires the `interactive` partition
+  (or a single sbatch job with multiple srun steps)
+- The monitor must be GPU-aware: shutdown of one model should not affect
+  others sharing the same node
+
+---
+
+## ADR-114: Dual installation path — bare-metal and container
+
+**Status**: Accepted (design intent)
+
+**Context**: The v2 codebase installs vLLM via bare-metal `pip install` into
+a versioned venv (ADR-011/013). The [UKGovernmentBEIS/isambard_containers](https://github.com/UKGovernmentBEIS/isambard_containers)
+project maintains pre-built Apptainer images with vLLM, CUDA, and
+Slingshot/NCCL networking pre-configured for Isambard GH200.
+
+Bare-metal and container approaches have complementary strengths:
+
+| Aspect | Bare-metal (pip) | Container (Apptainer) |
+|--------|-----------------|----------------------|
+| Install time | 10-20 min (pip compile) | ~2 min (`sifter pull`) |
+| CUDA version | 12.9 (NVHPC compat libs) | 13.0.2 (native) |
+| vLLM compile | Wheel (pre-compiled) | Source (aarch64) |
+| Maintenance burden | High (vllm-env.sh, deps) | Low (pre-built, upstream) |
+| Debugging | Easy (native process) | Harder (inside container) |
+| Proven on Isambard | Yes (extensive testing) | Yes (separate project) |
+
+**Decision**: Support both installation methods. The SLURM scripts accept a
+`CONTAINER` environment variable that selects which vLLM to use:
 
 ```bash
-mkdir -p $PROJECTDIR/ivllm/flashinfer_cache ~/.cache
-if [ -d ~/.cache/flashinfer ] && [ ! -L ~/.cache/flashinfer ]; then
-  cp -r ~/.cache/flashinfer/. $PROJECTDIR/ivllm/flashinfer_cache/ 2>/dev/null || true
-  rm -rf ~/.cache/flashinfer
-fi
-ln -sfn $PROJECTDIR/ivllm/flashinfer_cache ~/.cache/flashinfer
+# Bare-metal path (default)
+source $PROJECTDIR/engine/vllm/0.22.0/bin/activate
+vllm serve --config vllm.yaml
+
+# Container path
+CONTAINER=vllm-0.23.0_0.1.0.sif
+singularity exec --nv $CONTAINER \
+  --bind $PROJECTDIR:$PROJECTDIR \
+  vllm serve --config vllm.yaml
 ```
 
-The `FLASHINFER_JIT_CACHE_DIR` env var is retained alongside the symlink as belt-and-braces.
+The bash framework (lockfile management, monitors, cache, shutdown) is shared
+by both paths — only the `vllm serve` invocation differs.
 
 **Rationale**:
-- Symlink approach works for all consumer processes without requiring env var propagation.
-- Lustre supports POSIX `fcntl.flock`; NFS home does not.
-- The compiled kernel cache persists across SLURM jobs, eliminating the ~25-minute `fused_moe_90` recompile on every restart.
-- Same pattern applies to `UV_CACHE_DIR` (on Lustre) to avoid NFS→Lustre cross-filesystem copies during venv install.
+- Bare-metal is proven and debugged — keep it as the default
+- Container path reduces maintenance and provides newer CUDA
+- Users choose based on their needs (stability vs cutting-edge)
+- The bash framework is the same either way
+- Both paths produce the same lockfile format
 
 **Consequences**:
-- The symlink is created at SLURM job startup on the head node. Worker nodes run in separate `srun` steps and have their own home directory view; the symlink on the head node does not automatically propagate to workers. However, Ray actor processes on the worker nodes inherit the srun daemon's environment. As long as the srun step that starts the Ray worker daemon also runs the preamble (which it does via `bash -c "source venv && ..."`), the symlink will be created on the worker node too.
-- Stale lock files from previous failed runs should be cleaned up: `rm -rf ~/.cache/flashinfer/*.lock` before the next job.
-
-**Amendment (June 2026)**:
-To avoid group permission conflicts in shared multi-user/multi-model environments, the FlashInfer JIT cache path was relocated to use `$SCRATCHDIR` as the primary directory, with a fallback to the job's working directory (`$WORK_DIR/ivllm/flashinfer_cache`):
-```bash
-export FLASHINFER_JIT_CACHE_DIR=${SCRATCHDIR:-$WORK_DIR/ivllm}/flashinfer_cache
-```
-Using `$SCRATCHDIR` keeps compiled caches isolated per user and per project, uses Lustre (so locking/`flock` is fast and reliable), persists across runs (preventing long re-compilation wait times), and avoids using RAM-backed `$LOCALDIR` which would otherwise reduce compute node memory capacity.
-
-Furthermore, DeepGEMM's JIT compilation of FP8 GEMM kernels at startup can hit multi-node race conditions on atomic directory renames under NFS home directories (`~/.deep_gemm`), failing with `Assertion error: runtime != nullptr`. To prevent similar JIT compilation lock and latency race conditions on PyTorch Triton kernels (`~/.triton`) or TorchInductor JIT artifacts (`~/.cache/torchinductor`), and because their standard environment variables can be stripped by vLLM's Ray worker launcher (`ray_env.py`), we apply the exact same symlinking and redirection pattern across all major JIT compilation engines:
-
-```bash
-# FlashInfer JIT
-export FLASHINFER_JIT_CACHE_DIR=${SCRATCHDIR:-$WORK_DIR/ivllm}/flashinfer_cache
-ln -sfn "$FLASHINFER_JIT_CACHE_DIR" ~/.cache/flashinfer
-
-# DeepGEMM JIT
-export DG_JIT_CACHE_DIR=${SCRATCHDIR:-$WORK_DIR/ivllm}/deep_gemm_cache
-ln -sfn "$DG_JIT_CACHE_DIR" ~/.deep_gemm
-
-# OpenAI Triton JIT
-export TRITON_CACHE_DIR=${SCRATCHDIR:-$WORK_DIR/ivllm}/triton_cache
-ln -sfn "$TRITON_CACHE_DIR" ~/.triton
-
-# PyTorch TorchInductor JIT
-export TORCHINDUCTOR_CACHE_DIR=${SCRATCHDIR:-$WORK_DIR/ivllm}/torchinductor_cache
-ln -sfn "$TORCHINDUCTOR_CACHE_DIR" ~/.cache/torchinductor
-```
-This forces all JIT compiled kernels onto high-performance scratch space (Lustre), bypassing NFS locking/metadata caching latency and completely eliminating concurrent JIT initialization failures on multi-node runs.
-
-Additionally, to prevent P2P IPC memory handle errors (`Cuda error ... 'invalid argument'`) during inter-node communication over HPE Slingshot interconnect, we bypass vLLM's custom all-reduce kernels during multi-node runs by exporting:
-```bash
-export VLLM_SKIP_CUSTOM_ALL_REDUCE=1
-```
-This forces vLLM to use standard, fully-supported NCCL collectives for all distributed communication, ensuring extremely robust multi-node model startup.
-
-Additionally, to ensure reliable multi-node Ray log collection on job exits/failures, the `persist_ray_logs` diagnostic script was updated to use a standard non-login `bash -c` shell and to directly embed the literal `$RAY_DESTINATION` path rather than relying on environment propagation (`--export`), which gets stripped during nested or remote `srun` step invocations. This guarantees that diagnostics successfully execute and copy remote files back to the home directory even under strict Slurm job step cancellation contexts.
+- SLURM templates need a branching path (if `$CONTAINER` set → use container)
+- Model recipes (ADR-115) can specify preferred runtime per model
+- Must maintain both paths through testing
 
 ---
 
-## ADR-013: Multi-user project space permissions for shared venv directory
+## ADR-115: Model recipe database
 
-**Status**: Accepted
+**Status**: Accepted (design intent)
 
-**Context**: `$PROJECTDIR/ivllm/` is created by the first user who runs `ivllm setup`. On Isambard AI, `mkdir` creates directories with the user's umask (typically `0022` → `drwxr-sr-x`). The setgid bit on `$PROJECTDIR` ensures the group is inherited, but group write is not set. A second project member attempting to create their own versioned venv directory (e.g. `ivllm/0.19.0/`) gets `Permission denied`.
+**Context**: Users currently must write a `vllm.yaml` file for every model,
+specifying parallelism, memory, dtype, and other vLLM args. The
+[UKGovernmentBEIS/isambard_containers](https://github.com/UKGovernmentBEIS/isambard_containers)
+project maintains a YAML recipe file (`model_recipes.yaml`) with 100+ model
+configurations with inheritance, which their `vllm-serve` command uses to
+auto-configure any supported model.
 
-Additionally, `uv` uses a package cache to enable hard links into the venv (avoiding slow file copies). If `UV_CACHE_DIR` points to a shared location in `$PROJECTDIR`, the first user creates the cache directory with no group write, blocking other users from writing to it.
+**Decision**: Add a model recipe database (`models.yaml`) that maps HuggingFace
+model IDs to vLLM args and environment variables. Recipes support inheritance
+from base configs. `ivllm connect <model>` without a `--config` file
+auto-configures from the database.
 
-**Decision**:
-1. The setup SLURM script runs `chmod g+w $PROJECTDIR/ivllm` immediately after `mkdir -p $PROJECTDIR/ivllm`, so all project members can create versioned venv subdirectories.
-2. `UV_CACHE_DIR` is set to `$LOCALDIR/uv_cache` (per-user in-job scratch), not a shared location in `$PROJECTDIR`. `$LOCALDIR` is wiped at job end; the installed venv in `$PROJECTDIR/ivllm/<version>/` persists as normal.
+```yaml
+# models.yaml (shipped with ivllm)
+
+_deepseek_base:
+  vllm_args:
+    enable_expert_parallel: true
+
+deepseek-ai/DeepSeek-R1-0528:
+  base: _deepseek_base
+  vllm_args:
+    tensor_parallel_size: 4
+    pipeline_parallel_size: 4
+    reasoning_parser: deepseek_r1
+```
 
 **Rationale**:
-- `chmod g+w` on the parent directory is a one-line fix that immediately unblocks all project members.
-- Using `$LOCALDIR` for the uv cache sacrifices hard-link optimisation (cache on different filesystem than venv) but correctness and multi-user safety take priority. The uv cache's main value on Lustre was avoiding NFS→Lustre copies; since each user gets a fresh `$LOCALDIR` per job, the cache is ephemeral anyway.
+- Eliminates the need for per-job config files for popular models
+- Recipes encode hard-won tuning so knowledge is shared across the team
+- Inheritance avoids duplication across model families
+- Users can add their own recipes locally
 
 **Consequences**:
-- `$PROJECTDIR/ivllm/` is group-writable after any user's first `ivllm setup` run.
-- uv downloads packages fresh into `$LOCALDIR/uv_cache` each setup run (no persistent shared cache). Installation time is slightly longer but remains correct.
-- Removes the previous `UV_CACHE_DIR=$PROJECTDIR/ivllm/uv_cache` entry from the ADR-011 directory layout.
+- `models.yaml` bundled with ivllm, installed on HPC via `ivllm setup`
+- `ivllm connect <model>` falls back to requiring `--config` if model not in DB
+- `--config` flag still supported for custom models
 
 ---
 
-## ADR-014: Remove `vllmVersion` from personal config; discover installed versions at start time
+## ADR-116: Elimination of recursive `chmod -R` permissions logic on HPC
 
 **Status**: Accepted
 
-**Context**: ADR-011 placed `vllmVersion` in `~/.config/ivllm/config.json` as the single source of truth for which vLLM version to use. This causes problems when multiple users share the same `$PROJECTDIR`:
-- A second user with a different `vllmVersion` in their personal config (e.g. `0.19.0`) triggers a new setup run even though `0.19.1` is already installed and is compatible.
-- `min-vllm-version` in the YAML config was already the semantic constraint — `vllmVersion` in personal config was redundant.
+**Context**: In v2 and early v3, helper functions inside `src/engine/lib/utils.sh` (such as `resolve_vllm_dir`, `resolve_job_dir`, etc.) used recursive `chmod -R g+rw` commands to ensure all files and subdirectories inside the shared project space remained group-writable and accessible under multi-user access permissions (ADR-106).
 
-**Decision**:
-1. Remove `vllmVersion` from `Config` interface and defaults.
-2. `ivllm setup` takes the vLLM version as a positional argument: `ivllm setup 0.19.1`. There is no default — the user must be explicit.
-3. `ivllm start` discovers installed versions at runtime by listing `$PROJECTDIR/ivllm/*/bin` on the remote. It selects the highest installed version that satisfies `min-vllm-version` from the YAML (or the highest overall if no minimum is set).
-4. If no installed version satisfies the requirement, `ivllm start` fails with a clear message: `Run: ivllm setup <version>`.
+However, recursive `chmod -R` operations are highly problematic on HPC filesystems (like Lustre on Isambard-AI or GPFS):
+1. **Performance Hangs (O(N) Complexity):** As Python virtual environments and model caches grow to contain hundreds of thousands of files, walking the directory tree recursively becomes extremely slow, eventually causing scripts to hang for minutes or hours.
+2. **High-Frequency Polling Contention:** Because `resolve_job_dir` was called inside status-checking functions during the 10-second polling monitor loop, the script performed `chmod -R` on the entire jobs directory every 10 seconds.
+3. **Multi-User Permission Errors:** In a shared group directory, a user lacks permissions to change the mode of files owned by another user. Running `chmod` on files owned by others returned thousands of "Operation not permitted" blocks and warnings, triggering filesystem locking backups.
+
+**Decision**: Remove all recursive `-R` flags from all `chmod` commands inside `src/engine/lib/utils.sh`. Replace them with non-recursive permissions settings on directory creation (namely, `chmod g+rwX` on specific pathways directly when directories are initialized or created). 
+
+To ensure files created inside the shared folder natively inherit group ownership and write permissions without manual recursion support:
+1. Enable the directory Set-Group-ID (**SGID**) flag (`chmod g+s dir`) upon initial setup.
+2. Configure Default Access Control Lists (**ACLs**) at the project directory level (using `setfacl -d -m g::rwX dir` and `setfacl -m g::rwX dir`).
 
 **Rationale**:
-- The remote install directory is the ground truth for what is actually available; personal config was a stale cache of that truth.
-- Automatic version selection ensures that installing a newer vLLM version (`ivllm setup 0.20.0`) is immediately picked up by all users without config changes.
-- `min-vllm-version` in the per-job YAML remains the right place to express feature requirements — it is close to the model config that depends on those features.
+- Eliminates recursive directory traversal entirely, turning path validation from $O(N)$ and loop-contended time into an instant $O(1)$ operation.
+- Natively resolves filesystem metadata lock contention on Lustre, preventing script execution hangs.
+- Natively delegates permission and group inheritance to the operating system/filesystem via SGID and default ACLs, avoiding "Operation not permitted" warnings in multi-user environments.
 
 **Consequences**:
-- `--vllm-version` flag removed from `ivllm config` command.
-- `ivllm start` makes one additional SSH call at startup to list installed versions (negligible overhead; no Slurm API calls).
-- Users who previously set `vllmVersion` in their config will find it ignored after upgrade; they should clean it out with `ivllm config` (or delete the key from `~/.config/ivllm/config.json` manually).
+- The installation process relies on the parent directories having the correct ACLs and SGID bit configured once from the CLI (e.g. during project space onboarding).
+- No functional regressions for the test suite, as mocked sandbox behaviors continue to function seamlessly without the recursive flag.
 
 ---
 
-## ADR-015: AI coding assistant integration via interactive menu at `ivllm start`
+## ADR-118: Ephemeral diagnostic jobs for model benchmarking (not a Backend lifecycle capability)
+
+**Status**: Accepted (design intent)
+
+**Context**: We need a way to benchmark vLLM configurations (throughput,
+TTFT, ITL) on Isambard, primarily so an AI agent can automate "try N
+candidate configs, compare the numbers, pick one" without a human manually
+submitting jobs and reading logs. Several designs were considered:
+
+1. **Benchmark an already-running, persistent, `ivllm connect`-managed job.**
+   The benchmark client would need to run somewhere — colocated with the
+   model (contends with vLLM's own process/network), on a separate SLURM
+   allocation reaching the model's `computeHostname:serverPort` over the
+   fabric (extra allocation, possible interactive-reservation conflict since
+   ADR-104 notes only 1 sbatch job is allowed on the interactive
+   reservation), or through the existing SSH tunnel from the local machine
+   (bakes WAN latency into TTFT/ITL numbers, making them meaningless).
+2. **A fully self-contained, disposable job**: start vLLM, benchmark it
+   against itself, shut down. No lockfile, no persistent lifecycle.
+
+Option 2 turned out to be a much better fit once examined closely:
+
+- **No interactive-reservation contention** — runs on the regular batch
+  partition, not the interactive reservation, so an agent can submit many
+  of these concurrently for different configs without hitting the "1 sbatch
+  job" limit that a persistent `ivllm connect` job would already be using.
+- **No lingering GPU-hour risk** — self-terminating by construction. There
+  is no idle-timeout monitor to build or rely on, because there is nothing
+  to time out; the job runs a bounded, predictable duration (load + warmup
+  + benchmark) and exits.
+- **No SSH tunnel needed** — the benchmark client and `vllm serve` are
+  colocated in the same SLURM allocation, so it's `localhost:$port`. This
+  sidesteps the "where does the bench client run relative to the model"
+  topology question entirely.
+- **Trivially parallelisable** — each config is an independent SLURM job.
+  An agent can fire off several concurrently and collect results
+  independently, with no shared state to coordinate.
+- **`vllm bench serve` already does its own warmup** — it runs a single
+  test request before the real measurement starts ("Starting initial single
+  prompt test run..."), so the elaborate `monitor_startup` warmup-then-save-
+  JIT-cache dance the persistent path needs isn't required for correctness.
+- **Profiling** - alongside performance, the models can be also profiled on
+  smaller runs with different profiling tools. Details here:
+  [https://docs.vllm.ai/en/stable/contributing/profiling/]. Profiling can run
+  after benchmarking to determine where a model is slow.
+
+**Decision**: Benchmarking is implemented **only** as ephemeral, disposable
+diagnostic jobs. This fully replaces (not complements) the idea of
+benchmarking an already-running persistent job — there is no `ivllm bench
+<job>` command. If someone wants numbers for a config, they submit a fresh
+disposable job with that config or configs; there is no way to benchmark a job
+that is already serving real traffic without restarting it.
+
+CLI surface: a two-phase command, `ivllm compare <comparisonName> --submit
+<config1.yaml> <config2.yaml> ...` and `ivllm compare <comparisonName>
+--analyse`. `comparisonName` is a grouping/manifest concept — distinct from
+any individual config's identity — used to organise the results of
+potentially many configs being compared, under
+`$PROJECTDIR/engine/diagnostics/<comparisonName>/`.
+
+`--submit` is **non-blocking** (`sbatch`, not `sbatch --wait`) — it fires one
+independent job per config and returns immediately, writing a
+`comparison.json` manifest recording each config's SLURM job ID and
+submission time. This matches a fire-and-forget agent workflow: submit, do
+something else, come back later.
+
+`--analyse` does a **one-shot status check** (no internal polling loop —
+consistent with the project's general "don't hammer the scheduler"
+convention) against the manifest's job IDs, rsyncs down the diagnostics
+directory for any newly-completed config, and prints a status table
+(pending/running/completed/failed) with metrics inline for completed
+configs. It exits 0 even if jobs are still pending — the agent decides
+whether and when to re-invoke it. **It does not compute a verdict** —
+picking a winner from the numbers is the agent's job, not the tool's.
+
+`--submit`'s SLURM `--time` defaults to **2 hours**, overridable per
+comparison run. Model load time (weight download/read, JIT/`torch.compile`
+compilation, multi-node startup coordination) can itself take 45–60+
+minutes for large or multi-node configs before benchmarking even starts, so
+a default in the 45–60 minute range — initially considered — was too tight
+and risked the job being killed by its own time limit before producing any
+result. 2 hours gives enough headroom for large/multi-node configs while
+still being a bounded, disposable-job duration; `--time` remains available
+for configs that need longer.
+
+Multi-node configs are supported from the first version (not deferred),
+reusing the existing head/worker script split. Worker coordination for an
+ephemeral job does **not** need lockfile polling (`monitor_worker`'s
+approach) — the head script `srun`-launches worker(s) as background job
+steps within the same `sbatch` script, waits on the head `vllm serve`
+process, benchmarks, then kills everything; SLURM's own allocation teardown
+when the script exits reaps any remaining worker steps. This is simpler
+than the persistent path's coordination precisely because there is no
+detach/reattach concern for a job that is never meant to outlive one
+CLI-driven benchmark run.
+
+**A required refactor this surfaces**: `run_head_vllm.sh` and
+`run_worker_vllm.sh` currently read `serverPort` **from the lockfile** via
+`get_job_status_setting "$IVLLM_JOB" ".serverPort"` — they are not drop-in
+reusable for a job with no lockfile. The `IVLLM_ARGS`-building logic (DP/TP/PP
+math, `--served-model-name`, etc.) must be extracted into a shared function
+that takes `port`/`model`/`config` as plain parameters, callable from both:
+
+- the persistent path (looks up port from the lockfile, then calls the
+  shared builder), and
+- the new ephemeral path (picks a port directly — no conflict risk, since
+  each ephemeral job is its own isolated allocation and worker nodes reach
+  the head via SLURM's own hostname resolution, not a lockfile-published
+  address).
+
+This avoids the two paths drifting apart on "how do I correctly build a
+`vllm serve` command from a job config" — the part that's actually worth
+sharing.
+
+**Rationale**:
+- Matches the actual use case ("try N configs, compare, pick one" — a
+  tuning/diagnostic workflow) far better than forcing benchmarking into the
+  persistent-job lifecycle contract defined in `backend-contract.md`, which
+  is designed for long-lived, detachable, multi-user-shared servers — none
+  of which properties a one-shot benchmark run needs.
+- Keeps the hard lifecycle contract in `backend-contract.md` unpolluted:
+  benchmarking deliberately sits outside `Backend.connect()` /
+  `requestCancel()` / the lockfile state machine entirely, rather than
+  bolting a second, incompatible state machine onto the same abstraction.
+- Non-blocking `--submit` + one-shot `--analyse` matches how an agent
+  actually wants to drive this: kick off work, do other things, poll
+  occasionally, read structured results itself.
+
+**Consequences**:
+- No `Backend.benchmark()` method is added (unlike the earlier, superseded
+  sketch in `design/old/roadmap2.md` Phase M7.6) — this capability does not
+  go through the `Backend` abstraction at all.
+- `run_head_vllm.sh` / `run_worker_vllm.sh` need the arg-building extraction
+  described above before the ephemeral path can reuse them safely.
+- `comparison.json` is a new manifest schema (comparisonName → per-config
+  {slurmJobId, submittedAt, status}), separate from `LockfileV3`.
+- Diagnostics storage convention (`$PROJECTDIR/engine/diagnostics/<name>/`)
+  matches the pre-existing "Log file failure recovery" roadmap item, so both
+  can share the same directory convention and eventual rsync-to-local
+  tooling (`copyDirectory(..., 'down')` already exists in `RemoteOps`).
+- Ephemeral benchmark jobs MUST use the existing `utils.sh` exit-trap
+  machinery (`tidy_up()` + `setup_traps()`) used by persistent jobs. This
+  guarantees that if a benchmark job crashes, logs/configs are archived to
+  the diagnostics directory.
+
+---
+
+## ADR-117: Support for UCCL-EP as a high-performance open-source expert-parallel alternative on HPE Slingshot
 
 **Status**: Accepted
 
-**Context**: After vLLM reaches running state, users need to connect an AI coding assistant (OpenCode, Claude Code, GitHub Copilot) to the local endpoint. The first assistant launcher flattened the choices into a single menu and treated OpenCode as a file-writing workflow (`opencode.json` in the project). That does not scale cleanly to additional wrappers (for example `sbx`) or to per-session runtime overrides.
+**Context**: Mixture-of-Experts (MoE) models (like DeepSeek-V3 or DeepSeek-R1) rely on expert-parallel (EP) communication kernels to achieve high GPU efficiency. Historically, vLLM compiles the NVIDIA-optimized `deep_ep` package for this purpose. 
 
-**Decision**: `ivllm start` presents a three-layer interactive launcher when the vLLM server is healthy:
+However, DeepEP is strictly bound to Mellanox Connect-X InfiniBand hardware, direct NVSHMEM GPU-Initiated Networking (GIN) parameters, and Mellanox OFED developmental headers (`mlx5dv.h`). On supercomputers like Isambard-AI Phase 2 which utilize the **HPE Slingshot 11 interconnect** (powered by Cassini ASICs and standard `aws-ofi-nccl` libfabric transport), DeepEP fails to compile due to missing vendor-specific headers, and cannot execute at runtime since Cassini NICs speak libfabric rather than InfiniBand verbs.
 
-1. **Layer 1 — target**: change directory, launch OpenCode, launch Copilot, launch Claude, or shut down `ivllm`.
-2. **Layer 2 — wrapper**: choose direct launch, `scoder`, `sbx`, or go back.
-3. **Layer 3 — action**: launch now, show copy-paste command, or go back.
-4. Runtime configuration is injected per launch:
-   - **opencode**: `OPENCODE_CONFIG_CONTENT=<json>` (highest practical runtime precedence; no project file write)
-   - **copilot**: `COPILOT_PROVIDER_BASE_URL`, `COPILOT_MODEL`, plus compatibility env vars required by the CLI integration
-   - **claude**: `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`
-5. The launcher always renders the full shell-ready command, including environment variables, before or alongside any automatic launch so the user can copy, paste, and customise it manually.
-6. **scoder** remains a wrapper around the assistant command and receives the explicit `--llm-port <port>` argument.
-7. **sbx** launches by reusing or creating a sandbox for the selected agent/workspace, then running the agent via `sbx exec -it -w <cwd> -e ... <sandbox> <agent>`.
-8. `sbx` network policy remains a **user-managed prerequisite**: the user must have allowed `localhost:<ivllm-port>` before sandbox launch. `ivllm` must not edit global `sbx policy` state.
-9. `--no-launch` still suppresses the menu entirely and shows the manual config snippet only.
+The open-source **UCCL-EP** (Unified Collective Communication Library - Expert Parallel) project implements the identical high-performance, GPU-initiated MoE collectives interface but abstracts transport interactions. A custom fork of UCCL-EP maintained by `doublewordai` on the **`pr997-swiss-cxi`** branch explicitly integrates native HPE Slingshot 11 support via the libfabric `CXI` transport layer on Swiss Alps and Isambard-AI, and includes a full `deep_ep_wrapper` drop-in replacement package.
 
-For `sbx`, the endpoint inside the sandbox is `http://host.docker.internal:<port>` (or `/v1` for OpenCode). For direct and `scoder` launches, the endpoint remains `http://localhost:<port>`.
+**Decision**: Modify `src/engine/lib/slurm-vllm-setup.sh` to implement a robust dual-path installation workflow for expert-parallel collectives:
+1. Try compiling the standard `deep_ep` library first.
+2. If `deep_ep` fails to compile (expected on SLES bare-metal on Slingshot), catch the block and fall back to UCCL-EP.
+3. Automatically compile the user-space **`rdma-core`** library from source if standard InfiniBand development headers (`infiniband/verbs.h`) are missing on SLES bare-metal. To ensure libraries survive job tear-downs, they are compiled persistently inline inside the virtual environment directory (`$vllmVersionDir/rdma-core/`) and dynamically resolved at runtime inside **`src/engine/lib/vllm-env.sh`** by dynamically appending it to `LD_LIBRARY_PATH`. This makes compilation and runtime resolution fully stable, self-contained, and persistent on any subsequent compute nodes.
+4. Automatically install `nanobind` (build dependency for UCCL-EP), clone the **`doublewordai/uccl`** fork on the **`pr997-swiss-cxi`** branch, and compile it with Slingshot CXI transport optimization flags (`USE_LIBFABRIC_CXI=1` and `USE_DMABUF=1`), installing the core `ep` package.
+5. If compiled successfully, install the included **`deep_ep_wrapper`** package, which serves as a complete, pre-configured high-fidelity `deep_ep` drop-in replacement so that vLLM can seamlessly import and leverage UCCL-EP without patching downstream source files.
 
 **Rationale**:
-- Separating **assistant**, **wrapper**, and **action** keeps the UI scalable as more wrappers or agent types are added.
-- Runtime env injection is a better fit than persistent config writes for per-session `ivllm` state (port, selected model, wrapper-specific hostname).
-- `OPENCODE_CONFIG_CONTENT` matches OpenCode's config precedence better than writing `opencode.json` into the workspace.
-- Showing the exact command lowers friction for advanced users without forcing `ivllm` to proxy arbitrary downstream agent flags.
-- `sbx exec -e ...` is the correct boundary for per-launch sandbox env injection; these values should not be written into persistent sandbox state.
+- **Completeness:** Promotes optimal high-performance MoE serving throughput for DeepSeek models on Isambard-AI's HPE Slingshot 11, matching the physical interconnect technology.
+- **Zero Code Modification:** Creating a package shim in `site-packages/deep_ep` lets vLLM seamlessly import and leverage UCCL-EP without patching vLLM's internal python source files.
+- **Resilience:** If UCCL-EP compilation fails, standard vLLM operations continue unaffected, falling back gracefully to PyTorch or default MoE kernels.
 
 **Consequences**:
-- `ivllm start` remains a long-running foreground process with an interactive launcher loop — the user must keep the terminal open.
-- Launch code must generate wrapper-aware commands for three modes (direct, `scoder`, `sbx`) instead of a single binary+args pair.
-- OpenCode launch no longer needs to modify workspace files for the normal path.
-- `sbx` support depends on discovering/reusing a sandbox name derived from agent + workspace, and may need sandbox creation before the first launch.
-- The user is responsible for `sbx policy allow network localhost:<port>`; if missing, `ivllm` should fail clearly rather than trying to edit policy.
+- `slurm-vllm-setup.sh` is fully self-healing: if either library fails to compile, it catches the error and proceeds, allowing standard vLLM and standard models to install successfully (exit code 0).
+- Because UCCL-EP's core headers (like `proxy_ctx.hpp`) are still hard-coded to include `<infiniband/verbs.h>` for structural declarations, its bare-metal compilation still requires `libibverbs`. On HPE Slingshot SLES bare-metal (which lacks InfiniBand development headers), UCCL-EP compilation will be safely skipped with a warning.
+- To run high-performance expert-parallel kernels (DeepEP/UCCL-EP), users are advised to run vLLM via the `isambard_containers` Apptainer container, which gets around SLES bare-metal header constraints by pre-installing standard InfiniBand development packages inside its Ubuntu build layer.
+- The `ep` package and its `deep_ep` shim are transparently managed within the venv side-packages when compiling successfully.
+
+

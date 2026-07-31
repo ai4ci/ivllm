@@ -4,6 +4,7 @@ dist/
 bun.lockb
 
 # Documentation folder
+design/
 docs/
 tests/
 .opencode/

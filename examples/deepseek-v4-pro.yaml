@@ -1,69 +1,65 @@
+metadata:
+    target: Isambard-AI GH200
+    created-by: Rob
+    version: 0.1.0
+    lifecycle: failing
+min-vllm-version: "0.23.0"
+idle-timeout: 60
+
 # NOT WORKING
 #
 # vLLM config for deepseek-ai/DeepSeek-V4-Pro on Isambard AI
 #
 # Hardware: 4 × GH200 120GB per node (Isambard AI Phase 1/2) — ~96 GiB usable HBM3e per GPU
 # Model: 1.6T total parameters, 49B active parameters (MoE)
-# Parallelism options:
-#   - TP=16 (4 nodes): Recommended for comfortable KV cache headroom and longer context.
-#     Requires vLLM fix for FP8 block alignment (moe_intermediate_size=3072 / 16 = 192,
-#     not divisible by block_k=128). May fail with current vLLM versions.
-#   - TP=8 + PP=2 (4 nodes): Same 16-GPU memory profile as TP=16 (~50 GB weights/GPU).
-#     TP=8 satisfies all divisibility constraints: 7168/8=896, 3072/8=384, 384/128=3.
-#     Use this if TP=16 fails with "not divisible by weight quantization block_k=128".
-#   - TP=8 alone (2 nodes): Tight fit (~100 GB weights/GPU), limited KV cache headroom.
-#     Suitable for shorter contexts only.
+# Total weigt ~ 960Gb of which
+# 384 experts (16x24)
 #
-#   Uses Tensor + Expert Parallel (TEP) with expert layers split via EP.
-#   Pipeline Parallel (PP) can replace TP to maintain the same GPU count with
-#   correct weight partitioning when TP alone hits FP8 block alignment issues.
+# Uses Tensor + Data + Expert Parallel (TEP) with expert layers split via EP.
 #
 # Quantization: Native FP4+FP8 mixed checkpoint (experts are in FP4, dense layers in FP8)
-#   which reduces model weights footprint to ~800 GB.
+#   which reduces model weights footprint to ~960 GB - 140GB shared layers - split 4 ways within node ~ 35Gb. 820G experts split 16 ways
+# may need to up to 6 nodes (24 GPUs)
 #
 # Architecture: Mixture of Experts (MoE) with hybrid CSA+HCA attention
 #   Compressed Sparse Attention (CSA) and Heavily Compressed Attention (HCA)
 #   reduce the KV cache footprint to just 10% of V3.2.
 #   Three-tier reasoning effort: Non-think, Think High, and Think Max.
 #   Function calling: native deepseek_v4 tool-use protocol.
-#
-# Usage (16-GPU default): ivllm start <job-name> --config examples/deepseek-v4-pro.yaml
-# Usage (8-GPU, tight):  ivllm start <job-name> --config examples/deepseek-v4-pro.yaml --gpus 8
 
-model: deepseek-ai/DeepSeek-V4-Pro
-# Default: TP=4 + PP=4 (16 GPUs, 4 nodes) — satisfies FP8 block alignment.
-# To use TP=16 instead, comment out the two lines below and uncomment the TP=16 block.
+model: deepseek-ai/DeepSeek-V4-Pro-DSpark
+
+# 384 experts so 16x24 (either 16 nodes or 24 nodes)
 tensor-parallel-size: 4
-pipeline-parallel-size: 4
-
-# Alternative: TP=16 (4 nodes, pure tensor parallel)
-# May fail with "not divisible by weight quantization block_k=128" in vLLM < 0.23.
-# tensor-parallel-size: 16
-# pipeline-parallel-size: 1
+data-parallel-size: 6
 enable-expert-parallel: true
 
-# Weights occupy ~800 GB. 16 GPUs offer 1920 GB VRAM (50 GB weights/GPU with TP=16 or TP=8+PP=2).
-# 8 GPUs offer 960 GB VRAM (100 GB weights/GPU with TP=8 alone — tight for KV cache).
-# Using FP8 KV cache is required to stay within memory limits.
-quantization: fp8                 # Force standard FP8 execution tracking
+# Weights occupy ~960 GB. 16 GPUs offer 1920 GB VRAM (50 GB weights/GPU with TP=16 or TP=4+DP=4).
+
 
 kv-cache-dtype: fp8
 block-size: 256
+# in GiB. When TP > 1, this is the total buffer size summed across all TP ranks (This is 64G per node I think as data parallel?)
+kv-offloading-size: 256
+kv-offloading-backend: native
 
 # High context capability up to 1,000,000 tokens (recipe recommends 800K max-model-len)
 # Reduced to 512K to reduce scheduler edge-case triggers for upstream bug #41530
-max-model-len: 524288
+# max-model-len: 524288
+max-model-len: 1048576
 gpu-memory-utilization: 0.85
+# Max batch parameters to protect host/GPU RAM
+max-num-seqs: 64
+max-num-batched-tokens: 16384
 
 # Compilation and decoding optimizations
 # enforce-eager: disables CUDA graphs to avoid replay hangs (upstream bug #41530)
-compilation-config: '{"mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY", "pass_config": {"fuse_allreduce_rms": false}}'
-enforce-eager: true
-no-enable-flashinfer-autotune: true
+compilation-config: '{"mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY", "pass_config": {"fuse_allreduce_rms": false}, "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32, 64]}'
 
-# Max batch parameters to protect host/GPU RAM
-max-num-seqs: 512
-max-num-batched-tokens: 512
+# speculative-config: '{"method": "deepseek_mtp","num_speculative_tokens": 1}'
+speculative-config: '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"greedy"}'
+
+# enable-flashinfer-autotune: false
 
 trust-remote-code: true
 
@@ -79,33 +75,16 @@ tokenizer-mode: deepseek_v4
 # Prefix caching — disabled to avoid scheduler deadlock (upstream vLLM #41530)
 # enable-prefix-caching: true
 
-min-vllm-version: "0.23.0"
-# min-vllm-version: DeepSeek-V4-Pro requires vLLM 0.20.0+ (per vLLM recipes).
-# ivllm checks this before submitting; stripped before passing to vLLM.
-
-# Mixture of experts models need to be forced to use triton
-gdn-prefill-backend: triton
-moe-backend: triton_unfused             # Forces vLLM to use pre-compiled Triton MoE kernels
-linear-backend: triton
-attention-config: '{"backend":"TRITON_ATTN"}'
-
-# DeepGEMM woudl be the MoE backend of choice for DeepSeek-V1-Pro except it uses NVFP4 datatypes
-# which are not supported on Hopper (only on Blackwell)
-# We try and use triton, and diable DeepGEMM but it somehow makes itself present
-# Anyway and throws an error.
-
-# moe-backend: deep_gemm
-# linear-backend: deep_gemm
-enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
+moe-backend: humming
+all2all-backend: deepep_low_latency
+# Patched Isambard AI humming version dequantises fp4 experts to fp8
+# see env variables for humming settings.
 
 # Environment variables required for Hopper GPUs (per vLLM recipe).
 # Stripped before passing to vLLM serve; rendered as export lines in the SLURM script.
 env:
+  VLLM_ENGINE_READY_TIMEOUT: "3600"
   VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "0"
-  PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
-  VLLM_USE_DEEP_GEMM_E8M0: "0"
-  VLLM_USE_DEEP_GEMM: "0"
-  VLLM_MOE_USE_DEEP_GEMM: "0"
-  VLLM_DEEP_GEMM_WARMUP: "skip"
-  VLLM_MLA_DISABLE: "1"
+  VLLM_HUMMING_MOE_GEMM_TYPE: indexed
+  VLLM_HUMMING_INPUT_QUANT_CONFIG: '{"dtype":"float8e4m3","input_scale_group_size":128}'
 

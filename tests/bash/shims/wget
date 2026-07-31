@@ -1,0 +1,12 @@
+#!/bin/bash
+# Mock wget — real network downloads are out of scope for sandboxed tests.
+# slurm-vllm-setup.sh's NVHPC SDK download is a heavyweight, real-network
+# installation step not exercised by the bash test suite (see
+# design/testing.md). This shim fails loudly rather than silently no-oping,
+# so an unexpected call surfaces as a clear test failure instead of a
+# silently-passing script that never actually downloaded anything.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shim-common.sh"
+
+shim_log wget "$*"
+echo "[mock wget] real downloads are out of scope for sandboxed tests — refusing: wget $*" >&2
+exit 99
