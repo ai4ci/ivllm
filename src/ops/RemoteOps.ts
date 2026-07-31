@@ -33,7 +33,8 @@ export abstract class RemoteOps {
     ): Promise<RunRemoteResult>;
 
     /**
-     * Copy a local file to the login node via SCP.
+     * Copy a local file to the login node via SCP. The resulting file must be
+     * group read and writeable.
      * @param localPath - Path to the local source file
      * @param remotePath - Destination path on the login node
      */
@@ -42,8 +43,7 @@ export abstract class RemoteOps {
     /**
      * Copy a local directory to/from a remote pathvia rsync.
      *
-     * Uses archive mode (-a) to preserve permissions/timestamps, compresses data (-z),
-     * and forwards SSH multiplexing via the '-e' flag.
+     * The resulting files must be group read and writeable.
      * @param localPath - Path to the local directory
      * @param remotePath - Destination or source path on the login node
      * @param direction - 'up' to upload (local -> remote), 'down' to download (remote -> local)

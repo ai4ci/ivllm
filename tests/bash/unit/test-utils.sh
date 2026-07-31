@@ -9,7 +9,8 @@
 IVLLM_PROJECTDIR=/tmp/ivllm-test
 export IVLLM_PROJECTDIR
 # shellcheck disable=SC1091
-source /home/scoder/Git/isambard-vllm/src/engine/lib/utils.sh
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$here/../../../src/engine/lib/utils.sh"
 
 # ── Test: get_max_job_time returns user time when under max ─────────────
 test_get_max_under() {

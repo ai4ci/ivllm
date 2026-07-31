@@ -11,6 +11,7 @@ import fs from 'fs';
 import { homedir } from 'os';
 import { sleep } from 'bun';
 import { isLocalPortInUse } from '../local-ops';
+import { compareVersions } from '../utils';
 
 export class IsambardBareMetalBackend extends Backend {
     ops: SshRemoteOps;
@@ -32,7 +33,24 @@ export class IsambardBareMetalBackend extends Backend {
 
     async bootstrap(): Promise<void> {
         await this.ops.checkSSH();
-        if (!this.bootstrapped) {
+        if (this.bootstrapped) return;
+
+        const localVersion = (globalThis as any).__VERSION__ as string;
+        const remoteVersion = await this.getRemoteEngineVersion();
+
+        if (remoteVersion && compareVersions(localVersion, remoteVersion) < 0) {
+            throw new Error(`
+This ivllm client is version ${localVersion}, but the engine deployed at
+${this.creds.projectDir} is version ${remoteVersion}.
+Please upgrade your local ivllm install to ${remoteVersion} or later before continuing.
+(i.e. do a git pull)
+`);
+        }
+
+        if (
+            !remoteVersion ||
+            compareVersions(localVersion, remoteVersion) > 0
+        ) {
             const currentDir = import.meta.dir;
             const enginePath = path.resolve(currentDir, '../engine');
             await this.ops.copyDirectory(
@@ -40,8 +58,10 @@ export class IsambardBareMetalBackend extends Backend {
                 this.creds.projectDir,
                 'up',
             );
-            this.bootstrapped = true;
+            await this.setRemoteEngineVersion(localVersion);
         }
+
+        this.bootstrapped = true;
     }
 
     async setup(version: string, force?: boolean): Promise<void> {
@@ -204,5 +224,20 @@ export class IsambardBareMetalBackend extends Backend {
         await this.ops.copyDirectory(targetDir, remoteDiagDir, 'down');
 
         return targetDir;
+    }
+
+    private async getRemoteEngineVersion(): Promise<string> {
+        const { stdout } = await this.ops.runRemote(
+            `cat "${this.remoteEngine}/ivllm-version" 2>/dev/null || true`,
+            { env: this.envs, silent: true },
+        );
+        return stdout.trim();
+    }
+
+    private async setRemoteEngineVersion(version: string): Promise<void> {
+        await this.ops.runRemote(
+            `umask 002 && echo "${version}" > "${this.remoteEngine}/ivllm-version"`,
+            { env: this.envs, silent: true },
+        );
     }
 }

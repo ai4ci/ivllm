@@ -26,6 +26,8 @@ if [[ -v IVLLM_UTILS ]] && declare -f resolve_localdir > /dev/null; then
 fi
 export IVLLM_UTILS=1
 
+umask 0002
+
 if [[ -z ${IVLLM_PROJECTDIR:-} ]]; then
     export IVLLM_PROJECTDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
     echo "Setting project directory: $IVLLM_PROJECTDIR"
@@ -725,11 +727,16 @@ wait_report() {
     local tick_ms=100
     local target_ms
     (( target_ms = IVLLM_CHECK_INTERVAL_SECS * 1000 ))
-    while kill -0 "$pid" 2>/dev/null; do
+
+    while true; do
+        # kill -0 succeeds on zombies too, so check /proc state directly.
+        [[ -e "/proc/$pid" ]] || break
+        local state
+        state=$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)
+        [[ "$state" == "Z" || -z "$state" ]] && break
+
         if [ "$elapsed" -ge "$target_ms" ]; then
             if is_status "$job" "initialising"; then
-                # node specific RAM report uses $SLURM_NODEID and is scoped to
-                # current node.
                 report_memory "$job"
             fi
             elapsed=0
@@ -737,6 +744,22 @@ wait_report() {
         sleep 0.1
         ((elapsed += tick_ms))
     done
+
+    wait "$pid" 2>/dev/null
+    return $?
+
+#     while kill -0 "$pid" 2>/dev/null; do
+#         if [ "$elapsed" -ge "$target_ms" ]; then
+#             if is_status "$job" "initialising"; then
+#                 # node specific RAM report uses $SLURM_NODEID and is scoped to
+#                 # current node.
+#                 report_memory "$job"
+#             fi
+#             elapsed=0
+#         fi
+#         sleep 0.1
+#         ((elapsed += tick_ms))
+#     done
 }
 
 

@@ -8,6 +8,7 @@ import type {
 import { RemoteOps } from './RemoteOps';
 import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
+import fs from 'fs';
 import net from 'net';
 
 /**
@@ -109,18 +110,18 @@ export class SshRemoteOps extends RemoteOps {
      */
     async copyFile(localPath: string, remotePath: string): Promise<void> {
         return new Promise((resolve, reject) => {
-            const target = `${this.config.username}@${this.config.loginHost}:${remotePath}`;
+            const target = `${this.config.username}@${this.config.loginHost}`;
+            const remoteCommand = `umask 002 && cat > "${remotePath}"`;
             const proc = spawn(
-                'scp',
-                [...SSH_MUX_OPTS, '-o', 'BatchMode=yes', localPath, target],
-                {
-                    stdio: 'inherit',
-                },
+                'ssh',
+                [...SSH_MUX_OPTS, '-o', 'BatchMode=yes', target, remoteCommand],
+                { stdio: ['pipe', 'inherit', 'inherit'] },
             );
+            fs.createReadStream(localPath).pipe(proc.stdin);
             proc.on('error', reject);
             proc.on('close', (code) => {
                 if (code === 0) resolve();
-                else reject(new Error(`scp exited with code ${code}`));
+                else reject(new Error(`scp-via-cat exited with code ${code}`));
             });
         });
     }
@@ -151,10 +152,18 @@ export class SshRemoteOps extends RemoteOps {
             // e.g., "ssh -o ControlMaster=auto -o BatchMode=yes"
             const sshCommand = `ssh ${[...SSH_MUX_OPTS, '-o', 'BatchMode=yes'].join(' ')}`;
 
+            // Rsync must not change remote permissions and must provide a
+            // umask to allow group writable settings on the target directory
             const proc = spawn(
                 'rsync',
                 [
-                    '-az', // Archive mode (recursive, preserves attributes) + Compression
+                    '-a',
+                    '--no-perms',
+                    '--no-owner',
+                    '--no-group',
+                    '-z',
+                    '--rsync-path',
+                    'umask 002 && rsync',
                     '-e',
                     sshCommand, // Instruct rsync to use our specific multiplexed SSH configuration
                     src,

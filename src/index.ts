@@ -360,11 +360,10 @@ async function cmdConnect(
         console.log(`
 [connect] job ${jobName} is ${status}.
 SSH tunnel connected - OpenAI api: http://localhost:${localPort}/v1 ...
-Tunnel will stay open until you press Ctrl-C ...
 
 Sandboxing: the sandbox must be able to access localhost port ${localPort}
 
-Lanching claude
+Launching claude
 ================
 
 ANTHROPIC_BASE_URL="http://localhost:${localPort}" \\
@@ -373,10 +372,10 @@ ANTHROPIC_AUTH_TOKEN="ollama" \\
 ANTHROPIC_MODEL="${model}" \\
 claude --model "${model}"
 
-N.b. Some models (e.g. qwen series do not work with claude code)
+N.b. Some models do not work with claude code and fail with unsupported role.
 
-Lanching copilot
-================
+Launching copilot cli
+=====================
 
 COPILOT_PROVIDER_BASE_URL="http://localhost:${localPort}/v1" \\
 COPILOT_MODEL="${model}" \\
@@ -389,12 +388,23 @@ use the vllm model selector plugin:
 pi install https://github.com/ai4ci/pi-vllm
 run pi and select the model with "/vllm" command.
 
+Tunnel will stay open until you press Ctrl-C ...
+
 `);
 
         // Block CLI execution loop natively while the tunnel stays open
         await new Promise<void>((resolve) => {
             tunnel!.on('close', () => {
-                console.log('SSH forwarding tunnel disconnected.');
+                console.log(`
+SSH forwarding tunnel disconnected.
+
+${model} is still running and you can reconnect immediately with:
+'ivllm connect ${jobName}'.
+
+If you want to stop it you should run:
+'ivllm cancel ${jobName}'
+but it will time-out by itself if no one else is using it.
+`);
                 resolve();
             });
         });
