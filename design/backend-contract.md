@@ -76,7 +76,6 @@ metadata goes in the optional `backendConfig` field.
   "computeHostname": "nid12345",
   "startTime": "2026-07-14T12:05:00+00:00",
   "stopTime": "2026-07-14T13:05:00+00:00",
-  "vllmPid": 12345,
   "reason": "idle timeout",
   "exitCode": 0
 }
@@ -95,15 +94,19 @@ metadata goes in the optional `backendConfig` field.
 | `computeHostname` | Sometimes | Runtime | Hostname of the compute node (backend-specific) |
 | `startTime` | Sometimes | Runtime | ISO-8601 timestamp when runtime became healthy |
 | `stopTime` | Sometimes | Runtime | ISO-8601 timestamp when runtime shut down |
-| `vllmPid` | Sometimes | Runtime | PID of the vLLM process |
 | `reason` | Sometimes | Runtime | Human-readable reason for stopped/failed |
 | `exitCode` | Sometimes | Runtime | Exit code of the vLLM process |
 
 **Notes:**
 
 - `serverPort`, `computeHostname`, `startTime`, `stopTime`, `slurmJobId`,
-  `vllmPid`, `reason`, `exitCode` are **populated by the runtime**, not the CLI.
+  `reason`, `exitCode` are **populated by the runtime**, not the CLI.
   They may be absent in `pending` state.
+- There is no per-vLLM-process PID tracked in the lockfile (an earlier
+  `vllmPid` field was dropped). Process lifecycle on the compute side is
+  managed by a single orchestrator process per job (see `slurm-vllm-serve.sh`)
+  that owns every node's `srun` client PID directly — there is no need for a
+  separate lockfile-tracked PID for liveness checks.
 - Backends MUST write the lockfile atomically (write to temp file + rename).
 - Lockfiles MUST be group-writable (`umask 0002`, `chmod g+w`).
 
@@ -115,6 +118,7 @@ metadata goes in the optional `backendConfig` field.
 | Runtime initialises | `pending` → `initialising` | Runtime | Head node writes runtime metadata |
 | Runtime healthy | `initialising` → `running` | Runtime | After health check, writes serverPort, hostname |
 | User cancels | (any) → `cancel` | CLI or any user | Write cancel to lockfile (request, not terminal) |
+| User cancels a `pending` job | `pending` → `stopped` | Runtime helper (`request_cancel`) | No monitor is running yet to notice a `cancel` flag, so the pending job is torn down immediately via the exit-trap logic instead of going through the `cancel` state |
 | Clean shutdown | `cancel` → `stopped` | Runtime | Exit trap writes stopped + reason |
 | Idle timeout | `running` → `stopped` | Runtime | Monitor detects no API requests |
 | SLURM timeout | (any) → `stopped` | Runtime | Scheduler signal triggers exit trap |
@@ -162,7 +166,7 @@ await backend.setup('0.22.0');       // skip if installed
 await backend.setup('0.22.0', true); // force reinstall
 ```
 
-### 2.3 `requestStart(job: string, maxTime: string, monitor: boolean, config?: string): Promise<void>`
+### 2.3 `requestStart(job: string, maxTime: string, monitor: boolean, batch: boolean, config?: string): Promise<void>`
 
 **Purpose:** Start a new job or restart a stopped/failed one. Creates the
 `pending` lockfile, submits the runtime, and returns when the job is queued.
@@ -174,6 +178,7 @@ await backend.setup('0.22.0', true); // force reinstall
 | `job` | Job name (unique within the project) |
 | `maxTime` | Maximum runtime duration (e.g. `'08:00:00'`) |
 | `monitor` | Whether to enable idle timeout monitoring |
+| `batch` | Submit to the standard batch partition instead of the interactive reservation |
 | `config` | Path to a local vLLM config YAML (uploaded to the job dir) |
 
 **Requirements:**
@@ -191,7 +196,7 @@ await backend.setup('0.22.0', true); // force reinstall
 **Lockfile transitions this method triggers:** `(none) → pending`
 
 ```typescript
-await backend.requestStart('qwen36', '08:00:00', true, './vllm.yaml');
+await backend.requestStart('qwen36', '08:00:00', true, false, './vllm.yaml');
 ```
 
 ### 2.4 `connect(job: string, localPort: number): Promise<CloseableEventEmitter>`
@@ -205,22 +210,36 @@ running vLLM instance. Used to expose the OpenAI-compatible API locally.
 2. MUST check that `computeHostname` and `serverPort` are present.
 3. MUST throw an error if the local port is already in use.
 4. MUST establish a persistent SSH port-forward tunnel.
-5. MUST return a `CloseableEventEmitter` that represents the tunnel process.
-6. MUST keep the tunnel alive until `.kill()` is called.
+5. MUST return a `CloseableEventEmitter` representing the tunnel — implementations
+   are free to manage the tunnel however fits their transport (a dedicated
+   process, a control-plane command against a shared connection, etc.); the
+   interface deliberately doesn't assume a 1:1 tunnel-to-process mapping.
+6. MUST keep the tunnel alive until `.close()` is called.
 7. MUST be idempotent — safe to call multiple times (returns existing tunnel
    or creates a new one).
 
 **Return value:** A `CloseableEventEmitter` (extends Node's `EventEmitter`) with:
-- `.kill(signal?)` — terminate the tunnel process
-- `'close'` event emitted when the process exits
-- `'error'` event emitted on fatal errors
+- `.isAlive(): Promise<boolean>` — check whether the tunnel is still serving traffic
+- `.close(): Promise<void>` — request shutdown; idempotent, resolves once fully stopped
+- `'close'` event MAY also be emitted (e.g. when a liveness poll detects the
+  tunnel died, or once `.close()` completes) — a convenience on top of
+  `isAlive()`/`close()`, not a substitute for them
 
 ```typescript
 const tunnel = await backend.connect('qwen36', 11434);
 // Local machine: curl http://localhost:11434/v1/chat/completions
 // Tunnel forwards to: <computeNode>:<serverPort>
-tunnel.kill(); // close the tunnel
+await tunnel.close(); // close the tunnel
 ```
+
+**Implementation note (Isambard backend):** the SSH tunnel is registered on
+the existing multiplexed `ControlMaster` connection via `ssh -O forward`
+rather than spawning a dedicated `ssh -N -L ...` session — a dedicated
+session's process lifetime isn't a reliable proxy for the tunnel's actual
+lifetime once a `ControlMaster` is involved (the master can keep serving the
+forward after the registering process exits). `isAlive()` polls the local
+port directly; `close()` issues `ssh -O cancel` to remove just that
+forwarding without touching the shared master connection.
 
 ### 2.5 `requestCancel(job: string, force: boolean): Promise<void>`
 
@@ -296,7 +315,7 @@ pattern is matched. Used for monitoring startup progress.
 ```typescript
 const stream = await backend.watchLog('qwen36', '0', '[startup] Startup complete');
 // Streams log output until "[startup] Startup complete" is seen
-stream.kill(); // force close
+await stream.close(); // force close
 ```
 
 ---
@@ -355,7 +374,7 @@ ivllm connect <job>
   │   ├── backend.isStarting(job)
   │   │   └── parse status.json (pending/initialising)
   │   ├── IF startable:
-  │   │   └── backend.requestStart(job, time, monitor, config)
+  │   │   └── backend.requestStart(job, time, monitor, batch, config)
   │   └── IF starting:
   │       └── backend.watchLog(job, '0', '[startup] Startup complete')
   │
@@ -399,5 +418,6 @@ When implementing a new backend, verify:
       populated at correct lifecycle points)
 - [ ] State-helper methods (`isRunning`, etc.) work correctly including
       missing-lockfile edge cases
-- [ ] `CloseableEventEmitter` implementations support `.kill()`, `'close'`
-      event, `'error'` event
+- [ ] `CloseableEventEmitter` implementations support `.isAlive()` and
+      `.close()`; `'close'`/`'error'` events are an optional convenience on
+      top, not a required substitute

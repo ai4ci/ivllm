@@ -68,6 +68,11 @@ Full schema in `design/architecture.md`. Key additions:
 - Bash `jq` is the only dependency (already assumed in v2)
 - Old `job_details.json` format must be migrated
 
+**Update**: `vllmPid` was later dropped from the schema — process lifecycle
+moved to a single per-job orchestrator process that tracks every node's
+`srun` PID directly, so no per-vLLM-process PID needs publishing through the
+lockfile. See §1.2 of `design/backend-contract.md` for the current schema.
+
 ---
 
 ## ADR-103: Bash framework as the HPC runtime
@@ -375,7 +380,9 @@ Backend-specific metadata lives in a `backend` namespace object (optional).
 Top-level fields (every backend):
 - `status`, `jobName`, `model`, `serverPort`, `user`, `requestedTime`, `idleTimeout`
 - `startTime`, `stopTime`, `reason`, `exitCode`
-- `slurmJobId`, `computeHostname`, `vllmPid` (Isambard-specific, at top level for convenience)
+- `slurmJobId`, `computeHostname` (Isambard-specific, at top level for convenience —
+  `vllmPid` was also here at the time this ADR was written but has since been dropped,
+  see the Update note on ADR-102)
 - `backend`: string identifier (e.g. `"isambard-vllm"`, `"ollama"`) — **planned, not yet implemented**
 - `backendConfig`: optional JSON object (backend-specific, opaque to the CLI) — **planned, not yet implemented**
 
@@ -390,13 +397,14 @@ Example for Isambard:
   "requestedTime": "2026-07-14T12:00:00+00:00",
   "idleTimeout": 30,
   "slurmJobId": "123456",
-  "computeHostname": "nid12345",
-  "vllmPid": 12345
+  "computeHostname": "nid12345"
 }
 ```
 
 **Note**: The `backend` and `backendConfig` fields are planned for future multi-backend support
 but are not yet implemented in the actual lockfile schema (`LockfileV3` in `src/types.ts`).
+`vllmPid` (shown above at the time this ADR was written) has since been
+dropped from the schema entirely — see the Update note on ADR-102.
 
 **Rationale**:
 - The CLI reads only top-level fields (`status`, `jobName`, `model`, `serverPort`)
@@ -431,7 +439,7 @@ abstract class Backend {
   abstract setup(version: string): Promise<void>;
   abstract connect(job: string, port: number): Promise<CloseableEventEmitter>;
   abstract requestCancel(job: string, force: boolean): Promise<void>;
-  abstract requestStart(job: string, maxTime: string, monitor: boolean, config?: string): Promise<void>;
+  abstract requestStart(job: string, maxTime: string, monitor: boolean, batch: boolean, config?: string): Promise<void>;
   abstract getAllJobStatus(): Promise<LockfileV3[]>;
   abstract watchLog(job: string, node?: string, until?: string): Promise<CloseableEventEmitter>;
   getJobStatus(job: string): Promise<LockfileV3>;

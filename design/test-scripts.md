@@ -51,17 +51,17 @@ own tally.
 | `tests/unit/Backend.test.ts` | 1 | 22 | 26 | ✅ Green |
 | `tests/unit/local-ops.test.ts` | 1 | 7 | 12 | ✅ Green |
 | `tests/unit/bash-integration.test.ts` | 1 | 2 (1 gated by `RUN_LONG_TESTS`) | 2 | ✅ Green |
-| `tests/integration/CLI.lifecycle.test.ts` | 1 | 12 | 27 | ✅ Green |
+| `tests/integration/CLI.lifecycle.test.ts` | 1 | 13 | 29 | ✅ Green |
 | **`bun test` (default)** | 4 | **43** (42 pass, 1 skip) | **66** | ✅ 0 fail |
-| **`bun test:all`** (`RUN_LONG_TESTS=true`) | 4 | **43** (all pass) | **67** | ✅ 0 fail |
+| **`bun test:all`** (`RUN_LONG_TESTS=true`) | 4 | **44** (all pass) | **69** | ✅ 0 fail |
 
 ### Inside `bash tests/bash/run.sh` (bash-level, what `bash-integration.test.ts` wraps)
 
 | Scope | Files | Assertions | Status |
 |-------|-------|------------|--------|
 | `tests/bash/unit/test-utils.sh` | 1 | 12 | ✅ Green |
-| `tests/bash/sandboxed/*.sh` | 9 | 63 | ✅ Green |
-| **Total** | **10** | **75** | **0 failures** |
+| `tests/bash/sandboxed/*.sh` | 8 | 58 | ✅ Green |
+| **Total** | **9** | **70** | **0 failures** |
 
 Bash tests use a bubblewrap (`bwrap`) sandbox with real `jq 1.7` and `yq 3.4.1`
 binaries and mocked SLURM/vLLM commands (`sbatch`, `srun`, `scancel`, `vllm`,
@@ -164,7 +164,7 @@ exercises both languages in one command.
 Both `it()` calls carry an explicit timeout (`30_000`ms / `300_000`ms)
 matching their `execSync` child-process timeout — see the bugfix note above.
 
-### `tests/integration/CLI.lifecycle.test.ts` — 11 tests, 22 `expect()` calls
+### `tests/integration/CLI.lifecycle.test.ts` — 13 tests, 29 `expect()` calls
 
 Full lifecycle tests using a **mock backend** that records calls but never
 touches the network. Tests the `Backend` contract end-to-end.
@@ -201,7 +201,8 @@ import changes needed in the production code.
 
 | Test | What it verifies |
 |------|-----------------|
-| `requestStart > calls ivllm-serve.sh with correct args` | Backend calls the right wrapper script with job name and time |
+| `requestStart > calls ivllm-serve.sh with correct args` | Backend calls the right wrapper script with job name and time, no `-b` |
+| `requestStart > appends -b when batch is true` | Batch flag is threaded through to the wrapper script call |
 | `requestCancel > graceful` | Calls `ivllm-cancel.sh` without `-f` |
 | `requestCancel > force` | Calls `ivllm-cancel.sh` with `-f` |
 | `getAllJobStatus > returns lockfile list` | Parses JSON array into `LockfileV3[]` |
@@ -238,7 +239,7 @@ by the sandboxed process tree.
 | `create_pending_basic` | Port valid, timestamps ISO-8601, fields round-trip |
 | `create_pending_duplicate` | Duplicate creation fails (idempotency guard) |
 | `create_pending_default_timeout` | Default timeout is 30 minutes |
-| `update_initialise_basic` | vllmPid, slurmJobId, hostname set |
+| `update_initialise_basic` | slurmJobId, hostname set |
 | `update_initialise_does_not_create_log` | Log file only created by SLURM output redirection |
 | `update_initialise_worker_only` | Worker ignored, lockfile stays `pending` |
 | `update_running` | Status transition works |
@@ -247,7 +248,7 @@ by the sandboxed process tree.
 | `unclean_shutdown` | `running` → `failed` with reason + exit code |
 | `request_cancel` | Status transitions to cancel |
 | `request_cancel_no_lockfile` | Fails gracefully |
-| `request_cancel_from_worker` | Cancel works from any node |
+| `request_cancel_pending_job` | Cancelling a still-`pending` job tears it down immediately via `tidy_up` (status → `stopped`) rather than writing `cancel`, since no monitor exists yet to notice that flag |
 | `is_status` | Status checks in all states |
 | `is_status_missing_lockfile` | Returns false for ghost job |
 | `update_reason` | Reason field stored without changing status |
@@ -296,14 +297,16 @@ Tests **common-env.sh** (NVHPC/CUDA/compiler setup) and **vllm-env.sh**
 
 ### `tests/bash/sandboxed/test-monitor-head.sh` — 5 assertions
 
-Tests **`monitor_head()`** — the background monitor loop. Uses real background
-processes (fake vLLM pid, fake parent pid) so that `kill -0` liveness checks
-exercise real subprocess semantics.
+Tests **`monitor_head()`** — the background monitor loop. Uses a real
+background process standing in for the vLLM *parent* (the orchestrator
+subshell, in real usage) so that `kill -0` liveness checks exercise real
+subprocess semantics. `monitor_head` has no separate per-vLLM-process PID to
+track — its only process-liveness check is on this single parent pid.
 
 | Test | What it verifies |
 |------|-----------------|
 | `monitor_head_detects_cancel` | status → cancel, reason "user cancel", parent killed |
-| `monitor_head_detects_vllm_process_death` | status → failed, reason "lost contact with vLLM" |
+| `monitor_head_detects_parent_death` | Monitor notices an unprompted parent-process death (not via cancel/lockfile-deletion) and returns promptly rather than looping forever — guards the `kill -0` check directly |
 | `monitor_head_detects_lockfile_deletion` | Monitor exits, localdir cleaned |
 | `monitor_head_idle_timeout_shuts_down` | status → failed, reason "idle timeout" |
 | `monitor_head_active_traffic_prevents_idle_timeout` | Monitor does NOT shut down with active traffic |
@@ -312,42 +315,45 @@ exercise real subprocess semantics.
 
 Tests **`monitor_startup()`** — the foreground monitor. Starts a real mock vLLM
 HTTP server (same as `tests/bash/shims/vllm`) that handles `/health` and
-`/v1/chat/completions`.
+`/v1/chat/completions`. There is no SLURM_NODEID gating on this function in
+the current architecture — it's only ever invoked once, by the orchestrator
+on the SLURM step host — so there is no separate "non-head-node" scenario to
+test; what matters is that it notices its own parent pid dying and returns
+promptly instead of looping forever.
 
 | Test | What it verifies |
 |------|-----------------|
 | `startup_sends_health_and_warms_up` | Lockfile transitions to `running` |
 | `startup_health_then_succeeds` | Monitor polls and succeeds after delay |
-| `startup_non_head_node` | Worker returns immediately, status unchanged |
+| `startup_returns_when_parent_exits` | Returns (exit 1) once the vLLM parent pid has genuinely exited, rather than looping forever waiting for a job that will never leave "pending" |
 | `startup_wrong_status` | Returns 1 when already `running` |
 
-### `tests/bash/sandboxed/test-monitor-worker.sh` — 5 assertions
-
-Tests **`monitor_worker()`** — the background monitor on worker nodes.
-
-| Test | What it verifies |
-|------|-----------------|
-| `worker_monitor_rejects_head_node` | Returns 1 for head node (SLURM_NODEID=0) |
-| `worker_monitor_missing_lockfile` | Returns 1, kills worker pid |
-| `worker_monitor_stays_alive_running` | Monitor keeps running |
-| `worker_monitor_shuts_down_on_cancel` | Worker killed, localdir cleaned |
-| `worker_monitor_shuts_down_on_failed` | Worker killed, localdir cleaned |
+`monitor_worker()` no longer exists — worker-node shutdown is now centrally
+orchestrated (see `design/architecture.md`'s "Process Orchestration and
+Monitoring" section), so `test-monitor-worker.sh` was removed rather than
+rewritten; there is no replacement function for it to test.
 
 ### `tests/bash/sandboxed/test-exit-trap.sh` — 7 assertions
 
-Tests **`tidy_up()`** — the exit-trap handler. Creates a lockfile with
+Tests **`tidy_up()`** — the exit-trap handler. `tidy_up` takes the pids to
+kill as trailing arguments (`tidy_up "$job" "$exit_code" "$pid1" "$pid2" ...`)
+rather than reading a PID from the lockfile — every test passes its
+background stand-in vLLM pid explicitly to match. Creates a lockfile with
 appropriate status, starts a real background process as the fake vLLM pid,
 then calls `tidy_up()` directly. Uses real process signals and shims.
+`is_cancellable()` (which gates whether `tidy_up` calls `scancel`) checks
+`squeue` for the job, so tests that expect a `scancel` call set
+`MOCK_SQUEUE_ACTIVE_JOBS` to make the shim report the job as still queued.
 
 | Test | What it verifies |
 |------|-----------------|
-| `tidy_up_200_triggers_slurm_timeout` | status → stopped, reason "SLURM timeout" |
-| `tidy_up_201_triggers_user_cancel` | status → stopped, reason "user cancel or idle timeout" |
-| `tidy_up_0_normal_shutdown` | Status unchanged, vLLM killed if alive |
-| `tidy_up_nonzero_crash_runtime` | status → failed, reason "crashed during inference" |
-| `tidy_up_nonzero_crash_startup` | status → failed, reason "failed to start" |
+| `tidy_up_200_triggers_slurm_timeout` | status → stopped, reason "SLURM timeout", vLLM killed |
+| `tidy_up_201_triggers_user_cancel` | status → stopped, vLLM killed |
+| `tidy_up_0_normal_shutdown` | status → stopped (0/200/201 are all clean-shutdown codes — none leave status unchanged), vLLM killed |
+| `tidy_up_nonzero_crash_runtime` | status → failed, reason "crashed during inference", vLLM killed |
+| `tidy_up_nonzero_crash_startup` | status → failed, reason "failed to start", vLLM killed |
 | `tidy_up_kills_vllm_process` | Sends SIGTERM, SIGKILL after 2s |
-| `tidy_up_cancels_slurm_job` | scancel shim called with correct job id |
+| `tidy_up_cancels_slurm_job` | scancel shim called with correct job id (with `MOCK_SQUEUE_ACTIVE_JOBS` set) |
 
 ### `tests/bash/sandboxed/test-login-handoff.sh` — 7 assertions
 
@@ -398,3 +404,9 @@ the helper.
 | `test-exit-trap.sh` | `tidy_up_no_slurm_cancel` test no longer present (7 assertions, not 8) |
 | ADR-116 (chmod fix) | All `chmod -R` calls in `utils.sh` replaced with non-recursive `chmod g+rwX` on directory creation (Lustre/GPFS performance + multi-user permission errors) |
 | `run_head_vllm.sh` / `run_worker_vllm.sh` | Fixed undefined `$nodeRank` (now `0` / `$IVLLM_NODE_RANK`) and `startRank`/`localDp` ordering bug; added multi-node data-parallel args |
+| `test-monitor-worker.sh` deleted | `monitor_worker()` is fully removed from `utils.sh` — worker shutdown is now centrally orchestrated (see `design/architecture.md`); no replacement function exists to test |
+| `test-exit-trap.sh` | Updated for `tidy_up`'s current call signature (pids passed as trailing args, not read from lockfile); `exit_code=0` now expects `stopped` not `running`; added `MOCK_SQUEUE_ACTIVE_JOBS` for the scancel-gating test |
+| `test-lockfile.sh` | `update_initialise_basic` no longer asserts a `.vllmPid` field (removed from the schema); `request_cancel_from_worker` renamed to `request_cancel_pending_job` and now expects `stopped` (a still-`pending` job is torn down via `tidy_up`, not left in the `cancel` request state) |
+| `test-monitor-head.sh` / `test-monitor-startup.sh` | Renamed/rewrote the `.vllmPid`-based and SLURM_NODEID-gated tests (removed with those features) to instead guard the actual current liveness check — an unprompted parent-process death |
+| `test-vllm-env.sh` | `vllm_env_sources_and_sets_vars` now calls `set_jit_caches` explicitly (it is not sourced automatically by `vllm-env.sh`, and now requires a job argument) |
+| `CLI.lifecycle.test.ts` / `Backend.test.ts` | Mock backends' `requestStart` were missing the `batch: boolean` parameter (a `tsc --noEmit` error, silent under `bun test` since Bun doesn't type-check); `connect()`/`watchLog()` mocks updated from `{ kill }` to `{ isAlive, close }` to match the current `CloseableEventEmitter` contract |

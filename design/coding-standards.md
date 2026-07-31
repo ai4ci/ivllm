@@ -94,7 +94,7 @@ export abstract class Backend {
   abstract setup(version: string): Promise<void>;
   abstract connect(job: string, port: number): Promise<CloseableEventEmitter>;
   abstract requestCancel(job: string, force: boolean): Promise<void>;
-  abstract requestStart(job: string, maxTime: string, monitor: boolean, config?: string): Promise<void>;
+  abstract requestStart(job: string, maxTime: string, monitor: boolean, batch: boolean, config?: string): Promise<void>;
   abstract getAllJobStatus(): Promise<LockfileV3[]>;
   abstract watchLog(job: string, node?: string, until?: string): Promise<CloseableEventEmitter>;
   

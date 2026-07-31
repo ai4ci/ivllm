@@ -95,7 +95,7 @@ implements it for the Isambard AI HPC.
 | `setup(version, force)` | Install vLLM on the HPC |
 | `connect(job, port)` | Establish SSH tunnel to a running job |
 | `requestCancel(job, force)` | Graceful or forced cancellation |
-| `requestStart(job, maxTime, monitor, config)` | Submit a new SLURM job |
+| `requestStart(job, maxTime, monitor, batch, config)` | Submit a new SLURM job |
 | `getAllJobStatus()` | List all jobs as lockfile objects |
 | `watchLog(job, node, until)` | Tail log output |
 | `getJobStatus(job)` | Get status of a single job |
@@ -117,7 +117,12 @@ SSH/SCP/rsync layer with multiplexing:
 - **`copyFile()`** — SCP a single file to the login node
 - **`copyDirectory()`** — rsync a directory up or down to the login node
 - **`spawnTunnel()`** — persistent SSH port-forward: `localhost:<port>` →
-  `<computeHost>:<serverPort>` with keepalive and `ExitOnForwardFailure`
+  `<computeHost>:<serverPort>`, registered on the existing multiplexed
+  `ControlMaster` via `ssh -O forward` (not a dedicated `-N -L` session — a
+  dedicated session's process lifetime isn't a reliable stand-in for the
+  tunnel's once a `ControlMaster` is involved). Liveness is polled directly
+  (local port check) and teardown uses `ssh -O cancel`, so the tunnel can be
+  closed without touching the shared master connection
 - **`checkSSH()`** — verify connectivity before any operation
 
 ### 4. Bash Framework (HPC Runtime)
@@ -166,22 +171,29 @@ pending → initialising → running → stopped | failed
 
 **Schema:** `status`, `jobName`, `model`, `serverPort`, `user`, `requestedTime`,
 `idleTimeout`, `slurmJobId`, `computeHostname`, `startTime`, `stopTime`,
-`vllmPid`, `reason`, `exitCode`.
+`reason`, `exitCode`. (No per-vLLM-process PID is tracked in the lockfile —
+process lifecycle is owned by a single orchestrator process per job that
+holds every node's `srun` PID directly.)
 
 **Atomic writes:** lockfiles are created with `set -C` (fail if exists) and
 updated via write-to-tmp + `mv` (atomic rename) for safe concurrent access.
 
 **Permissions:** `umask 0002` and `chmod g+w` for group-writable multi-user access.
 
-### 6. Monitor Triad
+### 6. Process Orchestration and Monitoring
 
-Three monitoring processes run on the compute allocation:
+A single orchestrator process (a background subshell within
+`slurm-vllm-serve.sh`, running on the SLURM step host) `srun`-launches vLLM
+on the head node and each worker node, holding every node's `srun` client PID
+directly. Two monitors run alongside it, both on the step host — there is no
+separate per-worker monitor; worker nodes just run vLLM and report memory
+usage (`wait_report`) while the orchestrator centrally decides when to shut
+down and kills each node's `srun` PID to do so.
 
 | Monitor | Location | Role |
 |---------|----------|------|
-| `monitor_startup` | Head node, foreground | Blocks until vLLM is healthy (polls `/health` every 10s), saves JIT cache, sends warmup request, transitions to `running`, then detaches |
-| `monitor_head` | Head node, background | Runs for entire job lifetime. Checks: lockfile exists, status is `cancel` → clean shutdown, vLLM process alive, idle timeout (incremental log-parsing, no `/health` false positives) |
-| `monitor_worker` | Worker nodes, background | Polls lockfile; if status changes or lockfile disappears → SIGTERM local vLLM process. Reports memory/JIT cache usage during startup |
+| `monitor_startup` | Step host, foreground | Blocks until vLLM is healthy (polls `/health` every 10s), saves JIT cache, sends warmup request, transitions to `running`, then detaches. Returns early if the orchestrator process has already exited. |
+| `monitor_head` | Step host, background | Runs for entire job lifetime. Checks: lockfile exists, status is `cancel` → clean shutdown, orchestrator process alive, idle timeout (incremental log-parsing, no `/health` false positives). Signals the orchestrator (`SIGUSR2`) on any shutdown condition, which runs the exit-trap (`tidy_up`) that kills every tracked `srun` PID. |
 
 **Exit traps:** All exit paths (SIGUSR1 from SLURM timeout, non-zero exit,
 `tidy_up` trap) ensure clean shutdown, diagnostics capture, and lockfile update.

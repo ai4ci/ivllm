@@ -151,15 +151,18 @@ It lives on the parallel filesystem, visible to all nodes. All parties
   "computeHostname": "nid12345",
   "startTime": "2026-07-14T12:05:00+00:00",
   "stopTime": "2026-07-14T13:05:00+00:00",
-  "vllmPid": 12345,
   "reason": "idle timeout",
   "exitCode": 0
 }
 ```
 
 Notes:
-serverPort, computeHostname, startTime, stopTime, slurmJobId, vllmPid, reason
-and exitCode are responsibility of the server to populate.
+serverPort, computeHostname, startTime, stopTime, slurmJobId, reason
+and exitCode are responsibility of the server to populate. There is no
+per-vLLM-process PID in the lockfile (a `vllmPid` field existed briefly and
+was dropped) — process lifecycle is owned by a single orchestrator process
+per job on the SLURM step host, which tracks every node's `srun` client PID
+directly rather than publishing one through the lockfile.
 
 ### Lockfile lifecycle rules
 
@@ -177,11 +180,18 @@ and exitCode are responsibility of the server to populate.
 
 ---
 
-## The Monitor Triad
+## Process Orchestration and Monitoring
 
-The bash framework runs three monitoring processes on the compute allocation:
+Process orchestration is centralized: a single **orchestrator process** runs
+on the SLURM step host (the top-level `slurm-vllm-serve.sh` batch script),
+and `srun`-launches vLLM on the head node plus each worker node (for
+multi-node jobs) as background job steps of that one script. The
+orchestrator holds every node's local `srun` client PID directly — there is
+no separate per-worker monitor process, and no PID published through the
+lockfile. Two monitors run alongside the orchestrator, both on the step
+host:
 
-### 1. `monitor_startup` (foreground, head node only)
+### 1. `monitor_startup` (foreground, step host)
 
 Blocks until vLLM becomes healthy. Then:
 
@@ -192,27 +202,43 @@ Blocks until vLLM becomes healthy. Then:
 5. Transitions status to `running`
 6. Detaches (returns)
 
-### 2. `monitor_head` (background, head node only)
+Its only process-liveness check is on the orchestrator's own PID — if the
+orchestrator has already exited (e.g. it crashed or was torn down), it stops
+polling and returns rather than waiting forever.
+
+### 2. `monitor_head` (background, step host)
 
 Runs for the entire job lifetime. Checks every 10s:
 
 1. Lockfile exists? If deleted → panic shutdown
 2. Lockfile status is `cancel`? → clean shutdown with reason "user cancel"
-3. vLLM process alive? If dead → shutdown with reason "lost contact with vllm process"
+3. Orchestrator process alive? If it has exited (e.g. vLLM crashed, taking
+   down its `srun` step and, transitively, the orchestrator's `wait`) →
+   stop monitoring
 4. **Idle timeout** (backend-specific — see ADR-105):
    - For the Isambard backend: incrementally scan the vLLM access log for
      "real" API requests (not `/health` probes). If none within the idle
      window → shutdown with reason "idle timeout".
    - Other backends implement their own idle detection.
-5. Worker threads check head status: `monitor_worker` reads lockfile; if not running → shutdown
 
-### 3. `monitor_worker` (background, worker nodes)
+On any shutdown condition, `monitor_head` signals the orchestrator
+(`SIGUSR2`), which runs the exit-trap logic (`tidy_up`) that kills every
+tracked `srun` PID — head and workers alike — and updates the lockfile.
+Worker nodes have no monitor of their own: `run_worker_vllm.sh` just runs
+vLLM and reports memory usage (`wait_report`) while it waits; shutdown is
+always initiated centrally by the orchestrator, which reaches workers by
+killing their local `srun` client PID (killing the client tears down the
+corresponding remote step).
 
-For multi-node jobs, each worker node runs this:
-
-1. Polls lockfile via parallel filesystem
-2. If lockfile disappears or status is not `pending`/`initialising`/`running` → SIGTERM local vLLM process
-3. Reports memory/JIT cache usage during startup
+The orchestrator itself is a background subshell within `slurm-vllm-serve.sh`
+(the top-level SLURM batch script); the exit-trap logic (`tidy_up`) and its
+signal handlers are registered on that subshell, not the top-level script.
+SLURM's own pre-timeout warning (`--signal=B:SIGUSR1@120`, sent 120s before
+the job's time limit) is delivered only to the top-level batch script
+process — which has its own small trap whose only job is to forward that
+signal into the orchestrator subshell, so the same `tidy_up` exit-trap logic
+handles it, recording `"SLURM timeout"` and shutting down cleanly before the
+hard kill.
 
 ---
 
@@ -273,7 +299,7 @@ To add a new backend (e.g. local Ollama, a different HPC, containers):
     abstract setup(version: string): Promise<void>;
     abstract connect(job: string, port: number): Promise<CloseableEventEmitter>;
     abstract requestCancel(job: string, force: boolean): Promise<void>;
-    abstract requestStart(job: string, maxTime: string, monitor: boolean, config?: string): Promise<void>;
+    abstract requestStart(job: string, maxTime: string, monitor: boolean, batch: boolean, config?: string): Promise<void>;
     abstract getAllJobStatus(): Promise<LockfileV3[]>;
     abstract watchLog(job: string, node?: string, until?: string): Promise<CloseableEventEmitter>;
     getJobStatus(job: string): Promise<LockfileV3>;
@@ -354,8 +380,8 @@ to run on a single node:
   to assign specific GPUs per model instance
 - **The prototype already supports this**: per-job directories under
   `$PROJECTDIR/engine/jobs/`, independent lockfiles, independent monitors
-- **The monitor triad runs per-model**: each vLLM instance gets its own
-  monitor_head, monitor_worker (for multi-node only)
+- **Monitoring runs per-model**: each vLLM instance gets its own orchestrator
+  process and `monitor_head`/`monitor_startup` pair
 - **Resource constraints** encoded in the lockfile:
   ```json
   {
@@ -517,15 +543,18 @@ The differences are in the build and deployment chain:
    functionally equivalent.
 
 4. **DeepEP**: Their container includes DeepEP (DeepSeek expert parallelism
-   kernels) which requires NVSHMEM from the NVHPC SDK. We don't install this.
-   This is a genuine advantage of the container path for DeepSeek models.
+   kernels) which requires NVSHMEM from the NVHPC SDK. However there is no
+   evidence that this is actually functional in the containers as it requires
+   Infinband networking rather that the Slingshot libfabric that is actually
+   available on Isambard. We instead have installed UCCL-EP which is functionally
+   equivalent to DeepEP and has first class support for libfabric.
 
 **Verdict**: No fundamentally different components. Both approaches produce
 functionally equivalent vLLM runtimes. The container path:
 - Is **harder to build** (source compile, more deps, Apptainer def file complexity)
 - But **easier to deploy** (single `.sif` file, no venv, no module dependencies)
 - Offers **newer CUDA** (13.0.2 vs 12.9 compat)
-- Includes **DeepEP** for DeepSeek models
+- Includes **DeepEP** for DeepSeek models which may not work on slingshot
 
 See ADR-114 (dual installation path) and ADR-115 (model recipe database).
 
