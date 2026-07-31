@@ -103,12 +103,12 @@ ivllm connect qwen36
 # 🚀 OpenAI API endpoint: http://localhost:11434/v1
 #    Model: Qwen/Qwen3.6-35B-A3B-FP8
 
-# Step 3a — attach to a stopped job (instant)
+# Step 3b — attach to a stopped job with cached config
 ivllm connect qwen36
 # 🚀 OpenAI API endpoint: http://localhost:11434/v1
 #    Model: Qwen/Qwen3.6-35B-A3B-FP8
 
-# Step 3b — start a stopped/failed job (or a new one)
+# Step 3c — start a new job with new configuration
 ivllm connect gemma4 --config examples/gemma-4-31B-it.yaml
 # Waiting for job to start...
 # vLLM is starting up...
@@ -136,7 +136,8 @@ Jobs run independently on the compute node — your local client can disconnect 
 # The job keeps running on compute
 
 # Reconnect later:
-ivllm connect qwen36   # attaches to the running job instantly
+ivllm connect qwen36
+# attaches to the running job instantly if its running or starts it if it is not
 ```
 
 ---
@@ -263,6 +264,8 @@ ivllm connect <job>
 ---
 
 ## Development
+
+Design documents in `design/` folder
 
 ```bash
 bun test                     # all TypeScript + bash integration tests
