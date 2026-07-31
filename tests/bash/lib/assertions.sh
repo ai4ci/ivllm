@@ -26,6 +26,17 @@ assert_dir_exists() {
     fi
 }
 
+# Assert a file/directory's permission bits (octal, e.g. "664", "775").
+# Usage: assert_perm "$path" "664"
+assert_perm() {
+    local path="$1" expected="$2" actual
+    actual=$(stat -c "%a" "$path" 2>/dev/null)
+    if [[ "$actual" != "$expected" ]]; then
+        echo "FAIL: $path expected mode $expected got ${actual:-<missing>}"
+        return 1
+    fi
+}
+
 assert_json_eq() {
     local file="$1"
     local jq_expr="$2"

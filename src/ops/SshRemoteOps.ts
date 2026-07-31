@@ -131,27 +131,39 @@ export class SshRemoteOps extends RemoteOps {
      *
      * Uses archive mode (-a) to preserve permissions/timestamps, compresses data (-z),
      * and forwards SSH multiplexing via the '-e' flag.
+     *
+     * On 'up' transfers, follows the rsync with an explicit `chmod -R g+rwX`
+     * on the destination. `--no-perms` + `--rsync-path 'umask 002 && rsync'`
+     * alone is enough for newly-created directories (a fresh directory gets
+     * a default 0777 request, which the umask correctly masks to 0775) but
+     * NOT for regular files: without `--perms`, rsync (like `cp` without
+     * `-p`) uses the source file's own mode bits as its base request, and a
+     * umask can only strip bits from that, never add ones the source
+     * lacked — so a file that is locally 644 (no group-write, exactly what
+     * a fresh `git clone` produces under a normal 022 umask) stays 644 on
+     * the destination regardless of the remote umask. The explicit chmod
+     * closes that gap deterministically, independent of source mode or
+     * umask timing.
      * @param localPath - Path to the local directory
      * @param remotePath - Destination or source path on the login node
      * @param direction - 'up' to upload (local -> remote), 'down' to download (remote -> local)
-     * @throws {Error} with the rsync exit code if the transfer fails
+     * @throws {Error} with the rsync exit code if the transfer fails, or if the follow-up chmod fails
      */
     async copyDirectory(
         localPath: string,
         remotePath: string,
         direction: 'up' | 'down',
     ): Promise<void> {
-        return new Promise((resolve, reject) => {
-            const remoteTarget = `${this.config.username}@${this.config.loginHost}:${remotePath}`;
+        const remoteTarget = `${this.config.username}@${this.config.loginHost}:${remotePath}`;
 
-            // Determine source and destination arguments based on direction
-            const src = direction === 'up' ? localPath : remoteTarget;
-            const dest = direction === 'up' ? remoteTarget : localPath;
+        // Determine source and destination arguments based on direction
+        const src = direction === 'up' ? localPath : remoteTarget;
+        const dest = direction === 'up' ? remoteTarget : localPath;
 
-            // Construct the custom SSH command string using your multiplexing options
-            // e.g., "ssh -o ControlMaster=auto -o BatchMode=yes"
-            const sshCommand = `ssh ${[...SSH_MUX_OPTS, '-o', 'BatchMode=yes'].join(' ')}`;
+        // Construct the custom SSH command string using the multiplexing options
+        const sshCommand = `ssh ${[...SSH_MUX_OPTS, '-o', 'BatchMode=yes'].join(' ')}`;
 
+        await new Promise<void>((resolve, reject) => {
             // Rsync must not change remote permissions and must provide a
             // umask to allow group writable settings on the target directory
             const proc = spawn(
@@ -163,7 +175,7 @@ export class SshRemoteOps extends RemoteOps {
                     '--no-group',
                     '-z',
                     '--rsync-path',
-                    'umask 002 && rsync',
+                    'umask 002 && rsync', // umask in front of rsync
                     '-e',
                     sshCommand, // Instruct rsync to use our specific multiplexed SSH configuration
                     src,
@@ -180,6 +192,18 @@ export class SshRemoteOps extends RemoteOps {
                 else reject(new Error(`rsync exited with code ${code}`));
             });
         });
+
+        if (direction === 'up') {
+            const { exitCode, stdout } = await this.runRemote(
+                `chmod -R g+rwX "${remotePath}"`,
+                { env: [], silent: true },
+            );
+            if (exitCode !== 0) {
+                throw new Error(
+                    `chmod -R g+rwX failed on ${remotePath} (exit ${exitCode}): ${stdout}`,
+                );
+            }
+        }
     }
 
     /**
