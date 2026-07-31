@@ -56,13 +56,11 @@ export abstract class Backend {
      * Start a new vLLM job or restart a stopped one.
      * @param job — Job name
      * @param maxTime — SLURM time limit (e.g. `'08:00:00'`)
-     * @param monitor — Whether to run monitors on the compute node
      * @param config — Optional path to vLLM YAML config file
      */
     abstract requestStart(
         job: string,
         maxTime: string,
-        monitor: boolean,
         batch: boolean,
         config?: string,
     ): Promise<void>;
@@ -83,7 +81,7 @@ export abstract class Backend {
     abstract watchLog(
         job: string,
         node?: string,
-        until?: string,
+        start?: boolean,
     ): Promise<CloseableEventEmitter>;
 
     /**
@@ -131,6 +129,24 @@ export abstract class Backend {
         }
     }
 
+    async getStatusFlag(job: string): Promise<string> {
+        const lockfile = await this.getJobStatus(job);
+        return lockfile.status;
+    }
+
+    /**
+     * Check if a job is currently in the process of cancelling itself.
+     * @param job — Job name
+     * @returns `true` if status is `cancel`, `false` otherwise
+     */
+    async isCancelling(job: string): Promise<boolean> {
+        try {
+            return (await this.getStatusFlag(job)) === 'cancel';
+        } catch {
+            return false;
+        }
+    }
+
     /**
      * Check if a job is currently running.
      * @param job — Job name
@@ -138,8 +154,7 @@ export abstract class Backend {
      */
     async isRunning(job: string): Promise<boolean> {
         try {
-            const lockfile = await this.getJobStatus(job);
-            return lockfile.status === 'running';
+            return (await this.getStatusFlag(job)) === 'running';
         } catch {
             return false;
         }
@@ -153,10 +168,8 @@ export abstract class Backend {
      */
     async isStopped(job: string): Promise<boolean> {
         try {
-            const lockfile = await this.getJobStatus(job);
-            return (
-                lockfile.status === 'stopped' || lockfile.status === 'failed'
-            );
+            const status = await this.getStatusFlag(job);
+            return status === 'stopped' || status === 'failed';
         } catch {
             return true;
         }
@@ -171,10 +184,8 @@ export abstract class Backend {
      */
     async isStartable(job: string): Promise<boolean> {
         try {
-            const lockfile = await this.getJobStatus(job);
-            return (
-                lockfile.status === 'stopped' || lockfile.status === 'failed'
-            );
+            const status = await this.getStatusFlag(job);
+            return status === 'stopped' || status === 'failed';
         } catch {
             return true;
         }
@@ -187,11 +198,8 @@ export abstract class Backend {
      */
     async isStarting(job: string): Promise<boolean> {
         try {
-            const lockfile = await this.getJobStatus(job);
-            return (
-                lockfile.status === 'pending' ||
-                lockfile.status === 'initialising'
-            );
+            const status = await this.getStatusFlag(job);
+            return status === 'pending' || status === 'initialising';
         } catch {
             return false;
         }

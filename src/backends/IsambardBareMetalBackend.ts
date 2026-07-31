@@ -98,6 +98,14 @@ export class IsambardBareMetalBackend extends Backend {
         }
     }
 
+    override async getStatusFlag(job: string): Promise<string> {
+        const out = await this.ops.runRemote(
+            `bash -c "source ${this.remoteEngine}/lib/utils.sh; get_job_status_setting '${job}' '.status'"`,
+            { env: this.envs, silent: true },
+        );
+        return out.stdout;
+    }
+
     async requestCancel(job: string, force: boolean): Promise<void> {
         await this.bootstrap();
         const { stdout, exitCode } = await this.ops.runRemote(
@@ -114,7 +122,6 @@ export class IsambardBareMetalBackend extends Backend {
     async requestStart(
         job: string,
         maxTime: string = '08:00:00',
-        monitor: boolean,
         batch: boolean,
         config?: string,
     ): Promise<void> {
@@ -139,11 +146,9 @@ export class IsambardBareMetalBackend extends Backend {
                 `startup request failed for job ${job} (exit ${exitCode}): ${stdout}`,
             );
 
-        if (monitor)
-            await this.ops.runRemote(
-                `${this.remoteEngine}/ivllm-show-log.sh -j "${job}" -m "[startup] Startup complete"`,
-                { env: this.envs, silent: false },
-            );
+        // N.b. monitoring of job output is a secondary task and requires
+        // coordinating process to start up a watchLog and kill it off when
+        // appropriate.
     }
 
     async getAllJobStatus(): Promise<LockfileV3[]> {
@@ -177,12 +182,12 @@ export class IsambardBareMetalBackend extends Backend {
     async watchLog(
         job: string,
         node?: string,
-        until?: string,
+        start?: boolean,
     ): Promise<CloseableEventEmitter> {
         await this.bootstrap();
 
         return this.ops.runRemoteSync(
-            `${this.remoteEngine}/ivllm-show-log.sh -j "${job}" -n "${node ?? '0'}"${until ? ` -m "${until}"` : ''}`,
+            `${this.remoteEngine}/ivllm-show-log.sh -j "${job}" -n "${node ?? '0'}"${start ? ` -a` : ''}`,
             this.envs,
         );
     }

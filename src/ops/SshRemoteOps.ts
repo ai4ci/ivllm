@@ -75,16 +75,27 @@ export class SshRemoteOps extends RemoteOps {
             );
 
             let stdout = '';
+            let lineBuffer = '';
 
             proc.stdout?.on('data', (chunk: Buffer) => {
-                stdout += chunk.toString();
-                if (!options.silent) console.log(chunk.toString());
+                const text = chunk.toString();
+                stdout += text;
+
+                if (options.silent) return;
+
+                lineBuffer += text;
+                const lines = lineBuffer.split('\n');
+                lineBuffer = lines.pop() ?? ''; // keep the trailing partial line buffered
+                for (const line of lines) console.log(line);
             });
 
             proc.on('error', reject);
-            proc.on('close', (code) =>
-                resolve({ exitCode: code ?? 0, stdout: stdout.trim() }),
-            );
+            proc.on('close', (code) => {
+                if (!options.silent && lineBuffer.length > 0) {
+                    console.log(lineBuffer); // flush any unterminated trailing line
+                }
+                resolve({ exitCode: code ?? 0, stdout: stdout.trim() });
+            });
         });
     }
 

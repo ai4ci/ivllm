@@ -151,15 +151,17 @@ async function cmdCancel(
     process.once('SIGINT', cleanupAndExit);
     process.once('SIGTERM', cleanupAndExit);
 
-    logWatcher = await backend.watchLog(
-        jobName,
-        '0',
-        '[shutdown] cancel complete',
-    );
+    logWatcher = await backend.watchLog(jobName, '0');
 
-    while (await logWatcher.isAlive()) {
+    // tail the log until the shutdown is complete (or user cancels tail)
+    while (
+        !(await backend.isStopped(jobName)) &&
+        (await logWatcher.isAlive())
+    ) {
         await sleep(1000);
     }
+
+    await logWatcher.close();
 }
 
 /**
@@ -290,100 +292,104 @@ async function cmdConnect(
     try {
         if (await backend.isStartable(jobName)) {
             console.log(
-                `Job '${jobName}' is not active. Dispatching Slurm start allocation...`,
+                `[connect] job '${jobName}' is not active. requesting start...`,
             );
             await backend.requestStart(
                 jobName,
                 options.time,
-                true,
                 options.batch,
                 options.config,
             );
             // Refresh to grab the updated transitional state
         }
 
+        let pollIntervalMs = 2000;
+
         // 3. Conditional Background Log Tailing Setup
         if (await backend.isStarting(jobName)) {
             console.log(
-                `Job '${jobName}' is starting. Attaching background log watcher...`,
+                `[connect] job '${jobName}' is starting. attaching background log watcher...`,
             );
 
             // Spawn the log stream. Because we do not 'await' its string completion natively,
             // it runs concurrently in the background while the polling loop executes below.
-            logWatcher = await backend.watchLog(
-                jobName,
-                '0',
-                '[startup] startup complete',
-            );
+            logWatcher = await backend.watchLog(jobName, '0', true);
 
-            logWatcher.on('error', (err) => {
-                console.error(`\n[Log Error]: ${err.message}`);
-            });
-
-            logWatcher.on('close', () => {
-                console.log(
-                    '\n--> Log sentinel reached or log process stopped.',
-                );
-                logWatcher = null;
-            });
-        }
-
-        // 4. Poll until the status switches cleanly to 'running'
-        let pollIntervalMs = 2000;
-        // const maxPollIntervalMs = 10000;
-        // const timeoutThresholdMs = 15 * 60 * 1000; // 15-minute absolute ceiling
-        // const startTime = Date.now();
-
-        console.log(
-            `Polling status file for '${jobName}' to enter running state...`,
-        );
-
-        while (true) {
-            const lockfile = await backend
-                .getJobStatus(jobName)
-                .catch(() => null);
-            const status = lockfile?.status || 'unknown';
-
-            if (status === 'running') {
-                console.log(`\n✓ Job '${jobName}' is verified running.`);
-                break;
+            // tail the log until the shutdown is complete
+            while (await backend.isStarting(jobName)) {
+                await sleep(pollIntervalMs);
             }
 
-            if (status === 'failed' || status === 'stopped') {
-                throw new Error(
-                    `Job startup aborted: The cluster reported status [${status}].`,
-                );
-            }
-
-            // if (Date.now() - startTime > timeoutThresholdMs) {
-            //     throw new Error(
-            //         `Timeout: Job failed to enter running state within 15 minutes.`,
-            //     );
-            // }
-
-            process.stdout.write(
-                `\rCurrent state: [${status}]... polling next in ${pollIntervalMs / 1000}s`,
-            );
-            await new Promise((res) => setTimeout(res, pollIntervalMs));
-            // pollIntervalMs = Math.min(pollIntervalMs + 1000, maxPollIntervalMs);
-        }
-        process.stdout.write('\n');
-
-        // 5. If the log watcher is still trailing, terminate it cleanly now that we are running
-        if (logWatcher) {
+            // Job no longer starting
             await logWatcher.close();
             logWatcher = null;
         }
 
-        // 6. Establish and lock the SSH Tunnel
-        console.log(
-            `SSH tunnel connected - OpenAI api: http://localhost:${localPort}/v1 ...`,
-        );
-        tunnel = await backend.connect(jobName, localPort);
-        console.log(`Tunnel will stay open until you press Ctrl-C ...`);
+        // Process is no longer starting.
+        const status = await backend.getStatusFlag(jobName);
 
-        //TODO: Follow up actions after tunnel created here
-        // e.g. spawn agents, query model endpoint etc.
+        if (status === 'cancel') {
+            throw new Error(
+                `[connect] ERROR: job has been cancelled, and is in process of shutting down.`,
+            );
+        }
+
+        // Process is no longer starting. May have failed
+        if (status === '' || status === 'failed' || status === 'stopped') {
+            throw new Error(
+                `[connect] ERROR: job startup failed: The cluster reported status [${status}].`,
+            );
+        }
+
+        // If its not starting, stopped, or cancelling it should be running
+        // Unless some race condition
+        if (status !== 'running') {
+            const lockfile = await backend
+                .getJobStatus(jobName)
+                .catch(() => null);
+            const status = lockfile?.status || 'unknown';
+            throw new Error(
+                `[connect] ERROR: job is in an inconsistent state: The cluster reported status [${status}].`,
+            );
+        }
+
+        // 6. Establish and lock the SSH Tunnel
+        tunnel = await backend.connect(jobName, localPort);
+        const lockfile = await backend.getJobStatus(jobName).catch(() => null);
+        const model = lockfile?.model;
+        console.log(`
+[connect] job ${jobName} is ${status}.
+SSH tunnel connected - OpenAI api: http://localhost:${localPort}/v1 ...
+Tunnel will stay open until you press Ctrl-C ...
+
+Sandboxing: the sandbox must be able to access localhost port ${localPort}
+
+Lanching claude
+================
+
+ANTHROPIC_BASE_URL="http://localhost:${localPort}" \\
+ANTHROPIC_API_KEY="" \\
+ANTHROPIC_AUTH_TOKEN="ollama" \\
+ANTHROPIC_MODEL="${model}" \\
+claude --model "${model}"
+
+N.b. Some models (e.g. qwen series do not work with claude code)
+
+Lanching copilot
+================
+
+COPILOT_PROVIDER_BASE_URL="http://localhost:${localPort}/v1" \\
+COPILOT_MODEL="${model}" \\
+copilot
+
+Launching pi
+============
+
+use the vllm model selector plugin:
+pi install https://github.com/ai4ci/pi-vllm
+run pi and select the model with "/vllm" command.
+
+`);
 
         // Block CLI execution loop natively while the tunnel stays open
         await new Promise<void>((resolve) => {

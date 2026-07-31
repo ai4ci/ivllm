@@ -372,6 +372,7 @@ set_jit_caches() {
     export FLASHINFER_JIT_CACHE_DIR="$localdir/flashinfer"
     export VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR="$localdir/flashinfer_auto"
     export TORCHINDUCTOR_CACHE_DIR="$localdir/torchinductor"
+    export VLLM_XLA_CACHE_PATH="$localdir/xla"
 }
 
 # ── Lockfile state machine ─────────────────────────────────────────────────

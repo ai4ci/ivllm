@@ -11,6 +11,7 @@ ivllm_show_logs_usage() {
     echo "  -j job      The name of the job to start."
     echo "  -n node     Which node to show or quoted '*' for all"
     echo "  -m match    A string when matched terminates the tail"
+    echo "  -a          show the whole log from the beginning (default is from current)"
     echo "  -h          Show this help message"
     exit 1
 }
@@ -21,13 +22,15 @@ source "$here/lib/utils.sh"
 export IVLLM_JOB=""
 export IVLLM_NODE="0"
 export IVLLM_MATCH=""
+tailOption="0"
 
 OPTIND=1
-while getopts "j:n:m:h" opt; do
+while getopts "j:n:m:ah" opt; do
     case $opt in
         j) IVLLM_JOB="$OPTARG" ;;
         n) IVLLM_NODE="$OPTARG" ;;
         m) IVLLM_MATCH="$OPTARG" ;;
+        a) tailOption="+1" ;;
         h) ivllm_show_logs_usage ;;
         \?) echo "Error: Invalid option -$OPTARG" >&2; ivllm_show_logs_usage ;;
         :)  echo "Error: Option -$OPTARG requires an argument" >&2; ivllm_show_logs_usage ;;
@@ -66,11 +69,12 @@ fi
 
 # No marker — plain follow, runs until the client disconnects.
 if [[ -z "$IVLLM_MATCH" ]]; then
-    exec stdbuf -oL tail -f "${files[@]}"
+    # NB normalises \r to \n
+    exec stdbuf -oL tail -n "$tailOption" -f "${files[@]}" | stdbuf -oL tr '\r' '\n'
 fi
 
 # Marker mode — stream until the marker appears, then stop the tail.
-coproc TAIL { stdbuf -oL tail -f "${files[@]}" 2>&1; }
+coproc TAIL { stdbuf -oL tail -n "$tailOption" -f "${files[@]}" 2>&1  | stdbuf -oL tr '\r' '\n'; }
 trap 'kill "$TAIL_PID" 2>/dev/null' EXIT INT TERM
 
 awk -v target="$IVLLM_MATCH" '
