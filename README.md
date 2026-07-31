@@ -1,6 +1,6 @@
 # isambard-vllm (`ivllm`)
 
-A CLI tool for managing vLLM inference jobs on [Isambard AI](https://www.isambard.ac.uk/) HPC from your local machine. It submits SLURM jobs, downloads models on the login node, establishes a forward SSH tunnel, and exposes an OpenAI-compatible API on `localhost` — so you can point any agent harness (e.g. OpenCode) straight at your HPC GPU allocation.
+A CLI tool for managing vLLM inference jobs on [Isambard AI](https://www.isambard.ac.uk/) HPC from your local machine. It submits SLURM jobs, downloads models from huggingface, establishes a forward SSH tunnel, and exposes an OpenAI-compatible API on `localhost` — so you can point any agent harness (e.g. OpenCode) straight at your HPC GPU allocation.
 
 ```
 http://localhost:11434/v1   ←→   ssh tunnel   ←→   vLLM on COMPUTE node
@@ -99,6 +99,11 @@ ivllm status
 # └──────────┴──────────────────────────────────┴────────┴────────────┴─────────────┘
 
 # Step 3a — attach to a running job (instant)
+ivllm connect qwen36
+# 🚀 OpenAI API endpoint: http://localhost:11434/v1
+#    Model: Qwen/Qwen3.6-35B-A3B-FP8
+
+# Step 3a — attach to a stopped job (instant)
 ivllm connect qwen36
 # 🚀 OpenAI API endpoint: http://localhost:11434/v1
 #    Model: Qwen/Qwen3.6-35B-A3B-FP8
