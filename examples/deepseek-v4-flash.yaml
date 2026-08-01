@@ -14,7 +14,7 @@ idle-timeout: 60
 #   Compressed Sparse Attention (CSA) and Heavily Compressed Attention (HCA)
 #   reduce the KV cache footprint to just 10% of V3.2.
 
-model: deepseek-ai/DeepSeek-V4-Flash-Base
+model: deepseek-ai/DeepSeek-V4-Flash
 tensor-parallel-size: 1
 pipeline-parallel-size: 1
 data-parallel-size: 4
@@ -43,7 +43,14 @@ tokenizer-mode: deepseek_v4
 # Prefix caching — valuable for repeated system prompts and CoT contexts.
 enable-prefix-caching: true
 
-moe-backend: deep_gemm_mega_moe
+# deepseek-flash-base (fp8 experts)
+# OOM with wide EP - could work with TP4 DP1 probably:
+# moe-backend: deep_gemm
+
+# deepseek-flash-base (fp8 experts)
+# failed with: notImplementedError: DeepSeek V4 MegaMoE only supports fp4 experts; got expert_dtype='fp8'. Drop --kernel-config moe_backend=deep_gemm_mega_moe for this checkpoint.
+# moe-backend: deep_gemm_mega_moe
+
 # If we have to revert to FP4 quantised experts then
 # moe-backend: humming
 # env:

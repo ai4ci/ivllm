@@ -150,6 +150,7 @@ Please upgrade your local ivllm install to ${remoteVersion} or later before cont
         if (config) {
             if (fs.existsSync(config)) {
                 const remoteConfig = `${this.creds.projectDir}/engine/jobs/${job}/vllm.yaml`;
+                console.log(`uploading config ${config} to ${remoteConfig}`);
                 await this.ops.copyFile(config, remoteConfig);
             } else {
                 throw new Error(`no configuration file found at: ${config}`);

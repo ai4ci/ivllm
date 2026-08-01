@@ -96,16 +96,14 @@ export abstract class Backend {
      * Get the lockfile status for a specific job.
      * @param job — Job name
      * @returns The job's lockfile status
-     * @throws {Error} if the job is not found
+     * @throws Error if no matching job found
      */
     async getJobStatus(job: string): Promise<LockfileV3> {
         const statuses = await this.getAllJobStatus();
         const matchedJob = statuses.find((s) => s.jobName === job);
-
         if (!matchedJob) {
             throw new Error(`Job status for '${job}' not found.`);
         }
-
         return matchedJob;
     }
 
@@ -129,9 +127,19 @@ export abstract class Backend {
         }
     }
 
+    /**
+     * Get a specific job's status flag or '' if no job of that name exists
+     *
+     * @param job the job name
+     * @returns the job status or '' if no job found
+     */
     async getStatusFlag(job: string): Promise<string> {
-        const lockfile = await this.getJobStatus(job);
-        return lockfile.status;
+        try {
+            const lockfile = await this.getJobStatus(job);
+            return lockfile.status;
+        } catch {
+            return '';
+        }
     }
 
     /**
@@ -140,11 +148,7 @@ export abstract class Backend {
      * @returns `true` if status is `cancel`, `false` otherwise
      */
     async isCancelling(job: string): Promise<boolean> {
-        try {
-            return (await this.getStatusFlag(job)) === 'cancel';
-        } catch {
-            return false;
-        }
+        return (await this.getStatusFlag(job)) === 'cancel';
     }
 
     /**
@@ -153,26 +157,18 @@ export abstract class Backend {
      * @returns `true` if status is `running`, `false` otherwise
      */
     async isRunning(job: string): Promise<boolean> {
-        try {
-            return (await this.getStatusFlag(job)) === 'running';
-        } catch {
-            return false;
-        }
+        return (await this.getStatusFlag(job)) === 'running';
     }
 
     /**
      * Check if a job is in a stopped state (stopped or failed state). If the
      * status file is missing the job is said to be in a stopped state.
      * @param job — Job name
-     * @returns `true` if status is `stopped` or `failed`, `false` otherwise
+     * @returns `true` if status is `stopped` or `failed` or doesn't exist, `false` otherwise
      */
     async isStopped(job: string): Promise<boolean> {
-        try {
-            const status = await this.getStatusFlag(job);
-            return status === 'stopped' || status === 'failed';
-        } catch {
-            return true;
-        }
+        const status = await this.getStatusFlag(job);
+        return status === '' || status === 'stopped' || status === 'failed';
     }
 
     /**
@@ -180,15 +176,11 @@ export abstract class Backend {
      * job status file (i.e. has never been run before or status file has been
      * deleted).
      * @param job — Job name
-     * @returns `true` if status is `stopped` or `failed`, `false` otherwise
+     * @returns `true` if status is `stopped` or `failed` or doesn't exist, `false` otherwise
      */
     async isStartable(job: string): Promise<boolean> {
-        try {
-            const status = await this.getStatusFlag(job);
-            return status === 'stopped' || status === 'failed';
-        } catch {
-            return true;
-        }
+        const status = await this.getStatusFlag(job);
+        return status === '' || status === 'stopped' || status === 'failed';
     }
 
     /**
@@ -197,11 +189,7 @@ export abstract class Backend {
      * @returns `true` if status is `pending` or `initialising`, `false` otherwise
      */
     async isStarting(job: string): Promise<boolean> {
-        try {
-            const status = await this.getStatusFlag(job);
-            return status === 'pending' || status === 'initialising';
-        } catch {
-            return false;
-        }
+        const status = await this.getStatusFlag(job);
+        return status === 'pending' || status === 'initialising';
     }
 }

@@ -330,12 +330,25 @@ get_job_config_setting() {
         exit 1
     fi
     # yq v3's path syntax does NOT use a leading '.' (unlike jq or yq v4);
-    # all callers pass the path as `.field` (because jq *does* require it, and
-    # the codebase originally mixed `get_job_config_setting` with
-    # `get_job_status_setting` call-sites that both use the same dotted
-    # convention). Strip the leading '.' before handing to yq.
-    local expr="${2#.}"
-    yq r "$file" "$expr" 2>/dev/null || echo ""
+    # all callers pass the path as `.field` (because jq *does* require it).
+    # We convert the yaml to json and hand off to jq
+    local expr="$2"
+
+    # If the expression contains a hyphen, rewrite it to use safe jq bracket syntax
+    if [[ "$expr" == *-* ]]; then
+        # Strip the leading dot
+        local clean_key="${expr#.}"
+        # Wrap it in jq bracket notation: .["key-name"]
+        expr=".[\"${clean_key}\"]"
+    fi
+
+    # 1. Convert the entire YAML file to JSON
+    # 2. Query it with jq using our safe expression
+    # 3. Fall back to an empty string instead of literal "null"
+    local tmp
+    tmp=$(yq r -j "$file" 2>/dev/null | jq -r "${expr} // \"\"" 2>/dev/null)
+
+    echo "$tmp"
 }
 
 # Extract the top-level 'env:' block from vllm.yaml as bash export lines.
@@ -352,7 +365,12 @@ get_job_config_exports() {
     # v3-compatible: read path+value pairs and build export lines in bash
     # (v3 has no jq-style filter pipeline; v4's `( .env // {} ) | to_entries | ...`
     # is not supported by the installed yq 3.4.1)
-    yq r -p pv "$file" 'env.*' 2>/dev/null | sed -E 's/^env\.([^:]+): (.*)$/export \1="\2"/'
+    yq r -j "$file" 2>/dev/null | jq -r '
+        .env // {}
+        | to_entries[]
+        | "export \(.key)=\(@sh "\(.value)")"
+    '
+    # This strips off surrounding single quotes so we don't get malformed json blocks
 }
 
 

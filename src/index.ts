@@ -253,6 +253,7 @@ async function cmdConnect(
     // TODO: rething the user experience here. Maybe better to
     // have a specific start command and defer to it if the job
     // is not already running, rather than try and start it.
+    console.clear();
     const config = loadCredentials();
     assertConfigured(config);
     const backend = getBackend(config);
@@ -427,6 +428,7 @@ async function cmdDiagnostics(
     jobName: string,
     options: { out?: string },
 ): Promise<void> {
+    console.clear();
     const config = loadCredentials();
     assertConfigured(config);
     const backend = getBackend(config);

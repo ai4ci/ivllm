@@ -85,7 +85,7 @@ fi
 
 
 # Check if it exists in the cache by adding the prefix for the match
-if hf cache ls | grep -q "^model/${HF_MODEL}\b"; then
+if hf cache ls --format json | jq -e ".[] | select(.repo_id == \"$HF_MODEL\")" > /dev/null; then
     echo "[model] $HF_MODEL already cached in $HF_HOME."
     exit 0
 else

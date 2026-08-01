@@ -9,6 +9,7 @@ import { RemoteOps } from './RemoteOps';
 import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import fs from 'fs';
+import path from 'path';
 import net from 'net';
 
 /**
@@ -111,7 +112,8 @@ export class SshRemoteOps extends RemoteOps {
     async copyFile(localPath: string, remotePath: string): Promise<void> {
         return new Promise((resolve, reject) => {
             const target = `${this.config.username}@${this.config.loginHost}`;
-            const remoteCommand = `umask 002 && cat > "${remotePath}"`;
+            const remoteDir = path.dirname(remotePath);
+            const remoteCommand = `umask 002 && mkdir -p "${remoteDir}" && cat > "${remotePath}"`;
             const proc = spawn(
                 'ssh',
                 [...SSH_MUX_OPTS, '-o', 'BatchMode=yes', target, remoteCommand],
@@ -193,17 +195,22 @@ export class SshRemoteOps extends RemoteOps {
             });
         });
 
-        if (direction === 'up') {
-            const { exitCode, stdout } = await this.runRemote(
-                `chmod -R g+rwX "${remotePath}"`,
-                { env: [], silent: true },
-            );
-            if (exitCode !== 0) {
-                throw new Error(
-                    `chmod -R g+rwX failed on ${remotePath} (exit ${exitCode}): ${stdout}`,
-                );
-            }
-        }
+        // This causes an unpleasant hang on isambard due to the large number of small
+        // files in the engine directory... For this to work we woudl need to
+        // move the script directory to somewhere else.
+        // Thsi was added to fix a locally failing test but in fact e2e testing
+        // shows it is not needed on isambard due to the umask most likely.
+        // if (direction === 'up') {
+        //     const { exitCode, stdout } = await this.runRemote(
+        //         `chmod -R g+rwX "${remotePath}"`,
+        //         { env: [], silent: true },
+        //     );
+        //     if (exitCode !== 0) {
+        //         throw new Error(
+        //             `chmod -R g+rwX failed on ${remotePath} (exit ${exitCode}): ${stdout}`,
+        //         );
+        //     }
+        // }
     }
 
     /**
