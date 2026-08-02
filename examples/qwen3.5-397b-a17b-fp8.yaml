@@ -26,7 +26,6 @@ tensor-parallel-size: 4
 pipeline-parallel-size: 2
 max-model-len: 262144
 gpu-memory-utilization: 0.90
-dtype: fp8
 kv-cache-dtype: fp8
 safetensors-load-strategy: eager
 
@@ -42,6 +41,19 @@ enable-expert-parallel: true
 
 # Caching
 enable-prefix-caching: true
+
+# Using flashinfer allreduce backend: trtllm
+# Worker failed with error 'Flashinfer allreduce is not supported for multi-node allreduce with 'trtllm' backend. Please use 'mnnvl' backend instead.'
+# "flashinfer_nvlink_two_sided": Use flashinfer two-sided kernels for mnnvl
+# all2all-backend: flashinfer_nvlink_two_sided
+# disable-custom-all-reduce: true
+all2all-backend: deepep_v2
+# moe-backend: deep_gemm
+moe-backend: hpc
+
+env:
+    VLLM_FLASHINFER_ALLREDUCE_BACKEND: mnnvl
+    VLLM_USE_DEEP_GEMM_E8M0: 0
 
 # Mixture of experts models need to be forced to use triton
 # gdn-prefill-backend: "triton"

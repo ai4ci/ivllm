@@ -1,8 +1,8 @@
 metadata:
     target: Isambard-AI GH200
     created-by: Rob
-    version: 0.1.0
-    lifecycle: experimental
+    version: 0.3.0
+    lifecycle: operational
 min-vllm-version: "0.18.0"
 idle-timeout: 60
 
@@ -20,4 +20,5 @@ enable-auto-tool-choice: true
 tool-call-parser: mistral
 reasoning-parser: mistral
 
-speculative-config: '{"model":"mistralai/Mistral-Medium-3.5-128B-EAGLE","num_speculative_tokens":3,"method":"eagle","max_model_len":"65536"}'
+# AttributeError: 'EagleMistralForCausalLM' object has no attribute 'lm_head'
+# speculative-config: '{"model":"mistralai/Mistral-Medium-3.5-128B-EAGLE","num_speculative_tokens":3,"method":"eagle","max_model_len":"65536"}'

@@ -106,6 +106,8 @@ else
         --ntasks=1 \
         --mem=16G \
         --export=ALL \
+        --output="$LOG" \
+        --error="$LOG" \
         hf download "$HF_MODEL"
 
     # Capture the direct exit code of the srun command

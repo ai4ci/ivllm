@@ -31,7 +31,7 @@ serverPort=$(get_job_status_setting "$IVLLM_JOB" ".serverPort")
 dp=$(get_job_config_setting "$IVLLM_JOB" ".data-parallel-size")
 
 totalDp=${dp:-1}
-nNodes=${SLURM_NNODES:-1}
+nNodes=${SLURM_JOB_NUM_NODES:-1}
 
 # Calculate how many DP ranks exist per node
 # (e.g. if totalDp=16 on 16 nodes, localDp=1. If totalDp=64 on 16 nodes, localDp=4)
@@ -95,5 +95,5 @@ stdbuf -oL -eL vllm serve "${IVLLM_ARGS[@]}" &
 
 echo "[serve-$IVLLM_NODE_RANK] initialised worker $IVLLM_NODE_RANK for $IVLLM_JOB"
 
-wait_report "$IVLLM_JOB" "$IVLLM_WORKER_PID"
+wait_report "$IVLLM_JOB" "$IVLLM_WORKER_PID" "$IVLLM_NODE_RANK"
 

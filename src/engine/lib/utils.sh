@@ -737,10 +737,11 @@ wait_all() {
 # specific storage. can run on both head and worker nodes.
 # Args: $1 — job; $2 - pid for the process to monitor (usually the pid of the
 # actual vllm serve process);
-# Usage: wait_report "$job" "$pid"
+# Usage: wait_report "$job" "$pid" "$node"
 wait_report() {
     local job=$1
     local pid=$2
+    local node=${3:-0}
     local elapsed=0
     local tick_ms=100
     local target_ms
@@ -755,7 +756,7 @@ wait_report() {
 
         if [ "$elapsed" -ge "$target_ms" ]; then
             if is_status "$job" "initialising"; then
-                report_memory "$job"
+                report_memory "$job" "$node"
             fi
             elapsed=0
         fi
@@ -1233,7 +1234,7 @@ report_memory() {
     local node
 
     localdir=$(resolve_localdir "$1")
-    node=${SLURM_NODEID:-0}
+    node=${2:-0}
 
     local raw_ps
     raw_ps=$(ps -u "$USER" -o rss=,comm= 2>/dev/null || true)

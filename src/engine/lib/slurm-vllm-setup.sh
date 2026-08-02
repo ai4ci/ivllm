@@ -192,59 +192,22 @@ else
   fi
 fi
 
-# DeepEP or UCCL-EP (High-Performance MoE Collective transport)
-# export EP_NVSHMEM_ROOT_DIR="$NVSHMEM_DIR"
-# export EP_NCCL_ROOT_DIR="$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nccl"
-
 
 # Ensure build requirements match the host environment
-uv pip install tomlkit nanobind wheel setuptools build pybind11
+uv pip install tomlkit nanobind wheel setuptools build pybind11 meson-python
 
-if uv pip show deepep &>/dev/null && uv pip show uccl &>/dev/null; then
-    echo "UCCL already installed with DeepEP wrapper"
+if uv pip show deep-ep &>/dev/null && uv pip show uccl &>/dev/null && uv pip show nixl-cu12 &>/dev/null; then
+    echo "UCCL already installed with DeepEP wrapper & NIXL support"
 else
-#   deepEpRef=$(curl -fsSL "https://raw.githubusercontent.com/vllm-project/vllm/refs/heads/releases/v$vllmVersion/tools/ep_kernels/install_python_libraries.sh" | grep "DEEPEP_COMMIT_HASH=" | head -n 1 | sed 's/.*-"\(.*\)".*/\1/')
-#
-#   compiled_any_ep=0
-#
-#   if [[ -n ${deepEpRef:-} ]]; then
-#     echo "=== compiling DeepEP from source ==="
-#
-#     deepEPgit="https://github.com/deepseek-ai/DeepEP.git"
-#     mkdir -p "$workingDir/deepep"
-#     # Checkout the specific reference
-#     if git clone --recursive --shallow-submodules "$deepEPgit" "$workingDir/deepep"; then
-#       pushd "$workingDir/deepep"
-#       git checkout "$deepEpRef"
-#
-#       # COMPILE AND PIP INSTALL VIA UV
-#       echo "Compiling DeepEP C++/CUDA extensions directly into venv..."
-#       if uv pip install --no-build-isolation -vvv .; then
-#         echo "DeepEP successfully compiled and installed from tmpfs."
-#         echo "DEEPEP_SETUP_SUCCESS"
-#         compiled_any_ep=1
-#       else
-#         echo "WARNING: DeepEP compilation failed (this is expected on systems without Mellanox InfiniBand such as HPE Slingshot)."
-#       fi
-#       popd
-#     fi
-#   else
-#     echo "WARNING: no DeepEP git reference found to compile"
-#   fi
-#
-#   # Fallback to UCCL-EP if DeepEP compilation is skipped or fails
-#   if [[ $compiled_any_ep -eq 0 ]]; then
-
 
     echo "=== Building UCCL-EP with HPE Slingshot (CXI) transport support ==="
-
 
     # Ensure build requirements match Isambard's Grace Hopper nodes
     export TORCH_CUDA_ARCH_LIST="9.0a"
     export USE_LIBFABRIC_CXI=1
     export USE_DMABUF=1
 
-    # repicates specific instructions from:
+    # replicates specific instructions from:
     # https://raw.githubusercontent.com/uccl-project/uccl/refs/heads/main/build_inner.sh
 
     # Install build dependency: nanobind
@@ -252,43 +215,12 @@ else
 
 
     # The doublewordAI fork has been built for isambard.
-    ucclEPgit="https://github.com/doublewordai/uccl.git"
+    # ucclEPgit="https://github.com/doublewordai/uccl.git"
+    # most of the pull requests have been merged
+    ucclEPgit="https://github.com/uccl-project/uccl.git"
     mkdir -p "$workingDir/uccl"
 
     if git clone --recursive --shallow-submodules -b main "$ucclEPgit" "$workingDir/uccl"; then
-
-#         pushd "$workingDir/uccl/ep"
-#         export USE_LIBFABRIC_CXI=1
-#         export USE_DMABUF=1
-#
-#         echo "Executing native UCCL wheel compilation loop..."
-#         # Format: bash build.sh [cuda_version] [module_target] [python_version] --install
-#         if python3 setup.py build_ext --inplace; then
-#             echo "UCCL-EP compiled successfully. Manually mapping binary to site-packages..."
-#
-#             # Identify your virtual environment layout
-#             VENV_SITE_PACKAGES="$vllmVersionDir/lib/python3.12/site-packages"
-#             mkdir -p "$VENV_SITE_PACKAGES/uccl"
-#
-#             # 5. Place the true compiled .so binary and initialize the module namespace
-#             cp ep.abi3.so "$VENV_SITE_PACKAGES/uccl/"
-#             touch "$VENV_SITE_PACKAGES/uccl/__init__.py"
-#
-#             # 6. Generate and register package metadata to satisfy pip dependency tracking
-#             python3 setup.py egg_info
-#             cp -r *.egg-info "$VENV_SITE_PACKAGES/uccl-0.0.1-py3.12.egg-info"
-#             echo "UCCL-EP successfully manually integrated."
-#
-#             # 7. Install doublewordai's deep_ep drop-in wrapper helper
-#             echo "Installing deep_ep drop-in wrapper..."
-#             if uv pip install --no-build-isolation -vvv ./deep_ep_wrapper; then
-#                 echo "deep_ep_wrapper successfully compiled and integrated."
-#             else
-#                 echo "WARNING: UCCL-EP compiled but deep_ep_wrapper setup encountered an error."
-#             fi
-#         else
-#             echo "WARNING: Host-native UCCL-EP compilation failed."
-#         fi
 
       pushd "$workingDir/uccl"
       echo "--> Compiling P2P extension components..."
@@ -339,26 +271,106 @@ else
         echo "WARNING: Failed to clone UCCL repository."
     fi
 
-    echo "installing humming from doublewordAI"
-    uv pip install git+https://github.com/doublewordai/humming.git
+    # NIXL SUPPORT
+    # Needs to run alongside the UCCL compilation to pick up UCCL headers
+    # See:
+    uv pip install meson ninja pybind11 tomlkit pytest patchelf types-PyYAML setuptools wheel
 
-fi
-
-if uv pip show nixl &>/dev/null; then
-    echo "NIXL with slingshot already installed"
-else
     echo "=== Compiling NIXL with HPE Slingshot (CXI) Support ==="
 
     # 2. Clone the core NIXL codebase
-    rm -rf "$workingDir/nixl"
+    mkdir -p "$workingDir/nixl"
+
     git clone --recursive https://github.com/ai-dynamo/nixl.git "$workingDir/nixl"
-    cd "$workingDir/nixl"
+    pushd "$workingDir/nixl"
+
+    LOCAL_FABRIC="/opt/cray/libfabric/1.22.0"
+
+    TARGET_PLUGINS="LIBFABRIC,UCCL,POSIX"
+
+    # 1. Point to your custom UCCL source and compiled library spaces
+    export UCCL_STAGING_DIR="$workingDir/uccl"
+
+    # We explicitly add the nested 'p2p/util' subdirectory to find common.h
+    export CPATH="$UCCL_STAGING_DIR/include:$UCCL_STAGING_DIR/p2p:$UCCL_STAGING_DIR/p2p/util:$CPATH"
+    export CPLUS_INCLUDE_PATH="$UCCL_STAGING_DIR/include:$UCCL_STAGING_DIR/p2p:$UCCL_STAGING_DIR/p2p/util:${CPLUS_INCLUDE_PATH:-}"
+
+    # ── Extended Linker Path Matrix (Build-Time Binaries) ──
+    # Points the compiler to find libuccl_p2p.so inside your staging workspace
+    export LIBRARY_PATH="$UCCL_STAGING_DIR/uccl/lib:$UCCL_STAGING_DIR/p2p:$LIBRARY_PATH"
+    export LD_LIBRARY_PATH="$UCCL_STAGING_DIR/uccl/lib:$UCCL_STAGING_DIR/p2p:$LD_LIBRARY_PATH"
 
     # 3. Compile the base C++ engine and build the target architecture wheel
     # Passing --no-build-isolation forces the setup layout to acknowledge Slingshot structures
-    python3 -m build --wheel --no-isolation
+    # NIXL_EP requires UCX/UCP which is Infiniband specific no path exists to
+    # install on Slingshot as far as I can see.
+    python3 -m build --wheel --no-isolation \
+      -Csetup-args="-Dcudapath_inc=$CUDA_HOME/include" \
+      -Csetup-args="-Dcudapath_lib=$CUDA_HOME/lib64" \
+      -Csetup-args="-Ddisable_gds_backend=true" \
+      -Csetup-args="-Ddisable_mooncake_backend=true" \
+      -Csetup-args="-Ddisable_infinia_backend=true" \
+      -Csetup-args="-Dlibfabric_path=$LOCAL_FABRIC" \
+      -Csetup-args="-Dnixl_cuda_arch_list=90" \
+      -Csetup-args="-Dbuild_nixl_ep=false" \
+      -Csetup-args="-Dbuild_tests=false" \
+      -Csetup-args="-Dbuild_examples=false" \
+      -Csetup-args="-Denable_plugins=$TARGET_PLUGINS" \
+      -Csetup-args="-Dcpp_args=-Wno-error=deprecated-enum-enum-conversion" \
+      -Csetup-args="-Dwerror=false"
 
     # 4. Install the resulting wheel package into your Python environment
-    uv pip install --no-build-isolation dist/nixl-*.whl
+    uv pip install --no-build-isolation dist/nixl*.whl
 
+    popd
 fi
+
+# UCCL-EP enables deep_ep moe kernels on GH200
+# see:
+# https://docs.vllm.ai/en/latest/design/moe_kernel_features/
+
+# UCCL-P2P allows limited NIXL support:
+# This allows disaggregated prefilling feature. It provides fully asynchronous send/receive operations using the NIXL library for efficient cross-process KV cache transfer (with "kv_connector_extra_config":{"backends":["LIBFABRIC"]}).
+# see:
+# https://docs.vllm.ai/en/stable/features/nixl_connector_usage/
+# https://docs.vllm.ai/en/stable/features/nixl_connector_compatibility/#model-architecture-x-capability
+
+# TODO: work out a better check:
+# before the package is called "humming"
+# after uv pip list shows:
+# humming-kernels                          0.1.10.post19+ga07f4b350
+if uv pip show humming-kernels &>/dev/null; then
+    echo "humming kernels already installed (doubleword-AI)"
+else
+    echo "=== Installing humming from doublewordAI ==="
+    uv pip install git+https://github.com/doublewordai/humming.git
+fi
+
+# Humming moe-backend and linear-backend
+# See:
+# https://blog.doubleword.ai/throughputmaxxing-v4-flash-single-node
+
+
+if uv pip show hpc &>/dev/null; then
+    echo "Tencent HPC-OPS already installed"
+else
+    echo "=== Tencent HPC-OPS ==="
+    git clone https://github.com/Tencent/hpc-ops.git "$workingDir/hpc-ops"
+    cd "$workingDir/hpc-ops"
+
+    # build packages
+    make wheel
+    # 4. Install the resulting wheel package into your Python environment
+    uv pip install --no-build-isolation dist/*.whl
+fi
+
+# HPC-OPS:
+# https://vllm.ai/blog/2026-07-06-vllm-hpc-ops
+# Attention and moe backends optimised for hopper
+# Hy3 series of models use it.
+#     --attention-backend HPC_ATTN \
+#     --kv-cache-dtype fp8_e4m3 \
+#     --moe-backend hpc
+
+
+

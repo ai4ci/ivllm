@@ -58,6 +58,9 @@ export CUDA_VERSION=12.9
 export NVHPC_ROOT=$(resolve_nvhpc_root)
 export CUDA_HOME="$NVHPC_ROOT/cuda/$CUDA_VERSION"
 export PATH="$CUDA_HOME/bin:$PATH"
+export CUDA_PATH="$CUDA_HOME"
+export C_INCLUDE_PATH="$CUDA_HOME/include:${C_INCLUDE_PATH:-}"
+export CPLUS_INCLUDE_PATH="$CUDA_HOME/include:${CPLUS_INCLUDE_PATH:-}"
 
 # NVHPC separates math library headers (cuBLAS, cuSPARSE) from CUDA SDK headers.
 # flashinfer JIT kernels include cublasLt.h which is in math_libs, not cuda/include.
