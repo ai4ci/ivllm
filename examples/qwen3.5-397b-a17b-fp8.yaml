@@ -1,8 +1,8 @@
 metadata:
     target: Isambard-AI GH200
     created-by: Rob
-    version: 0.1.0
-    lifecycle: experimental
+    version: 0.3.0
+    lifecycle: operational
 min-vllm-version: "0.17.0"
 idle-timeout: 60
 
@@ -47,19 +47,35 @@ enable-prefix-caching: true
 # "flashinfer_nvlink_two_sided": Use flashinfer two-sided kernels for mnnvl
 # all2all-backend: flashinfer_nvlink_two_sided
 # disable-custom-all-reduce: true
-all2all-backend: deepep_v2
+# all2all-backend: deepep_v2
 # moe-backend: deep_gemm
-moe-backend: hpc
-
-env:
-    VLLM_FLASHINFER_ALLREDUCE_BACKEND: mnnvl
-    VLLM_USE_DEEP_GEMM_E8M0: 0
+# env:
+#     VLLM_FLASHINFER_ALLREDUCE_BACKEND: mnnvl
+# moe-backend: hpc
 
 # Mixture of experts models need to be forced to use triton
-# gdn-prefill-backend: "triton"
-# moe-backend: triton             # Forces vLLM to use pre-compiled Triton MoE kernels
-# attention-config: '{"backend":"TRITON_ATTN"}'
-# enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
+gdn-prefill-backend: "triton"
+moe-backend: triton             # Forces vLLM to use pre-compiled Triton MoE kernels
+attention-config: '{"backend":"TRITON_ATTN"}'
+enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
+disable-custom-all-reduce: true
+
+# disable-custom-all-reduce only disables vLLM's own custom quick-allreduce
+# kernel — it does NOT stop the AllReduceFusionPass torch.compile pass from
+# unconditionally trying to set up a FlashInfer allreduce workspace, which
+# crashes multi-node jobs with:
+#   ValueError: Flashinfer allreduce is not supported for multi-node
+#   allreduce with 'trtllm' backend. Please use 'mnnvl' backend instead.
+# (and 'mnnvl' itself doesn't work here — it needs real inter-node NVLink,
+# which the Slingshot fabric doesn't provide). Disabling the fusion pass
+# directly avoids the FlashInfer workspace setup entirely.
+compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'
+
+# N.B. vllm tells us to use mvnvl but this does not work on slingshot dso following this guidance is a bad idea.
+# Instead we have to disable flashinfer-allreduce.
+# Flags like VLLM_FLASHINFER_ALLREDUCE_BACKEND="none" don't actually exist.
+# neither does VLLM_USE_FLASHINFER_MOE_FP8=0
+# so in fact we use the disable-custom-all-reduce option
 
 # Note: text-only mode - skips the vision encoder to free memory for extra KV cache.
 # Remove this line to enable image/video input.

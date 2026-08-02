@@ -71,10 +71,14 @@ source "$vllmVersionDir/bin/activate"
 source "$SLURM_SUBMIT_DIR/lib/common-env.sh"
 source "$SLURM_SUBMIT_DIR/lib/vllm-env.sh"
 
-echo "[serve-0] executing: vllm serve $(printf '%q ' "${IVLLM_ARGS[@]}")"
-
 # Evaluate env blocks in yaml file last to override defaults.
 eval "$envExports"
+
+echo "=== Selected environment exports ==="
+env | grep -E "VLLM_|RAY_|NCCL_|FI_|NVHPC|CUDA_|LD_CONFIG|CPATH|PATH|SLURM_|TRITON" | sort
+echo "==================================="
+echo "[serve-0] executing: vllm serve $(printf '%q ' "${IVLLM_ARGS[@]}")"
+echo "==================================="
 
 # make sure signals sent to this script via srun are propagated to vllm:
 trap 'kill_pid "$IVLLM_PID" "vllm head"' SIGUSR2 SIGUSR1 SIGTERM

@@ -19,7 +19,6 @@ enable-expert-parallel: true
 gpu-memory-utilization: 0.95
 max-num-seqs: 512
 max-cudagraph-capture-size: 256
-dtype: fp8
 kv-cache-dtype: fp8
 
 # Reasoning (thinking mode enabled by default; use /no_think in prompt to disable)

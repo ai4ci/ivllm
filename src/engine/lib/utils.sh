@@ -709,27 +709,14 @@ kill_pid() {
     fi
 }
 
-# Polls a list of PIDs. Exits immediately if any PID dies.
+# monitors a list of PIDs. Exits immediately if any PID dies.
 # Args: $1...$N — One or more process IDs to monitor.
 wait_all() {
-    # If no PIDs are passed, exit immediately
-    [ $# -eq 0 ] && return 0
-
-    while true; do
-        for pid in "$@"; do
-            # Check if the process is still running
-            if ! kill -0 "$pid" 2>/dev/null; then
-                echo "Process $pid has terminated. Fetching exit status..." >&2
-
-                # 'wait' captures the actual exit code of the dead process.
-                # If it crashed non-zero, this command triggers the parent's ERR trap.
-                wait "$pid"
-                return $?
-            fi
-        done
-        sleep 1
-    done
+      [ $# -eq 0 ] && return 0
+      wait -n "$@" 2>/dev/null
+      return $?
 }
+
 
 # waits for a process to finish whilst reporting on its memory usage whilst in
 # the initialising state. This is designed to be run on a compute node and will
@@ -749,6 +736,7 @@ wait_report() {
 
     while true; do
         # kill -0 succeeds on zombies too, so check /proc state directly.
+        kill -0 "$pid" 2>/dev/null || break
         [[ -e "/proc/$pid" ]] || break
         local state
         state=$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)
@@ -765,20 +753,14 @@ wait_report() {
     done
 
     wait "$pid" 2>/dev/null
-    return $?
+    local code=$?
 
-#     while kill -0 "$pid" 2>/dev/null; do
-#         if [ "$elapsed" -ge "$target_ms" ]; then
-#             if is_status "$job" "initialising"; then
-#                 # node specific RAM report uses $SLURM_NODEID and is scoped to
-#                 # current node.
-#                 report_memory "$job"
-#             fi
-#             elapsed=0
-#         fi
-#         sleep 0.1
-#         ((elapsed += tick_ms))
-#     done
+    if [[ $code != 0 ]]; then
+        update_status_failed "$job" "vllm crashed" "$code"
+    fi
+
+    return $code
+
 }
 
 

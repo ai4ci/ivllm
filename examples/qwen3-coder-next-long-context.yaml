@@ -15,7 +15,6 @@ model: Qwen/Qwen3-Coder-Next-FP8
 tensor-parallel-size: 1
 gpu-memory-utilization: 0.95
 max-num-seqs: 512
-dtype: fp8
 kv-cache-dtype: fp8
 
 # Reasoning (thinking mode enabled by default; use /no_think in prompt to disable)

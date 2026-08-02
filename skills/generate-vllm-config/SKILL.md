@@ -1,10 +1,10 @@
 ---
 name: generate-vllm-config
-description: 'Use when asked to generate, create, or write a vLLM config, vllm.yaml, or configuration file for a HuggingFace model to run on Isambard AI HPC. Triggers on phrases like "generate a config for <model>", "create a vllm.yaml for <model>", "what config do I need for <model>", "set up config for llama/qwen/mistral/deepseek". Do NOT use for general vLLM questions unrelated to config file generation.'
+description: 'Use when asked to generate, create, or write a vLLM config, vllm.yaml, or configuration file for a HuggingFace model to run on Isambard AI HPC. Triggers on phrases like "generate a config for <model>", "create a vllm.yaml for <model>", "what config do I need for <model>", "set up config for llama/qwen/mistral/deepseek". Also use for debugging vLLM startup failures, analyzing diagnostics, and troubleshooting MoE/multi-node issues. Do NOT use for general vLLM questions unrelated to config file generation or Isambard deployment.'
 license: MIT
 metadata:
   author: Rob Challen
-  version: 0.1
+  version: 0.2
 ---
 
 # Generate vLLM Config for Isambard AI
@@ -14,6 +14,19 @@ Generates a ready-to-use `vllm.yaml` config file for running a HuggingFace model
 ## ⚡ Quick Reference — Key Decisions
 
 > Read this first. These are the decisions that cause the most problems when done wrong.
+
+### Package Dependencies (new!)
+
+For detailed information about all vLLM dependencies on Isambard AI, see [Isambard AI vLLM Packages Reference](references/isambard-vllm-packages.md). Key packages:
+
+| Package | Purpose | When It Matters |
+|---------|---------|----------------|
+| **UCCL-EP** | Expert parallel on Slingshot 11 | MoE models (DeepSeek, Qwen3.5, Gemma) |
+| **NIXL** | KV cache transfer | Disaggregated prefill/decode serving |
+| **DeepGEMM** | DeepSeek MoE kernels | DeepSeek-V4, DeepSeek-R1 |
+| **HPC-OPS** | Tencent attention/MoE backends | Hy3-series models only |
+| **humming-kernels** | GH200-optimized MoE | DeepSeek-V4-Flash on Isambard |
+| **FlashInfer** | Attention kernels | All models (but disable autotune for MoE) |
 
 ### Quantization
 
@@ -59,11 +72,28 @@ For Maximum VRAM Savings (4-Bit): GPTQ INT4 or AWQ INT4. If you must shrink a mo
 
 **Rule of thumb**: `needed_gpus = ceil(params_B × 2 / 86.4)`. Then apply the table above.
 
+**⚠️ Multi-node MoE models — Wide EP vs Hybrid EP:**
+
+For large MoE models spanning multiple nodes, you must choose between:
+
+1. **Wide EP** (DP+EP, TP=1): Experts distributed, shared layers replicated
+   - Use when: Shared layers < 80GB (fit on single GPU)
+   - Example: DeepSeek-V4-Flash (284B, but expert-dominated)
+   - Config: `--data-parallel-size N --enable-expert-parallel`
+
+2. **Hybrid EP** (TP+DP+EP): Both experts AND shared layers distributed
+   - Use when: Shared layers > 80GB (need TP to shard)
+   - Example: Qwen3.5-397B (heavy attention/embedding layers)
+   - Config: `--tensor-parallel-size 4 --pipeline-parallel-size N --enable-expert-parallel`
+
+**See:** [MoE Parallelism Strategy Guide](references/moe-parallelism-strategy.md) for detailed decision framework.
+
 ### Critical gotchas (config errors that cause real failures)
 
 | Issue | Impact | Fix |
 |-------|--------|-----|
 | **MoE + flashinfer** | 2+ hour JIT compilation hang | Must set `gdn-prefill-backend`, `moe-backend`, `attention-config`, `enable-flashinfer-autotune: false` (see Step 7) |
+| **Multi-node (any model, MoE or dense)** | vLLM startup crash: `Flashinfer allreduce is not supported for multi-node allreduce with 'trtllm' backend` | Set `compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'` — **required on every multi-node (`pipeline-parallel-size > 1`) config, regardless of model or architecture** (see Step 5, Multi-node) |
 | **`-cc.dotted.shorthand`** | vLLM startup crash | Expand to long form: `-cc.key=val` → `compilation-config: '{"key": val}'` (see Step 8) |
 | **`tensor-parallel-size` does not divide attention heads** | vLLM crash on weight loading | tp must be 1, 2, or 4 and must evenly divide `num_attention_heads` |
 | **`min-vllm-version` too low** | Unknown key / missing flag error | Set to earliest version that supports the model + features |
@@ -278,6 +308,24 @@ When reporting to the user, include:
 - `pipeline-parallel-size` = ceil(needed_gpus / 4)
 - ⚠️ **Warn the user**: multi-node jobs require more resources and inter-node communication adds latency. `ivllm start` supports multi-node via Ray automatically, but confirm the user needs multi-node before proceeding.
 
+🚨 **Multi-node flashinfer allreduce crash — applies to EVERY multi-node config, not just MoE models:**
+
+Any job with `pipeline-parallel-size > 1` (i.e. spanning more than one node) will crash on startup with:
+
+```
+ValueError: Flashinfer allreduce is not supported for multi-node allreduce with 'trtllm' backend. Please use 'mnnvl' backend instead.
+```
+
+This comes from vLLM's `AllReduceFusionPass` (a `torch.compile` fusion pass, enabled by default via `compilation_config.pass_config.fuse_allreduce_rms`), which unconditionally tries to set up a FlashInfer allreduce workspace. FlashInfer's `trtllm` allreduce backend only supports a single node; the alternative, `mnnvl`, requires genuine inter-node NVLink, which Isambard's Slingshot fabric doesn't provide — so neither FlashInfer backend works across nodes here. `disable-custom-all-reduce: true` does **not** fix this — that flag disables a completely different (vLLM-native, non-FlashInfer) custom allreduce kernel; it has no effect on this fusion pass.
+
+**Fix — always include this key whenever `pipeline-parallel-size > 1`:**
+
+```yaml
+compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'
+```
+
+This disables the fusion pass entirely, so the FlashInfer workspace setup (and the crash) never happens. If a `compilation-config` value is already present for another reason (see Step 8's merge gotcha), merge `pass_config.fuse_allreduce_rms: false` into the existing JSON object rather than overwriting it.
+
 ### 6. Choose max-model-len
 
 - **Default to the model's full native context length.** KV cache headroom depends on `tensor-parallel-size` and whether weights fit with room to spare. Do not reduce the context pre-emptively.
@@ -295,6 +343,37 @@ available_for_kv = (usable_per_gpu × tensor_parallel_size) − weights_GB  # sc
 ### 7. Check for special options
 
 - **Reasoning models** (Qwen3, DeepSeek-R1, QwQ, etc.): add the `reasoning-parser`. Use `qwen3` for Qwen3 series; `deepseek_r1` for DeepSeek-R1/V3 and most others. Check the model card vLLM quickstart snippet for the exact name.
+
+🚨 **MoE models — backend selection is critical (NEW)**:
+
+Backend choices depend on **quantization format** and **model architecture**. See [Backend Selection Guide](references/vllm-backend-selection.md) for complete matrix.
+
+**Quick reference:**
+```yaml
+# DeepSeek-V4-Flash (W4A8: FP4 weights, FP8 activations)
+moe-backend: humming
+linear-backend: humming
+env:
+  VLLM_HUMMING_MOE_GEMM_TYPE: "indexed"
+  VLLM_HUMMING_INPUT_QUANT_CONFIG: '{"dtype":"float8e4m3","input_scale_group_size":128}'
+
+# DeepSeek-R1/V3 (FP8 block-quantized)
+moe-backend: deep_gemm
+linear-backend: deep_gemm
+
+# Qwen3.5-MoE (FP8)
+moe-backend: hpc
+linear-backend: flashinfer_cutlass
+attention-backend: HPC_ATTN
+
+# Ultra-sparse MoE (<1% activation, e.g., Llama-4-Maverick-128E)
+# DO NOT enable EP - AllToAll overhead exceeds benefit
+# (omit --enable-expert-parallel)
+moe-backend: triton
+
+# All2All backend (for EP-enabled models)
+all2all-backend: allgather_reducescatter  # Most stable on Slingshot 11
+```
 
 🚨 **MoE models — flashinfer JIT hang (this causes 2+ hour startup delays)**:
 
@@ -368,6 +447,7 @@ Write the config to the requested filename. Include comments to explain the key 
 model: <model-id>
 tensor-parallel-size: 4
 # pipeline-parallel-size: <M>   # for multi-node: each pipeline stage = 1 node (tp=4)
+# compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'  # REQUIRED whenever pipeline-parallel-size > 1 — see Step 5, Multi-node
 max-model-len: <native_context_length>
 gpu-memory-utilization: 0.90
 dtype: bfloat16
@@ -404,13 +484,17 @@ For MoE models, all expert weights must reside in GPU memory simultaneously even
 
 Flash infer compilation seems to have particular problems on isambard with start up times exceeding 2 hours if it is enabled. This is mainly due a mixture of experts models. The following set of options must be applied to all MOE models.
 
-```
+```yaml
 # Mixture of experts models need to be forced to use triton
 gdn-prefill-backend: "triton"
 moe-backend: triton             # Forces vLLM to use pre-compiled Triton MoE kernels
 attention-config: '{"backend":"TRITON_ATTN"}'
 enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
 ```
+
+**Why this matters:** FlashInfer's autotune profiling loop can take **2+ hours** on MoE models with GH200. The Triton kernels are pre-compiled and work immediately.
+
+**See also:** [FlashInfer section in Packages Reference](references/isambard-vllm-packages.md#4-flashinfer-kernel-library) for detailed background.
 
 ### CPU offload (`--cpu-offload-gb`)
 
@@ -463,6 +547,18 @@ Common choices:
 Multi-node (pp>1) adds inter-node communication latency and complexity — only use it when the model's weights genuinely won't fit on a single 4-GPU node.
 
 Valid `tensor-parallel-size` values must divide the model's number of attention heads evenly. 1, 2, and 4 work for virtually all modern models.
+
+**Expert Parallelism (MoE models only):**
+
+For MoE models (DeepSeek, Qwen3.5, Gemma), expert parallelism (EP) can improve throughput by distributing experts across GPUs. This requires **UCCL-EP** (compiled during `ivllm setup`) to work on Isambard's Slingshot fabric.
+
+```yaml
+# For MoE models with tp >= 2
+enable-expert-parallel: true
+expert-parallel-size: 2  # or 4, must divide total expert count
+```
+
+**See:** [UCCL-EP section in Packages Reference](references/isambard-vllm-packages.md#6-uccl-ep-unified-collective-communication-library---expert-parallel) for why this is critical on Slingshot 11.
 
 ### Context length
 
@@ -540,6 +636,7 @@ Before writing the file, verify every item:
 - [ ] `tensor-parallel-size` evenly divides `num_attention_heads` (vLLM will crash on weight loading otherwise)
 - [ ] Parallelism follows the default rules: **tp=2** for 1–2 GPUs, **tp=4** for 3–4 GPUs
 - [ ] If multi-node: user has been warned about resource requirements (multi-node uses `#SBATCH --nodes=N` with `vllm serve --distributed-executor-backend ray`)
+- [ ] **If multi-node (`pipeline-parallel-size > 1`)**: `compilation-config` includes `pass_config.fuse_allreduce_rms: false` (merged with any existing `compilation-config`, not overwriting it) — otherwise vLLM crashes on startup with a FlashInfer allreduce error, regardless of model
 
 ### Memory & context length
 
@@ -575,10 +672,50 @@ Before writing the file, verify every item:
 | MoE model shows poor throughput | Add `enable-expert-parallel: true` with `tensor-parallel-size >= 2` |
 | Memory borderline | Try `quantization: fp8` — halves weight memory with minimal accuracy loss on Hopper (GH200/H100) |
 | `ivllm start` fails with "version too low" | The installed vLLM (`ivllm config --vllm-version`) is below `min-vllm-version`; run `ivllm setup` with a newer version or update the config |
+| Multi-node crash: `Flashinfer allreduce is not supported for multi-node allreduce with 'trtllm' backend` | Add `compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'` (merge if a `compilation-config` already exists) — see Step 5, Multi-node. Applies to any multi-node job, not just MoE models; `disable-custom-all-reduce` does not fix this |
+
+### Debugging with ivllm diagnostics
+
+**NEW:** The `ivllm diagnostics` command fetches logs and configs from failed jobs for local analysis.
+
+**Usage:**
+```bash
+ivllm diagnostics <job-name> --out ./diagnostics/
+```
+
+**Diagnostics include:**
+- `vllm.<node>.log` — vLLM logs from each node
+- `vllm.yaml` — Config that was used
+- `slurm.sh` — SLURM job script
+- `status.json` — Lockfile state with exit code and reason
+
+**Quick diagnosis:**
+```bash
+# Check exit code and reason
+cat diagnostics/<job>/status.json | jq '{exitCode, reason, status}'
+
+# Search for common errors
+grep -i "out of memory\|flashinfer\|nccl\|timeout" diagnostics/<job>/vllm.0.log | tail -20
+```
+
+**See full debugging workflow in "Troubleshooting & Debugging" section below.**
 
 ## References
 
+### Official vLLM Documentation (verified)
+
+- **[vLLM Environment Variables (v0.25.1)](https://docs.vllm.ai/en/v0.25.1/configuration/env_vars/)** — Authoritative source for all `VLLM_*` env vars
+- **[vLLM serve CLI (stable)](https://docs.vllm.ai/en/stable/cli/serve/)** — Complete CLI option reference
+- **[vLLM CompilationConfig](https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.CompilationConfig)** — torch.compile configuration
+- **[vLLM KernelConfig](https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.KernelConfig)** — MoE/attention backend settings
+- **[Official vLLM configs reference (local)](references/vllm-official-configs.md)** — Curated Isambard-specific settings from official docs
+
+### Isambard-Specific References
+
 - [Isambard AI hardware specs](references/isambard-specs.md)
+- [Isambard AI vLLM packages & dependencies](references/isambard-vllm-packages.md) — **Comprehensive guide to UCCL-EP, NIXL, DeepGEMM, HPC-OPS, FlashInfer, humming-kernels, and all dependencies**
+- **[MoE parallelism strategy guide](references/moe-parallelism-strategy.md)** — **Wide EP vs Hybrid EP decision framework for multi-node MoE deployment**
+- **[vLLM backend selection guide](references/vllm-backend-selection.md)** — **Complete moe-backend, all2all-backend, attention-backend, linear-backend matrix with quantization support**
 - [vLLM config options and memory guide](references/vllm-config-guide.md)
 - [vLLM serve cli options](references/vllm-serve-cli-0.23.0.md)
 - [vLLM config environment variables](references/vllm-env-vars-0.23.0.md)

@@ -89,6 +89,8 @@ export USE_LIBFABRIC_CXI=1
 # ─────────────────────────────────
 # See: https://github.com/deepseek-ai/DeepGEMM
 export DG_JIT_USE_RUNTIME_API=1
+export VLLM_USE_DEEP_GEMM_E8M0=0
+# E8M0 is not suported on hopper
 
 # ── FlashInfer flags:
 # ─────────────────────────────────

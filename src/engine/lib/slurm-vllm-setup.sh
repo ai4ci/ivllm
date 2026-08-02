@@ -273,7 +273,8 @@ else
 
     # NIXL SUPPORT
     # Needs to run alongside the UCCL compilation to pick up UCCL headers
-    # See:
+    # See an alternative strategy here:
+    # https://raw.githubusercontent.com/uccl-project/uccl/61ee42402819cabba3ac2a56dd4addec3363976c/p2p/NIXL_plugin_readme.md
     uv pip install meson ninja pybind11 tomlkit pytest patchelf types-PyYAML setuptools wheel
 
     echo "=== Compiling NIXL with HPE Slingshot (CXI) Support ==="
