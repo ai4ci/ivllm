@@ -1,8 +1,10 @@
 #!/bin/bash
 # Mock hf CLI (huggingface_hub). Supports the two invocations this codebase
 # uses:
-#   hf cache ls                — lists cached models (grep'd for
-#                                 "^model/${HF_MODEL}\b")
+#   hf cache ls --format json  — lists cached models as a JSON array of
+#                                 {"repo_id": ...} objects (see
+#                                 ivllm-get-model.sh's `jq -e '.[] |
+#                                 select(.repo_id == "$HF_MODEL")'`)
 #   hf download <model>         — downloads a model
 #
 # Configure via:
@@ -18,10 +20,13 @@ shift || true
 
 case "$sub" in
     cache)
-        # hf cache ls
+        # hf cache ls --format json — emit a JSON array of {"repo_id": ...}
+        # entries, matching real `hf cache ls --format json` output shape.
+        entries=()
         for m in ${MOCK_HF_CACHED_MODELS:-}; do
-            echo "model/$m  (mock cached entry)"
+            entries+=("{\"repo_id\": \"$m\"}")
         done
+        printf '[%s]' "$(IFS=,; echo "${entries[*]:-}")"
         exit 0
         ;;
     download)

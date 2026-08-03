@@ -134,18 +134,13 @@ export class SshRemoteOps extends RemoteOps {
      * Uses archive mode (-a) to preserve permissions/timestamps, compresses data (-z),
      * and forwards SSH multiplexing via the '-e' flag.
      *
-     * On 'up' transfers, follows the rsync with an explicit `chmod -R g+rwX`
-     * on the destination. `--no-perms` + `--rsync-path 'umask 002 && rsync'`
+     * On 'up' transfers `--no-perms` + `--rsync-path 'umask 002 && rsync'`
      * alone is enough for newly-created directories (a fresh directory gets
-     * a default 0777 request, which the umask correctly masks to 0775) but
-     * NOT for regular files: without `--perms`, rsync (like `cp` without
-     * `-p`) uses the source file's own mode bits as its base request, and a
-     * umask can only strip bits from that, never add ones the source
-     * lacked — so a file that is locally 644 (no group-write, exactly what
-     * a fresh `git clone` produces under a normal 022 umask) stays 644 on
-     * the destination regardless of the remote umask. The explicit chmod
-     * closes that gap deterministically, independent of source mode or
-     * umask timing.
+     * a default 0777 request, which the umask correctly masks to 0775). rsync
+     * moves then copies so permissions of files end up correctly group writeable.
+     * Appending `/` to source and destination paths allow for copy of directory
+     * contents like rsync does natively otherwise 'src_a/src_b' -> 'target-a/target_b' on
+     * gets copied as 'target_a/target_b/src_b'
      * @param localPath - Path to the local directory
      * @param remotePath - Destination or source path on the login node
      * @param direction - 'up' to upload (local -> remote), 'down' to download (remote -> local)

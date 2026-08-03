@@ -729,7 +729,7 @@ process_died() {
 
     # Read the process state. If it is 'Z', it is a zombie (dead)
     if [[ -r "$stat_file" ]]; then
-        local state
+        local state=""
         read -r _ _ state _ < "$stat_file" 2>/dev/null
         [[ "$state" == "Z" ]] && return 0
     fi
@@ -798,7 +798,7 @@ tidy_up() {
     # Graceful shutdown exit trap: kill vLLM, update lockfile, scancel job.
     local job="$1"
     local exit_code="$2"
-    local monitor_pid="$3"
+    local monitor_pid="${3:-}"
     shift 3
     # $@ hold the pids
     local slurm_job_id
@@ -807,7 +807,9 @@ tidy_up() {
     trap - SIGUSR1 SIGUSR2 ERR EXIT
     slurm_job_id=$(get_job_status_setting "$job" ".slurmJobId")
 
-    kill_pid "$monitor_pid" "[shutdown] stopping vllm monitor"
+    if [[ -n $monitor_pid ]]; then
+        kill_pid "$monitor_pid" "[shutdown] stopping vllm monitor"
+    fi
 
     echo "[shutdown] shutting down job $job (vllm: ${pid:-unknown}, slurm: ${slurm_job_id:-unknown}, exit: $exit_code)"
 
@@ -853,7 +855,7 @@ tidy_up() {
         0)
             # This is the result of a bottom up signal. This should not happen.
             echo "[shutdown] vLLM terminated unexpectedly"
-            update_status_failed "$job" "unexpected termination"
+            update_status_failed "$job" "unexpected termination" 301
             capture_job_diagnostics "$job"
             ;;
         *)

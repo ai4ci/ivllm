@@ -17,11 +17,24 @@
  * under that umask, since git itself only tracks the executable bit, not
  * group-write.
  *
- * See design/active-issues.md for:
- *  - why the directory-level test below is currently `.skip`ped (a bun:test
- *    runtime limitation, not a bug in the production code — confirmed
- *    working via plain `bun run` and real Isambard usage)
- *  - the still-open file-level permission gap the second test documents
+ * Current design (see design/active-issues.md): copyDirectory relies purely
+ * on `umask 002 && mkdir -p` (for the destination root) and rsync's
+ * `--rsync-path 'umask 002 && rsync'` (for everything rsync creates itself)
+ * — there is NO follow-up `chmod -R g+rwX` any more. An earlier version had
+ * one, but it caused a real hang on Isambard against the engine directory's
+ * large number of small files, and e2e testing showed the umask-only
+ * approach is sufficient there in practice. Consequence: directories come
+ * out group-writable (a fresh directory's default 0777 request is
+ * correctly masked to 0775); regular files copied via rsync do NOT (rsync,
+ * like `cp` without `-p`, uses the source file's own mode bits as its base
+ * request, and a umask can only strip bits from that, never add ones the
+ * source lacked) — see the two tests below for exactly what that means in
+ * practice.
+ *
+ * See design/active-issues.md for why the directory-level test is
+ * `.skip`ped under bun:test specifically (a confirmed test-runner
+ * limitation, not a code bug — the identical assertion passes via plain
+ * `bun run` and matches real Isambard usage).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'fs';
@@ -91,18 +104,15 @@ describe('SshRemoteOps permission handling (real rsync/ssh argv, no network)', (
         fs.rmSync(tmpRoot, { recursive: true, force: true });
     });
 
-    // Historical note: an earlier version of this test relied solely on
-    // `--rsync-path 'umask 002 && rsync'` for directory group-write, and had
-    // to be `.skip`ped because bun:test's runtime interferes with umask
+    // SKIPPED under bun:test only — bun's test runner interferes with umask
     // propagation to spawned child processes (see design/active-issues.md,
-    // "bun:test cannot exercise umask-dependent child-process behaviour",
-    // for the full investigation — confirmed as a test-runner artifact, not
-    // a code bug, since the identical assertion passed via plain `bun run`
-    // and matches real Isambard usage). copyDirectory now follows the rsync
-    // with an explicit `chmod -R g+rwX` on the destination, which is
-    // deterministic and umask-independent — so this test no longer needs
-    // to be skipped.
-    it('copyDirectory leaves the destination directory group-writable even under a restrictive local umask', async () => {
+    // "bun:test cannot exercise umask-dependent child-process behaviour").
+    // Confirmed via plain `bun run` (outside bun:test) with this exact
+    // assertion, same fixture, same fake-ssh shim: destination directory
+    // comes out `775` there, matching real Isambard usage. Left in place
+    // (not deleted) so it can be re-enabled if a future Bun version fixes
+    // this, or ported to a bash test using the same technique.
+    it.skip('copyDirectory leaves the destination directory group-writable even under a restrictive local umask', async () => {
         const src = path.join(tmpRoot, 'src');
         const dest = path.join(tmpRoot, 'dest');
         fs.mkdirSync(src);
@@ -118,18 +128,16 @@ describe('SshRemoteOps permission handling (real rsync/ssh argv, no network)', (
         expect(dirMode & 0o020).toBe(0o020);
     });
 
-    // Regression test for the file-level gap (see design/active-issues.md,
+    // Documents the ACCEPTED file-level gap (see design/active-issues.md,
     // "copyDirectory doesn't make copied FILES group-writable when the
-    // source lacks the bit"): without --perms, rsync (like cp without -p)
-    // uses a copied file's own SOURCE mode bits as its base request — a
-    // umask can only strip bits from that, never add ones the source
-    // lacked. So a file that is locally 644 (no group-write — exactly what
-    // `git clone` produces under a normal 022 umask, since git only tracks
-    // the executable bit) used to stay 644 on the destination no matter
-    // what `--rsync-path 'umask 002 && rsync'` requested. The follow-up
-    // `chmod -R g+rwX` in copyDirectory now closes this deterministically,
-    // independent of source mode or umask.
-    it('copyDirectory leaves destination FILES group-writable even when the source file lacks the bit', async () => {
+    // source lacks the bit"): a `chmod -R g+rwX` follow-up would close this
+    // deterministically, but was reverted after it caused a real hang on
+    // Isambard against the engine directory's large number of small files.
+    // e2e testing showed this doesn't bite in practice there, so the gap is
+    // knowingly left open rather than paying that cost. This test asserts
+    // the current (accepted) behaviour — a regression guard for "did this
+    // change, intentionally or not" — not a statement that it's desired.
+    it('copyDirectory does NOT make destination files group-writable when the source file lacks the bit (accepted gap)', async () => {
         const src = path.join(tmpRoot, 'src');
         const dest = path.join(tmpRoot, 'dest');
         fs.mkdirSync(src);
@@ -143,7 +151,10 @@ describe('SshRemoteOps permission handling (real rsync/ssh argv, no network)', (
         const fileMode =
             fs.statSync(path.join(destSrcDir, 'file.txt')).mode & 0o777;
 
-        expect(fileMode & 0o020).toBe(0o020); // group-writable file
+        expect(fileMode & 0o020).toBe(0); // NOT group-writable — known, accepted
+        expect(
+            fs.readFileSync(path.join(destSrcDir, 'file.txt'), 'utf8'),
+        ).toBe('hello');
     });
 
     it('copyFile writes a group-writable destination file even under a restrictive local umask', async () => {

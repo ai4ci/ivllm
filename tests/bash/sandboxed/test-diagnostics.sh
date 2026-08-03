@@ -12,13 +12,16 @@
 #      an explicit `chmod g+rwX` after the copy, not reliant on umask or
 #      the source file's own mode).
 #   2. tidy_up()'s routing — a genuine crash (nonzero exit) captures
-#      diagnostics; a clean/idle/cancel shutdown (200/201/0) does not, by
-#      design. This matters because monitor_head's idle-timeout path always
-#      signals via the 201 branch — before the wait_report fix, a crash
-#      could get silently misrouted through there and lose its diagnostics.
-#      Now that wait_report correctly detects and propagates a real crash
-#      exit code, tidy_up receives it directly via the fast exit-trap path
-#      instead.
+#      diagnostics; a clean idle/cancel/SLURM-timeout shutdown (200/201/202)
+#      does not, by design. An exit code of 0 is now ALSO treated as a
+#      failure (see design decision: vLLM should never exit on its own
+#      outside of an explicit monitor/SLURM signal) and DOES capture
+#      diagnostics. This matters because monitor_head's idle-timeout path
+#      always signals via a specific code (201/202) — before the wait_report
+#      fix, a crash could get silently misrouted through there and lose its
+#      diagnostics. Now that wait_report correctly detects and propagates a
+#      real crash exit code, tidy_up receives it directly via the fast
+#      exit-trap path instead.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/sandbox.sh"
 
@@ -100,13 +103,12 @@ sandbox_run_test "tidy_up_idle_timeout_does_not_capture_diagnostics" compute '
     exit 0
 '
 
-sandbox_run_test "tidy_up_clean_exit_does_not_capture_diagnostics" compute '
+sandbox_run_test "tidy_up_unsolicited_exit_captures_diagnostics" compute '
     '"$_setup_running_job"'
     tidy_up "tidy-diag-job" 0 "$_VLLM_PID"
 
     diag_root="$IVLLM_PROJECTDIR/engine/diagnostics/tidy-diag-job"
-    assert_dir_exists "$diag_root" 2>/dev/null && { echo "FAIL: clean shutdown (0) should not capture diagnostics"; exit 1; }
-    exit 0
+    assert_dir_exists "$diag_root" || { echo "FAIL: expected diagnostics to be captured for an unsolicited exit (0)"; exit 1; }
 '
 
 exit "$FAIL"

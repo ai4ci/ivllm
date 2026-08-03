@@ -44,32 +44,34 @@ sandbox_run_test "tidy_up_201_triggers_user_cancel" compute '
     exit 0
 '
 
-# ── Test: exit_code=0 (normal shutdown — vLLM exited cleanly on its own) ──
-# tidy_up treats 0 the same as the other clean-shutdown codes (200/201): the
-# job transitions to "stopped", not left "running" — there is no exit code
-# that leaves status unchanged.
-sandbox_run_test "tidy_up_0_normal_shutdown" compute '
+# ── Test: exit_code=0 (vllm exited on its own, unsolicited) → failure ──
+# There is no legitimate reason for vLLM to exit on its own: user cancel,
+# idle timeout, and SLURM timeout all route through explicit codes
+# (201/202/200). A raw 0 reaching tidy_up via the bottom-up exit-code path
+# means the process died without anyone asking it to — always a failure.
+sandbox_run_test "tidy_up_0_is_treated_as_failure" compute '
     '"$_setup_running_job"'
     tidy_up "tidy-job" 0 "$_VLLM_PID"
     lockfile=$(resolve_job_status "tidy-job")
-    assert_status "$lockfile" "stopped" || exit 1
+    assert_status "$lockfile" "failed" || exit 1
+    assert_json_eq "$lockfile" ".reason" "unexpected termination" || exit 1
     kill -0 "$_VLLM_PID" 2>/dev/null && { echo "FAIL: vLLM should have been killed"; exit 1; }
     exit 0
 '
 
-# ── Test: exit_code=42 while running → failed ("crashed during inference") ──
+# ── Test: exit_code=42 while running → failed ("crashed after startup") ──
 sandbox_run_test "tidy_up_nonzero_crash_runtime" compute '
     '"$_setup_running_job"'
     tidy_up "tidy-job" 42 "$_VLLM_PID"
     lockfile=$(resolve_job_status "tidy-job")
     assert_status "$lockfile" "failed" || exit 1
-    assert_json_eq "$lockfile" ".reason" "crashed during inference" || exit 1
+    assert_json_eq "$lockfile" ".reason" "crashed after startup" || exit 1
     assert_json_eq "$lockfile" ".exitCode" "42" || exit 1
     kill -0 "$_VLLM_PID" 2>/dev/null && { echo "FAIL: vLLM should have been killed"; exit 1; }
     exit 0
 '
 
-# ── Test: exit_code=1 while initialising → failed ("failed to start") ──
+# ── Test: exit_code=1 while initialising → failed ("didn't start") ──
 sandbox_run_test "tidy_up_nonzero_crash_startup" compute '
     create_status_pending "startup-crash" "model" 30 > /dev/null 2>&1
     update_status_initialise "startup-crash"
@@ -78,7 +80,7 @@ sandbox_run_test "tidy_up_nonzero_crash_startup" compute '
     tidy_up "startup-crash" 1 "$_VLLM_PID"
     lockfile=$(resolve_job_status "startup-crash")
     assert_status "$lockfile" "failed" || exit 1
-    assert_json_eq "$lockfile" ".reason" "failed to start" || exit 1
+    assert_json_eq "$lockfile" ".reason" "didn'"'"'t start" || exit 1
     assert_json_eq "$lockfile" ".exitCode" "1" || exit 1
     kill -0 "$_VLLM_PID" 2>/dev/null && { echo "FAIL: vLLM should have been killed"; exit 1; }
     exit 0

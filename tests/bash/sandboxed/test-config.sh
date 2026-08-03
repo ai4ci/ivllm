@@ -78,9 +78,14 @@ sandbox_run_test "resolve_stripped_job_config_strips_env_and_metadata" login '
 
 sandbox_run_test "get_job_config_exports_produces_export_lines" login '
     '"$_SETUP_WITH_ENV"'
+    # get_job_config_exports pipes through jq'"'"'s @sh format, which
+    # single-quotes values (safer than manual double-quoting for arbitrary
+    # shell-unsafe content) — build the expected quote char without needing
+    # a literal single-quote in this already-single-quoted test body.
+    apos=$(printf "\047")
     exports=$(get_job_config_exports job1)
-    assert_contains "$exports" '"'"'export FOO="bar"'"'"' "exports" || exit 1
-    assert_contains "$exports" '"'"'export BAZ="qux"'"'"' "exports" || exit 1
+    assert_contains "$exports" "export FOO=${apos}bar${apos}" "exports" || exit 1
+    assert_contains "$exports" "export BAZ=${apos}qux${apos}" "exports" || exit 1
 '
 
 sandbox_run_test "get_job_config_exports_empty_env_block" login "
