@@ -72,19 +72,61 @@ For Maximum VRAM Savings (4-Bit): GPTQ INT4 or AWQ INT4. If you must shrink a mo
 
 **Rule of thumb**: `needed_gpus = ceil(params_B × 2 / 86.4)`. Then apply the table above.
 
+**⚠️ CRITICAL: Shared Layer Replication Problem**
+
+MoE models have two types of parameters:
+
+1. **Shared Layers** (attention, embeddings, norms) — used by EVERY token, **CANNOT be expert-parallelized**
+2. **Expert Layers** (MoE FFN blocks) — only top-k activated, **CAN be distributed across EP GPUs**
+
+**Wide EP (TP=1, DP=N, EP=M) FAILS when shared layers > 70 GB:**
+```
+Each GPU gets:
+├── Shared Layers (FULL REPLICATION) = ~250 GB ❌
+└── Experts (1/EP fraction) = ~40 GB
+    └── Total: ~290 GB per GPU → IMMEDIATE OOM!
+```
+
+**Hybrid EP (TP=N, DP=M, EP=N×M) REQUIRED for large models:**
+```
+Each GPU gets:
+├── Shared Layers (sharded by TP) = 250/8 = ~31 GB ✅
+└── Experts (distributed by EP) = 640/64 = ~10 GB ✅
+    └── Total: ~41 GB per GPU → FITS!
+```
+
+**Rule:** `Minimum TP = ceil(Shared_Layers_GB / 70)`
+
+| Model Size | Shared Layers | Minimum TP | Wide EP Works? |
+|------------|---------------|------------|----------------|
+| <100B | <50 GB | TP=1 | ✅ Yes (Qwen3.6-35B) |
+| 100-400B | 50-150 GB | TP=2-4 | ⚠️ Maybe |
+| >400B | >150 GB | TP=4+ | ❌ No (DeepSeek-V4-Pro needs TP=8) |
+
+**See:** [Shared Layer Replication Fix](design/shared-layer-replication-fix.md) for detailed explanation.
+
 **⚠️ Multi-node MoE models — Wide EP vs Hybrid EP:**
 
 For large MoE models spanning multiple nodes, you must choose between:
 
 1. **Wide EP** (DP+EP, TP=1): Experts distributed, shared layers replicated
-   - Use when: Shared layers < 80GB (fit on single GPU)
-   - Example: DeepSeek-V4-Flash (284B, but expert-dominated)
+   - Use when: Shared layers < 70GB (fit on single GPU)
+   - Example: DeepSeek-V4-Flash (284B, but expert-dominated, ~50GB shared)
    - Config: `--data-parallel-size N --enable-expert-parallel`
 
 2. **Hybrid EP** (TP+DP+EP): Both experts AND shared layers distributed
-   - Use when: Shared layers > 80GB (need TP to shard)
-   - Example: Qwen3.5-397B (heavy attention/embedding layers)
+   - Use when: Shared layers > 70GB (need TP to shard)
+   - Example: Qwen3.5-397B (heavy attention/embedding layers, ~150GB shared)
    - Config: `--tensor-parallel-size 4 --pipeline-parallel-size N --enable-expert-parallel`
+
+**⚠️ TP>4 IS UNTESTED ON ISAMBARD:**
+
+While DeepSeek-V4-Pro theoretically needs TP=8 (250GB shared / 70GB per GPU = 3.6 → round up to 4, but 250/4 = 62.5GB still too big, so TP=8), **TP>4 has not been tested on Isambard AI**.
+
+**Practical implication:** Models requiring TP>4 should be considered **not viable** until tested:
+- DeepSeek-V4-Pro (1.6T): Needs TP=8 → **Not viable** (use V4-Flash instead)
+- GLM-5.2 (743B): Needs TP=4 → **Viable** (150GB/4 = 37.5GB ✅)
+- Qwen3.5-397B: Needs TP=4 → **Viable**
 
 **See:** [MoE Parallelism Strategy Guide](references/moe-parallelism-strategy.md) for detailed decision framework.
 
@@ -109,7 +151,36 @@ For large MoE models spanning multiple nodes, you must choose between:
 
 ### CPU offload threshold
 
+### CPU offload threshold
+
 The OffloadingConnector extends the prefix cache by offloading completed KV blocks to slower but larger tiers (CPU host memory, plus optional secondary tiers) as they are produced. Hits in the offload tiers are promoted back to GPU on demand. Transfers between GPU and CPU use DMA (cudaMemcpyAsync) and run asynchronously alongside model computation, so offloading adds minimal CPU- and GPU-core overhead.
+
+**⚠️ GH200 Unified Memory Optimization:**
+
+On GH200 Grace Hopper Superchips, **use UVA (Unified Virtual Addressing) offloading** instead of Mooncake for single-node deployments:
+
+```yaml
+# ✅ GH200-optimized (uses NVLink-C2C 900 GB/s)
+cpu-offload-gb: 100
+offload-backend: uva
+
+# ❌ Suboptimal on GH200 (uses cudaMemcpy at 35 GB/s)
+enable-kv-cache-offload: true
+kv-cache-offload-config: '{"connector_type": "mooncake", "memory_budget": 64}'
+```
+
+**Why UVA is better on GH200:**
+- **Zero-copy access** via page faults (not explicit cudaMemcpy)
+- **900 GB/s effective bandwidth** (NVLink-C2C vs 35 GB/s PCIe)
+- **Hardware-managed coherency** (no manual transfers)
+- **Simpler configuration** (single parameter)
+
+**When to use Mooncake:**
+- Multi-node deployments needing **cross-node KV sharing**
+- Scenarios with **shared system prompts** across nodes
+- Not for pure single-node offloading!
+
+**See:** [GH200 KV Offloading Research](design/gh200-kv-offloading-research.md) for detailed comparison.
 
 ```
 vllm serve <model> \
@@ -124,6 +195,28 @@ vllm serve <model> \
 ```
 
 cpu_bytes_to_use: a bigger CPU tier means fewer trips to slower secondary tiers and a higher hit rate. The value is total across all workers, not per-worker. Leave headroom for the rest of the host workload. For single-tier (CPU-only) setups, set cpu_bytes_to_use larger than the aggregate GPU KV cache. Because offloading is immediate, a smaller CPU tier just mirrors what the GPU already holds and adds no hit rate.
+
+**GH200 offload size calculation:**
+
+```python
+# For UVA offloading on GH200
+weights_gb = params_B * 2  # BF16 (or * 1 for FP8)
+gpu_usable = 86.4  # 96 GB × 0.90 utilization
+offload_needed = max(0, weights_gb - gpu_usable)
+
+# Add KV cache estimate (conservative)
+kv_cache_gb = max_tokens * 0.0003  # ~0.3 MB per 1K tokens for 70B model
+
+# Round up with 20% headroom
+cpu_offload_gb = ceil((offload_needed + kv_cache_gb) * 1.2 / 10) * 10
+
+# Example: Llama-3-70B at BF16 with 128K context
+# weights_gb = 70 * 2 = 140 GB
+# gpu_usable = 86.4 GB
+# offload_needed = 140 - 86.4 = 53.6 GB
+# kv_cache_gb = 128 * 0.0003 = 0.04 GB (negligible)
+# cpu_offload_gb = ceil(53.6 * 1.2 / 10) * 10 = 70 GB
+```
 
 ---
 
@@ -169,6 +262,77 @@ If the model card is not accessible or the parameter count cannot be determined,
 ### 3. Look up the official vLLM recipe (if available)
 
 Go to [recipes.vllm.ai](https://recipes.vllm.ai) — this is the authoritative source for vLLM deployment recipes. It supersedes checking HuggingFace model cards for configuration advice, but both sources may be required.
+
+**⚠️ CRITICAL: vLLM Recipes Assume Different Hardware!**
+
+Official vLLM recipes are written for **cloud/enterprise deployments** with:
+- ❌ **8 GPUs per node** (H100/H200/A100) — Isambard has **4 GPUs per node** (GH200)
+- ❌ **Full 96-800 GB usable per GPU** — Isambard requires **25 GB headroom** (70 GB usable)
+- ❌ **NVLink between all GPUs** — Isambard has **Slingshot 11 inter-node** (25 GB/s vs 900 GB/s NVLink)
+- ❌ **No shared layer replication awareness** — Recipes don't warn about Wide EP failures
+
+**When NOT to trust vLLM recipes:**
+
+1. **GPU count assumptions:** Recipe says "8 GPUs" → You need `ceil(8/4) = 2 nodes` on Isambard
+2. **VRAM assumptions:** Recipe assumes full GPU memory → Subtract 25 GB headroom per GPU
+3. **Parallelism recommendations:** Recipe suggests Wide EP (TP=1) for MoE → **Verify shared layers fit!**
+4. **Multi-node strategies:** Recipes assume NVLink fabric → Slingshot 11 needs different all2all backends
+
+**How to adapt recipes correctly:**
+
+```python
+# Step 1: Extract recipe's GPU requirement
+recipe_gpus = recipe['hardware_profile']['gpu_count']  # e.g., 8
+
+# Step 2: Convert to Isambard nodes
+isambard_nodes = ceil(recipe_gpus / 4)  # 8/4 = 2 nodes
+
+# Step 3: Check if parallelism is safe
+shared_layers_gb = estimate_shared_layers(model_params)  # e.g., 250 GB for 1.6T model
+recipe_tp = recipe['argv'].get('tensor-parallel-size', 1)
+
+if shared_layers_gb / recipe_tp > 70:
+    # ❌ Recipe's TP is too low - shared layers won't fit!
+    # Need higher TP or model won't run
+    minimum_tp = ceil(shared_layers_gb / 70)
+    raise Warning(f"Recipe TP={recipe_tp} too low! Need TP>={minimum_tp}")
+
+# Step 4: Verify total node count
+# TP=8 means 8 GPUs per TP group, so 8 GPUs/node × N nodes = 64 GPUs total
+# On Isambard: 4 GPUs/node → 64/4 = 16 nodes needed!
+```
+
+**Example: DeepSeek-V4-Pro Recipe Analysis**
+
+```
+vLLM Recipe says:
+- 8×H200 GPUs (assumes 8-GPU node)
+- TP=1, DP=8, EP=8 (Wide EP)
+- "Fits on single 8-GPU node"
+
+Reality on Isambard:
+- 8 GPUs = 2 nodes (4 GPUs/node)
+- TP=1 means shared layers (~250 GB) replicate on ALL 8 GPUs
+- 250 GB > 70 GB usable → IMMEDIATE OOM! ❌
+- Even with TP=8: 64 GPUs needed = 16 nodes (not 2!)
+
+Conclusion: Recipe is MISLEADING for Isambard. Use V4-Flash instead.
+```
+
+**When recipes ARE useful:**
+
+✅ **Model metadata:** Parameter counts, architecture type, context length  
+✅ **Backend recommendations:** `moe-backend`, `attention-backend` choices  
+✅ **Required parsers:** `reasoning-parser`, `tool-call-parser` names  
+✅ **Environment variables:** `VLLM_*` settings for specific models  
+✅ **Quantization guidance:** FP8/NVFP4/INT4 variant availability  
+
+**When to IGNORE recipes:**
+
+❌ **GPU count:** Always recalculate for Isambard (4 GPUs/node, 70 GB usable)  
+❌ **Parallelism:** Verify shared layers fit with chosen TP  
+❌ **Multi-node strategies:** Slingshot 11 ≠ NVLink (different all2all backends needed)  
+❌ **VRAM calculations:** Recipes don't account for 25 GB headroom requirement
 
 The site has a four-level structure:
 
@@ -544,6 +708,26 @@ Common choices:
 - **tp=2**: default for models needing 1–2 GPUs (e.g., 72B at bf16). Good balance of queue time and capacity.
 - **tp=4**: full node. For models needing 3–4 GPUs, or when the user explicitly wants maximum throughput or very long contexts.
 
+**⚠️ TP>4 IS UNTESTED ON ISAMBARD:**
+
+While some models theoretically require TP>4 to fit shared layers (e.g., DeepSeek-V4-Pro with ~250GB shared needs TP=8), **TP>4 has not been tested on Isambard AI**.
+
+**Practical guidance:**
+- **TP=1,2,4**: Tested and working ✅
+- **TP=8+**: Not tested — consider model **not viable** until validated
+- **Workaround:** Use smaller model variants (e.g., DeepSeek-V4-Flash instead of V4-Pro)
+
+**Why TP>4 is problematic:**
+1. **Communication overhead:** Slingshot 11 (25 GB/s) vs NVLink (900 GB/s intra-node)
+2. **Synchronization complexity:** More TP ranks = more failure points
+3. **No validated configs:** No existing working examples on Isambard
+
+**If a model requires TP>4:**
+1. Check if smaller variant exists (Flash, distilled, quantized)
+2. Calculate if KV offloading helps (doesn't reduce weight footprint, but enables longer context)
+3. Document as "not viable" until TP>4 testing completed
+4. Recommend alternative models
+
 Multi-node (pp>1) adds inter-node communication latency and complexity — only use it when the model's weights genuinely won't fit on a single 4-GPU node.
 
 Valid `tensor-parallel-size` values must divide the model's number of attention heads evenly. 1, 2, and 4 work for virtually all modern models.
@@ -663,7 +847,7 @@ Before writing the file, verify every item:
 ## Troubleshooting
 
 | Problem | Solution |
-|---------|---------|
+|---------|----------|
 | Model card not accessible | Ask user for parameter count and architecture manually |
 | Parameter count ambiguous | Use total parameters (not non-embedding, not active) for memory calculation |
 | Model fits on paper but OOM in practice | Reduce `max-model-len` by half; or suggest `quantization: fp8` |
@@ -673,6 +857,8 @@ Before writing the file, verify every item:
 | Memory borderline | Try `quantization: fp8` — halves weight memory with minimal accuracy loss on Hopper (GH200/H100) |
 | `ivllm start` fails with "version too low" | The installed vLLM (`ivllm config --vllm-version`) is below `min-vllm-version`; run `ivllm setup` with a newer version or update the config |
 | Multi-node crash: `Flashinfer allreduce is not supported for multi-node allreduce with 'trtllm' backend` | Add `compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'` (merge if a `compilation-config` already exists) — see Step 5, Multi-node. Applies to any multi-node job, not just MoE models; `disable-custom-all-reduce` does not fix this |
+| **MoE model OOM on startup with TP=1** | **Shared layers replicating on every GPU! Check: `shared_layers_gb > 70`. Fix: Increase TP to shard shared layers. See [Shared Layer Replication Fix](design/shared-layer-replication-fix.md)** |
+| **Recipe recommends TP=1 but model >400B** | **Recipe assumes 8-GPU node with full NVLink. Recalculate: `minimum_tp = ceil(shared_layers_gb / 70)`. Model may need TP>4 (untested on Isambard)** |
 
 ### Debugging with ivllm diagnostics
 
@@ -716,6 +902,9 @@ grep -i "out of memory\|flashinfer\|nccl\|timeout" diagnostics/<job>/vllm.0.log 
 - [Isambard AI vLLM packages & dependencies](references/isambard-vllm-packages.md) — **Comprehensive guide to UCCL-EP, NIXL, DeepGEMM, HPC-OPS, FlashInfer, humming-kernels, and all dependencies**
 - **[MoE parallelism strategy guide](references/moe-parallelism-strategy.md)** — **Wide EP vs Hybrid EP decision framework for multi-node MoE deployment**
 - **[vLLM backend selection guide](references/vllm-backend-selection.md)** — **Complete moe-backend, all2all-backend, attention-backend, linear-backend matrix with quantization support**
+- **[Shared layer replication fix](design/shared-layer-replication-fix.md)** — **Why Wide EP fails for large MoE models, how to calculate minimum TP**
+- **[Example configs Isambard reality check](design/example-configs-isambard-reality.md)** — **Hardware constraints, KV offloading guide, testing priorities**
+- **[GH200 KV offloading research](design/gh200-kv-offloading-research.md)** — **UVA vs Mooncake vs DirectKV comparison, NVLink-C2C optimization**
 - [vLLM config options and memory guide](references/vllm-config-guide.md)
 - [vLLM serve cli options](references/vllm-serve-cli-0.23.0.md)
 - [vLLM config environment variables](references/vllm-env-vars-0.23.0.md)

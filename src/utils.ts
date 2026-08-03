@@ -9,7 +9,7 @@ import type { LockfileV3 } from './types.ts';
  */
 export function formatJobRow(job: LockfileV3): string {
     const parts: string[] = [
-        job.jobName.padEnd(8),
+        job.jobName.padEnd(10),
         job.status.padEnd(14),
         (job.user ?? 'unknown').padEnd(12),
         (job.model ?? 'unknown').padEnd(40),
@@ -29,7 +29,7 @@ export function formatJobRow(job: LockfileV3): string {
 export function formatJobTable(jobs: LockfileV3[]): string {
     if (jobs.length === 0) return 'No active ivllm jobs found.';
     const header =
-        'JOB'.padEnd(8) +
+        'JOB'.padEnd(10) +
         '  ' +
         'STATUS'.padEnd(14) +
         '  ' +

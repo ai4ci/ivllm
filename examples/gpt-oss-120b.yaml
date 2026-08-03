@@ -1,8 +1,8 @@
 metadata:
     target: Isambard-AI GH200
     created-by: Rob
-    version: 0.1.0
-    lifecycle: experimental
+    version: 0.3.0
+    lifecycle: operational
 min-vllm-version: "0.15.1"
 idle-timeout: 60
 
@@ -49,3 +49,5 @@ stream-interval: 20
 enable-auto-tool-choice: true
 tool-call-parser: openai
 
+env:
+    TIKTOKEN_ENCODINGS_BASE: /projects/b6ax/model/plugins/gpt120

@@ -1,40 +1,78 @@
 metadata:
     target: Isambard-AI GH200
     created-by: Rob
-    version: 0.1.0
+    version: 0.4.1
     lifecycle: experimental
 min-vllm-version: "0.23.0"
 idle-timeout: 60
 
-# Recipe source: https://recipes.vllm.ai/zai-org/GLM-5.2
-# Model card: https://huggingface.co/zai-org/GLM-5.2
+# vLLM config for zai-org/GLM-5.2-FP8 on Isambard AI
+#
+# ⚠️ HARDWARE REQUIREMENTS:
+# - 3 nodes × 4 GPUs = 12 GPUs total
+# - 743 GB model / 12 = 62 GB per GPU (fits in 70 GB usable)
+#
+# Model: ~743B total parameters, 39B active (MoE)
+# Quantization: FP8 (1 byte/param)
+#   Total weight footprint: ~743 GB
+#
+# Parallelism: Hybrid EP across 3 nodes
+#   TP=4 (within each node - shards attention layers)
+#   DP=3 (data parallel across 3 nodes)
+#   EP=12 (experts distributed across all 12 GPUs)
+#
+# KV Cache Offloading: ENABLED (Mooncake)
+#   1M context requires significant KV cache
+#   Mooncake enables full context with CPU DRAM pooling
 
 model: zai-org/GLM-5.2-FP8
 
+# Hybrid EP: TP=4, DP=3, EP=12 (3 nodes × 4 GPUs)
 tensor-parallel-size: 4
-data-parallel-size: 4
+data-parallel-size: 3
 enable-expert-parallel: true
 
-max-model-len: 1048576
-kv-offloading-size: 256
-kv-offloading-backend: native
+# MoE backend: deep_gemm for FP8 block-quantized experts
+moe-backend: deep_gemm
 
-gpu-memory-utilization: 0.80
-enable-chunked-prefill: true
-max-num-seqs: 64
+# All2All backend: deepep_low_latency (decode-optimized)
+all2all-backend: deepep_low_latency
+
+# KV cache: FP8
+kv-cache-dtype: fp8_e4m3
+
+# Context: 256K on-GPU, rest offloaded
+# Full 1M possible with Mooncake
+max-model-len: 262144
+
+# Memory tuning (70 GB usable per GPU)
+# 62 GB weights + 8 GB KV cache headroom
+gpu-memory-utilization: 0.85
+max-num-seqs: 16
 max-num-batched-tokens: 16384
 
-kv-cache-dtype: fp8
+# KV Offloading: UVA for GH200 unified memory
+# 900 GB/s NVLink-C2C bandwidth, zero-copy access
+cpu-offload-gb: 64
+offload-backend: uva
+
+# Chunked prefill for long context
+enable-chunked-prefill: true
+
+# Speculative decoding: MTP (5 tokens - GLM-5.2 feature)
+speculative-config: '{"method": "mtp", "num_speculative_tokens": 5}'
+
+# Skip DeepGEMM warmup (faster startup)
+env:
+  VLLM_DEEP_GEMM_WARMUP: skip
+
+# Parsers (GLM-5.2 custom)
 enable-auto-tool-choice: true
 tool-call-parser: glm47
 reasoning-parser: glm45
 
-safetensors-load-strategy: lazy
-
-speculative-config: '{"method": "mtp", "num_speculative_tokens": 1}'
-compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}, "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32, 64]}'
+# Prefix caching
 enable-prefix-caching: true
 
-moe-backend: deep_gemm
-all2all-backend: deepep_low_latency
-
+# Multi-node compilation fix
+compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'

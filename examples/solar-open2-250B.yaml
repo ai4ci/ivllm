@@ -1,37 +1,74 @@
 metadata:
     target: Isambard-AI GH200
     created-by: Rob
-    version: 0.1.0
+    version: 0.4.1
     lifecycle: experimental
 min-vllm-version: "0.25.0"
 idle-timeout: 60
 
-# This requires a specific
-# pip install -U uv
+# vLLM config for upstage/Solar-Open2-250B on Isambard AI
 #
-# VLLM_PRECOMPILED_WHEEL_LOCATION="https://github.com/vllm-project/vllm/releases/download/v0.22.0/vllm-0.22.0%2Bcu129-cp38-abi3-manylinux_2_28_x86_64.whl" \
-# VLLM_USE_PRECOMPILED=1 \
-# uv pip install --reinstall-package vllm --torch-backend=cu129 \
-#   "git+https://github.com/UpstageAI/vllm.git@v0.22.0-solar-open2"
-# Its possible plugin mechanism could solve this.
-# The fork has 3 new python files which could maybe be distributed as plugins.
+# ⚠️ HARDWARE REQUIREMENTS:
+# - 2 nodes × 4 GPUs = 8 GPUs total
+# - ~500 GB model / 8 = 62.5 GB per GPU (fits in 70 GB usable)
+#
+# ⚠️ SOFTWARE REQUIREMENTS:
+# - Requires Upstage vLLM fork (not upstream vLLM)
+# - Install: uv pip install "git+https://github.com/UpstageAI/vllm.git@v0.22.0-solar-open2"
+# - OR use Docker: upstage/vllm-solar-open2
+#
+# Model: 250B total parameters, 15B active (MoE)
+# Quantization: FP8 (estimated)
+#   Total weight footprint: ~500 GB
+#
+# Parallelism: Hybrid EP across 2 nodes
+#   TP=4 (within each node)
+#   DP=2 (across 2 nodes)
+#   EP=8 (experts distributed)
 
 model: upstage/Solar-Open2-250B
-kv-cache-dtype: fp8
-gpu-memory-utilization: 0.95
-max-num-seqs: 512
-max-model-len: 1048576
-max-num-batched-tokens: 16384
-enable-chunked-prefill: true
 
+# Hybrid EP: TP=4, DP=2, EP=8 (2 nodes × 4 GPUs)
 tensor-parallel-size: 4
 data-parallel-size: 2
 enable-expert-parallel: true
-# moe-backend: triton
+
+# MoE backend: deep_gemm for FP8 experts
 moe-backend: deep_gemm
+
+# All2All backend: deepep_low_latency
 all2all-backend: deepep_low_latency
-default-chat-template-kwargs: '{"think_render_option":"preserved"}'
+
+# KV cache: FP8
+kv-cache-dtype: fp8_e4m3
+
+# Context: 256K on-GPU
+max-model-len: 262144
+
+# Memory tuning (70 GB usable per GPU)
+# 62.5 GB weights + 7.5 GB KV cache headroom
+gpu-memory-utilization: 0.92
+max-num-seqs: 32
+max-num-batched-tokens: 8192
+
+# Chunked prefill
+enable-chunked-prefill: true
+
+# Parsers (Solar-Open2 custom)
 reasoning-parser: solar_open2
-tool-call-parser: solar_open2
 enable-auto-tool-choice: true
+tool-call-parser: solar_open2
+
+# Chat template for thinking mode
+default-chat-template-kwargs: '{"think_render_option":"preserved"}'
+
+# Logits processor for Solar-Open2 template
 logits-processors: vllm.v1.sample.logits_processor.solar_open2:SolarOpen2TemplateLogitsProcessor
+
+# Compilation fix
+compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'
+
+# Disable FlashInfer autotune
+attention-backend: TRITON_ATTN
+enable-flashinfer-autotune: false
+gdn-prefill-backend: triton

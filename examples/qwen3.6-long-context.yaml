@@ -1,50 +1,67 @@
 metadata:
     target: Isambard-AI GH200
     created-by: Rob
-    version: 0.1.0
+    version: 0.4.1
     lifecycle: experimental
+min-vllm-version: "0.17.0"
+idle-timeout: 60
 
-# vLLM config for Qwen/Qwen3.6-35B-A3B on Isambard AI
-# Parallelism: tp=2 (35 GB weights, ~150 GB remaining for KV cache across 2 GPUs)
-# This could probably run in a single node.
-# Context: 1010000 tokens (full native context)
+# vLLM config for Qwen/Qwen3.6-35B-A3B-FP8 on Isambard AI
+#
+# ⚠️ HARDWARE REQUIREMENTS:
+# - 1 node × 2 GPUs = 2 GPUs total
+# - 35 GB model / 2 = 17.5 GB per GPU (easy fit in 70 GB!)
+#
+# Model: 35B total parameters, 3B active (MoE, 8.6% activation)
+# Quantization: FP8
+#   Total weight footprint: ~35 GB
+#
+# Parallelism: Wide EP (expert-dominated model)
+#   TP=1 (no tensor parallel - experts small enough)
+#   DP=2 (data parallel across 2 GPUs)
+#   EP=2 (experts distributed)
+#
+# KV Cache: Full 1M context fits easily!
+#   35 GB weights + ~30 GB KV cache = 65 GB total
+#   Well within 70 GB per GPU limit
 
 model: Qwen/Qwen3.6-35B-A3B-FP8
 
-# wide EP parallelisation splits experts between nodes replicates shared layers.
+# Wide EP: TP=1, DP=2, EP=2
 tensor-parallel-size: 1
 data-parallel-size: 2
 enable-expert-parallel: true
 
+# MoE backend: triton (stable, pre-compiled)
+moe-backend: triton
+
+# All2All backend: allgather_reducescatter (most stable)
+all2all-backend: allgather_reducescatter
+
+# KV cache: FP8
+kv-cache-dtype: fp8_e4m3
+
+# Context: Full 1M native context (fits on-GPU!)
+max-model-len: 1048576
+
+# Memory tuning (70 GB usable per GPU)
+# 17.5 GB weights + 52.5 GB KV cache headroom
 gpu-memory-utilization: 0.95
-max-num-seqs: 512
-max-cudagraph-capture-size: 256
-kv-cache-dtype: fp8
+max-num-seqs: 256
+max-num-batched-tokens: 16384
 
-# Reasoning (thinking mode enabled by default; use /no_think in prompt to disable)
-reasoning-parser: qwen3
+# Chunked prefill for long context
+enable-chunked-prefill: true
 
-# Tool calling
+# Parsers (Qwen custom)
 enable-auto-tool-choice: true
 tool-call-parser: qwen3_coder
+reasoning-parser: qwen3
 
-# Caching
+# Prefix caching
 enable-prefix-caching: true
 
-# Note: this model includes a vision encoder for image input.
-# To run text-only (frees ~a few GB of memory for extra KV cache), add:
-language-model-only: true
-
-min-vllm-version: "0.17.0"
-
-# Rope config from https://huggingface.co/Qwen/Qwen3.6-27B
-hf-overrides: '{"text_config": {"rope_parameters": {"mrope_interleaved": true, "mrope_section": [11, 11, 10], "rope_type": "yarn", "rope_theta": 10000000, "partial_rotary_factor": 0.25, "factor": 4.0, "original_max_position_embeddings": 262144}}}'
-max-model-len: 1010000
-
-moe-backend: flashinfer_b12x
-
-# Mixture of experts models need to be forced to use triton
-# gdn-prefill-backend: "triton"
-# moe-backend: triton             # Forces vLLM to use pre-compiled Triton MoE kernels
-# attention-config: '{"backend":"TRITON_ATTN"}'
-# enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
+# Disable FlashInfer autotune
+attention-backend: TRITON_ATTN
+enable-flashinfer-autotune: false
+gdn-prefill-backend: triton

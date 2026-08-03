@@ -803,11 +803,19 @@ tidy_up() {
             # SIGUSR2 — user cancel or idle timeout
             # resaon has already been given
             echo "[shutdown] received SIGUSR2: user cancel or idle timeout"
-            update_status_stopped "$job"
+            if is_status "$job" "failed"; then
+                echo "[shutdown] user cancel after failure"
+            else
+                update_status_stopped "$job"
+            fi
             ;;
         0)
-            echo "[shutdown] vLLM terminated normally"
-            update_status_stopped "$job"
+            if is_status "$job" "failed"; then
+                echo "[shutdown] failed vLLM cleanup completed normally"
+            else
+                echo "[shutdown] vLLM terminated normally"
+                update_status_stopped "$job"
+            fi
             ;;
         *)
             if is_status "$job" "initialising" || is_status "$job" "pending"; then

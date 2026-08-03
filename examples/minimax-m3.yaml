@@ -1,48 +1,80 @@
 metadata:
     target: Isambard-AI GH200
     created-by: Rob
-    version: 0.1.0
+    version: 0.4.1
     lifecycle: experimental
 min-vllm-version: "0.25.0"
 idle-timeout: 60
 
-# Hardware: NVIDIA GH200 (Grace Hopper) — 4×120GB per node, ~96 GiB usable per GPU
-# FP8 weights: ~743 GB total → ~62 GB/GPU (fp8) → fits on 9+ GPUs at 96 GiB
-# FP8 KV cache: extra ~33 GB/node for KV cache at full 1M context
+# vLLM config for MiniMax-M3 on Isambard AI
 #
-# Recipe source: https://recipes.vllm.ai/zai-org/GLM-5.2
-# Model card: https://huggingface.co/zai-org/GLM-5.2
+# ⚠️ HARDWARE REQUIREMENTS:
+# - 1 node × 4 GPUs = 4 GPUs total
+# - 214 GB model (INT4) / 4 = 53.5 GB per GPU (fits in 70 GB usable!)
+#
+# Model: 427B total parameters, 26B active (MoE)
+# Quantization: AWQ INT4 (weight-only, 0.5 bytes/param)
+#   Total weight footprint: ~214 GB
+#
+# Parallelism: TP=4 on single node
+#   TP=4 (within node - shards both attention and experts)
+#   No EP needed (INT4 weight-only quantization doesn't benefit from EP)
+#
+# KV Cache: Full 256K context fits on-GPU
+#   No offloading needed for moderate context lengths
 
 model: cyankiwi/MiniMax-M3-AWQ-INT4
 
+# TP=4 on single node (4 GPUs)
 tensor-parallel-size: 4
-enable-expert-parallel: true
-block-size: 128
 
-max-model-len: 1048576
-max-cudagraph-capture-size: 256
-gpu-memory-utilization: 0.90
-enable-chunked-prefill: true
-max-num-batched-tokens: 4096
-kv-offloading-size: 256
-kv-offloading-backend: native
-kv-cache-dtype: fp8
+# MoE backend: marlin for INT4 weight dequantization
+# AWQ INT4 uses marlin for efficient weight-only dequant
+# moe-backend: marlin
 
-quantization: humming
+# Linear backend: marlin (INT4 weight dequantization)
+# linear-backend: marlin
+
+# https://github.com/vllm-project/vllm/pull/48451
+attention-backend: TRITON_ATTN
 moe-backend: humming
 
-env:
-    VLLM_HUMMING_MOE_GEMM_TYPE: indexed
-    VLLM_HUMMING_INPUT_QUANT_CONFIG: '{"dtype":"float8e4m3","input_scale_group_size":128}'
+# KV cache: FP8 (saves ~1.5× KV pool size)
+kv-cache-dtype: fp8_e4m3
 
-tool-call-parser: minimax_m3
-reasoning-parser: minimax_m3
-enable-auto-tool-choice: true
+# Context: 256K (fits on-GPU with INT4 weights)
+max-model-len: 262144
 
-safetensors-load-strategy: lazy
+# MSA sparse attention: block-size=128 is MANDATORY
+block-size: 128
 
-compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'
-enable-prefix-caching: true
+# Memory tuning (70 GB usable per GPU)
+# 53.5 GB weights + 16.5 GB KV cache headroom
+gpu-memory-utilization: 0.90
+max-num-batched-tokens: 4096
+max-num-seqs: 16
 
+# Chunked prefill for long context
+enable-chunked-prefill: true
+
+# Speculative decoding: EAGLE3 (3 tokens)
 speculative-config: '{"method":"eagle3","model":"Inferact/MiniMax-M3-EAGLE3","num_speculative_tokens":3}'
 
+# Parsers (MiniMax-M3 custom)
+enable-auto-tool-choice: true
+tool-call-parser: minimax_m3
+reasoning-parser: minimax_m3
+
+# Prefix caching
+enable-prefix-caching: true
+
+# Multi-node compilation fix (not needed for single node but safe)
+compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'
+
+# Lazy loading for large models
+safetensors-load-strategy: lazy
+
+env:
+    VLLM_USE_BREAKABLE_CUDAGRAPH: 0
+    VLLM_HUMMING_MOE_GEMM_TYPE: indexed
+    VLLM_HUMMING_INPUT_QUANT_CONFIG: '{"dtype":"float8e4m3","input_scale_group_size":128}'
