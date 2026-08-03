@@ -151,8 +151,6 @@ While DeepSeek-V4-Pro theoretically needs TP=8 (250GB shared / 70GB per GPU = 3.
 
 ### CPU offload threshold
 
-### CPU offload threshold
-
 The OffloadingConnector extends the prefix cache by offloading completed KV blocks to slower but larger tiers (CPU host memory, plus optional secondary tiers) as they are produced. Hits in the offload tiers are promoted back to GPU on demand. Transfers between GPU and CPU use DMA (cudaMemcpyAsync) and run asynchronously alongside model computation, so offloading adds minimal CPU- and GPU-core overhead.
 
 **⚠️ GH200 Unified Memory Optimization:**

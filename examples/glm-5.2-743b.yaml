@@ -21,9 +21,8 @@ idle-timeout: 60
 #   DP=3 (data parallel across 3 nodes)
 #   EP=12 (experts distributed across all 12 GPUs)
 #
-# KV Cache Offloading: ENABLED (Mooncake)
+# KV Cache Offloading:
 #   1M context requires significant KV cache
-#   Mooncake enables full context with CPU DRAM pooling
 
 model: zai-org/GLM-5.2-FP8
 
