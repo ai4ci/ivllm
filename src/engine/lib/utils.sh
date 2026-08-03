@@ -808,7 +808,7 @@ tidy_up() {
     slurm_job_id=$(get_job_status_setting "$job" ".slurmJobId")
 
     if [[ -n $monitor_pid ]]; then
-        kill_pid "$monitor_pid" "[shutdown] stopping vllm monitor"
+        kill_pid "$monitor_pid" "vllm monitor"
     fi
 
     echo "[shutdown] shutting down job $job (vllm: ${pid:-unknown}, slurm: ${slurm_job_id:-unknown}, exit: $exit_code)"

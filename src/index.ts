@@ -2,7 +2,11 @@
 import { program } from 'commander';
 
 import { getBackend } from './backends/backend-factory.ts';
-import { loadCredentials, assertConfigured, saveConfig } from './config.ts';
+import {
+    loadCredentials,
+    assertConfigured,
+    saveCredentials,
+} from './config.ts';
 import { formatJobRow, formatJobTable } from './utils.ts';
 import type { CloseableEventEmitter } from './types.ts';
 import { sleep } from 'bun';
@@ -182,13 +186,25 @@ async function cmdConfig(options: {
     hfToken?: string;
 }): Promise<void> {
     const config = loadCredentials();
-    if (options.loginHost) config.loginHost = options.loginHost;
-    if (options.username) config.username = options.username;
-    if (options.projectDir) config.projectDir = options.projectDir;
-    if (options.hfToken) config.hfToken = options.hfToken;
-    saveConfig(config);
-    // TODO: Test configuration with checkSSH before saving
-    console.log('Configuration saved.');
+    if (options.loginHost) {
+        config.loginHost = options.loginHost;
+        saveCredentials(config);
+        console.log('Configuration saved.');
+    } else if (options.username) {
+        config.username = options.username;
+        saveCredentials(config);
+        console.log('Configuration saved.');
+    } else if (options.projectDir) {
+        config.projectDir = options.projectDir;
+        saveCredentials(config);
+        console.log('Configuration saved.');
+    } else if (options.hfToken) {
+        config.hfToken = options.hfToken;
+        saveCredentials(config);
+        console.log('Configuration saved.');
+    } else {
+        console.log(JSON.stringify(config, null, 2));
+    }
 }
 
 /**

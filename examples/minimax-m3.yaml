@@ -26,8 +26,8 @@ idle-timeout: 60
 model: MiniMaxAI/MiniMax-M3-MXFP8
 
 # TP=4 on single node (4 GPUs)
-tensor-parallel-size: 1
-data-parallel-size: 8
+tensor-parallel-size: 4
+data-parallel-size: 2
 enable-expert-parallel: true
 
 kv-transfer-config: '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use_per_rank":59055800320,"lazy_offload":"false"}}'
@@ -35,13 +35,14 @@ kv-transfer-config: '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_b
 
 kv-cache-dtype: fp8_e4m3
 
+enforce-eager: true
+all2all-backend: deepep_low_latency
+
 # Context: 256K (fits on-GPU with INT4 weights)
 max-model-len: 1048576
 
 # MSA sparse attention: block-size=128 is MANDATORY
 block-size: 128
-
-all2all-backend: deepep_low_latency
 
 # Memory tuning (70 GB usable per GPU)
 # 53.5 GB weights + 16.5 GB KV cache headroom
@@ -62,6 +63,7 @@ reasoning-parser: minimax_m3
 
 # Prefix caching
 enable-prefix-caching: true
+
 
 enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
 disable-custom-all-reduce: true

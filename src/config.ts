@@ -12,7 +12,7 @@ import type { Credentials } from './types.ts';
  *
  * Equivalent to `~/.config/ivllm`. All project configs (credentials,
  * job YAML files) live under this directory.
- * @see saveConfig
+ * @see saveCredentials
  * @see loadCredentials
  */
 const CONFIG_DIR = join(homedir(), '.config', 'ivllm');
@@ -21,10 +21,10 @@ const CONFIG_DIR = join(homedir(), '.config', 'ivllm');
  * Absolute path to the JSON file containing SSH/HPC credentials.
  *
  * Located at `{@link CONFIG_DIR}/config.json`. Written by
- * {@link saveConfig} and read by {@link loadCredentials}.
+ * {@link saveCredentials} and read by {@link loadCredentials}.
  * @see CONFIG_DIR
  * @see loadCredentials
- * @see saveConfig
+ * @see saveCredentials
  */
 const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 
@@ -60,7 +60,7 @@ const DEFAULTS: Credentials = {
  * explicitly configured fields override the base values.
  * @returns Parsed credentials (defaults if no config file exists)
  * @see DEFAULTS
- * @see saveConfig
+ * @see saveCredentials
  */
 export function loadCredentials(): Credentials {
     if (!existsSync(CONFIG_PATH)) {
@@ -81,7 +81,7 @@ export function loadCredentials(): Credentials {
  * @see CONFIG_PATH
  * @see CONFIG_DIR
  */
-export function saveConfig(config: Credentials): void {
+export function saveCredentials(config: Credentials): void {
     if (!existsSync(CONFIG_DIR)) {
         mkdirSync(CONFIG_DIR, { recursive: true });
     }
@@ -99,7 +99,7 @@ export function saveConfig(config: Credentials): void {
  * @throws {Error} If `loginHost` is missing, suggests `ivllm config --login-host <host>`
  * @throws {Error} If `username` is missing, suggests `ivllm config --username <user>`
  * @see loadCredentials
- * @see saveConfig
+ * @see saveCredentials
  */
 export function assertConfigured(config: Credentials): void {
     if (!config.loginHost) {
