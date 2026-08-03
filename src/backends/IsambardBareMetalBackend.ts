@@ -15,14 +15,13 @@ import { compareVersions } from '../utils';
 
 export class IsambardBareMetalBackend extends Backend {
     ops: SshRemoteOps;
-    remoteEngine: string;
     envs: EnvVarEntry[];
     bootstrapped = false;
+    remoteHome?: string;
 
     constructor(creds: Credentials) {
         super(creds);
         this.ops = new SshRemoteOps(creds);
-        this.remoteEngine = `${creds.projectDir}/engine`;
         this.envs = [{ key: 'IVLLM_PROJECTDIR', value: `${creds.projectDir}` }];
         if (creds.hfToken) {
             this.envs = this.envs.concat([
@@ -53,11 +52,13 @@ Please upgrade your local ivllm install to ${remoteVersion} or later before cont
         ) {
             const currentDir = import.meta.dir;
             const enginePath = path.resolve(currentDir, '../engine');
+            const remoteEngine = await this.getRemoteEngine();
             await this.ops.copyDirectory(
-                enginePath,
-                this.creds.projectDir,
+                `${enginePath}/`,
+                `${remoteEngine}/`,
                 'up',
             );
+            // copy contents
             await this.setRemoteEngineVersion(localVersion);
         }
 
@@ -66,9 +67,10 @@ Please upgrade your local ivllm install to ${remoteVersion} or later before cont
 
     async setup(version: string, force?: boolean): Promise<void> {
         await this.bootstrap();
+        const remoteEngine = await this.getRemoteEngine();
 
         const { stdout, exitCode } = await this.ops.runRemote(
-            `${this.remoteEngine}/ivllm-setup.sh -v "${version}"${force ? ' -f' : ''}`,
+            `${remoteEngine}/ivllm-setup.sh -v "${version}"${force ? ' -f' : ''}`,
             { env: this.envs, silent: false },
         );
 
@@ -119,17 +121,19 @@ Please upgrade your local ivllm install to ${remoteVersion} or later before cont
     }
 
     override async getStatusFlag(job: string): Promise<string> {
+        const remoteEngine = await this.getRemoteEngine();
         const out = await this.ops.runRemote(
-            `bash -c "source ${this.remoteEngine}/lib/utils.sh; get_job_status_setting '${job}' '.status'"`,
+            `bash -c "source ${remoteEngine}/lib/utils.sh; get_job_status_setting '${job}' '.status'"`,
             { env: this.envs, silent: true },
         );
         return out.stdout;
     }
 
     async requestCancel(job: string, force: boolean): Promise<void> {
+        const remoteEngine = await this.getRemoteEngine();
         await this.bootstrap();
         const { stdout, exitCode } = await this.ops.runRemote(
-            `${this.remoteEngine}/ivllm-cancel.sh -j "${job}"${force ? ' -f' : ''}`,
+            `${remoteEngine}/ivllm-cancel.sh -j "${job}"${force ? ' -f' : ''}`,
             { env: this.envs, silent: false },
         );
 
@@ -146,6 +150,7 @@ Please upgrade your local ivllm install to ${remoteVersion} or later before cont
         config?: string,
     ): Promise<void> {
         await this.bootstrap();
+        const remoteEngine = await this.getRemoteEngine();
 
         if (config) {
             if (fs.existsSync(config)) {
@@ -158,7 +163,7 @@ Please upgrade your local ivllm install to ${remoteVersion} or later before cont
         }
 
         const { stdout, exitCode } = await this.ops.runRemote(
-            `${this.remoteEngine}/ivllm-serve.sh -j "${job}" -t "${maxTime}"${batch ? ' -b' : ''}`,
+            `${remoteEngine}/ivllm-serve.sh -j "${job}" -t "${maxTime}"${batch ? ' -b' : ''}`,
             { env: this.envs, silent: false },
         );
 
@@ -174,9 +179,10 @@ Please upgrade your local ivllm install to ${remoteVersion} or later before cont
 
     async getAllJobStatus(): Promise<LockfileV3[]> {
         await this.bootstrap();
+        const remoteEngine = await this.getRemoteEngine();
 
         const { stdout, exitCode } = await this.ops.runRemote(
-            `${this.remoteEngine}/ivllm-status.sh -p`,
+            `${remoteEngine}/ivllm-status.sh -p`,
             { env: this.envs, silent: true },
         );
 
@@ -206,9 +212,10 @@ Please upgrade your local ivllm install to ${remoteVersion} or later before cont
         start?: boolean,
     ): Promise<CloseableEventEmitter> {
         await this.bootstrap();
+        const remoteEngine = await this.getRemoteEngine();
 
         return this.ops.runRemoteSync(
-            `${this.remoteEngine}/ivllm-show-log.sh -j "${job}" -n "${node ?? '0'}"${start ? ` -a` : ''}`,
+            `${remoteEngine}/ivllm-show-log.sh -j "${job}" -n "${node ?? '0'}"${start ? ` -a` : ''}`,
             this.envs,
         );
     }
@@ -216,7 +223,7 @@ Please upgrade your local ivllm install to ${remoteVersion} or later before cont
     async fetchDiagnostics(job: string, localDest?: string): Promise<string> {
         await this.bootstrap();
 
-        const remoteDiagDir = `${this.remoteEngine}/diagnostics/${job}`;
+        const remoteDiagDir = `${this.creds.projectDir}/engine/diagnostics/${job}`;
         const targetDir =
             localDest ||
             path.join(homedir(), '.config', 'ivllm', 'diagnostics', job);
@@ -227,9 +234,24 @@ Please upgrade your local ivllm install to ${remoteVersion} or later before cont
         return targetDir;
     }
 
+    private async getRemoteEngine(): Promise<string> {
+        return `${await this.getRemoteHome()}/.local/bin`;
+    }
+
+    private async getRemoteHome(): Promise<string> {
+        if (!this.remoteHome) {
+            const { stdout } = await this.ops.runRemote('echo $HOME', {
+                env: this.envs,
+                silent: true,
+            });
+            this.remoteHome = stdout.trim();
+        }
+        return this.remoteHome;
+    }
+
     private async getRemoteEngineVersion(): Promise<string> {
         const { stdout } = await this.ops.runRemote(
-            `cat "${this.remoteEngine}/ivllm-version" 2>/dev/null || true`,
+            `cat "${await this.getRemoteHome()}/.config/ivllm/version" 2>/dev/null || true`,
             { env: this.envs, silent: true },
         );
         return stdout.trim();
@@ -237,7 +259,7 @@ Please upgrade your local ivllm install to ${remoteVersion} or later before cont
 
     private async setRemoteEngineVersion(version: string): Promise<void> {
         await this.ops.runRemote(
-            `umask 002 && echo "${version}" > "${this.remoteEngine}/ivllm-version"`,
+            `umask 002 && mkdir -p "${await this.getRemoteHome()}/.config/ivllm" && echo "${version}" > "${await this.getRemoteHome()}/.config/ivllm/version"`,
             { env: this.envs, silent: true },
         );
     }

@@ -165,6 +165,8 @@ export class SshRemoteOps extends RemoteOps {
         // Construct the custom SSH command string using the multiplexing options
         const sshCommand = `ssh ${[...SSH_MUX_OPTS, '-o', 'BatchMode=yes'].join(' ')}`;
 
+        await this.runRemote(`umask 002 && mkdir -p "${dest}"`);
+
         await new Promise<void>((resolve, reject) => {
             // Rsync must not change remote permissions and must provide a
             // umask to allow group writable settings on the target directory
@@ -177,7 +179,7 @@ export class SshRemoteOps extends RemoteOps {
                     '--no-group',
                     '-z',
                     '--rsync-path',
-                    'umask 002 && rsync', // umask in front of rsync
+                    `umask 002 && rsync`, // umask in front of rsync
                     '-e',
                     sshCommand, // Instruct rsync to use our specific multiplexed SSH configuration
                     src,

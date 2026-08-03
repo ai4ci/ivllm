@@ -30,6 +30,16 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
 (
     SRUN_PIDS=()
 
+    # Waits for user cancel via lockfile instruction, slurm timeout, or idle timeout:
+    # This will idle timeout eventually
+    echo "[serve] initialised head monitor for job $IVLLM_JOB"
+    # watch lockfile and detect cancel, failure, or idle timeout events.
+    # monitor process will die with IVLLM_PARENT_PID
+    monitor_head "$IVLLM_JOB" & IVLLM_MONITOR_PID=$!
+    echo "[serve-0] vllm head monitor for job $IVLLM_JOB: process $IVLLM_MONITOR_PID"
+
+    setup_traps "$IVLLM_JOB" "$IVLLM_MONITOR_PID" "${SRUN_PIDS[@]}"
+
     srun \
         --overlap \
         --nodelist="$IVLLM_HEAD_NODE" \
@@ -42,11 +52,13 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
         "$SLURM_SUBMIT_DIR/lib/run_head_vllm.sh" \
         "$IVLLM_JOB" \
         "$IVLLM_HEAD_NODE_IP" \
-        & IVLLM_MONITOR_PID=$!
+        & IVLLM_HEAD_PID=$!
 
-    SRUN_PIDS+=("$IVLLM_MONITOR_PID")
+    SRUN_PIDS+=("$IVLLM_HEAD_PID")
 
-    echo "[serve-0] vllm head srun process $IVLLM_MONITOR_PID"
+    setup_traps "$IVLLM_JOB" "$IVLLM_MONITOR_PID" "${SRUN_PIDS[@]}"
+
+    echo "[serve-0] vllm head srun process $IVLLM_HEAD_PID"
 
     declare -i count=1  # Declare as type integer
 
@@ -66,11 +78,13 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
             "$IVLLM_JOB" \
             "$IVLLM_HEAD_NODE_IP" \
             "$count" \
-            & IVLLM_MONITOR_PID=$!
+            & IVLLM_WORKER_PID=$!
 
-        SRUN_PIDS+=("$IVLLM_MONITOR_PID")
+        SRUN_PIDS+=("$IVLLM_WORKER_PID")
 
-        echo "[serve-$count] vllm worker srun process $IVLLM_MONITOR_PID"
+        setup_traps "$IVLLM_JOB" "$IVLLM_MONITOR_PID" "${SRUN_PIDS[@]}"
+
+        echo "[serve-$count] vllm worker srun process $IVLLM_WORKER_PID"
         count+=1          # Increment
 
     done
@@ -78,30 +92,18 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
     update_status_initialise "$IVLLM_JOB"
     echo "[serve-0] initialised job $IVLLM_JOB"
 
-    setup_traps "$IVLLM_JOB" "${SRUN_PIDS[@]}"
-    echo "[serve-0] setting traps on process $$"
+    wait_all "$IVLLM_MONITOR_PID" "${SRUN_PIDS[@]}"
 
-    wait_all "${SRUN_PIDS[@]}"
 ) & IVLLM_PARENT_PID=$!
 
 # Redirect slurm out of time signals to the parent orchestrator
 trap 'kill -s SIGUSR1 "$IVLLM_PARENT_PID" 2>/dev/null' SIGUSR1
 
-# Waits for user cancel via lockfile instruction, slurm timeout, or idle timeout:
-# This will idle timeout eventually
-echo "[serve] initialised head monitor for job $IVLLM_JOB"
+while ! process_died "$IVLLM_PARENT_PID"; do
+    sleep 1
+done
 
-# watch lockfile and detect cancel, failure, or idle timeout events.
-# communicates to IVLLM_PARENT_PID by signalling.
-# signals propagated to nodes via srun.
-# monitor process will die with IVLLM_PARENT_PID
-monitor_head "$IVLLM_JOB" "$IVLLM_PARENT_PID" & IVLLM_MONITOR_PID=$!
-echo "[serve-0] vllm head monitor for job $IVLLM_JOB: process $IVLLM_MONITOR_PID"
-
-# poll health until api responding, warms up vllm, manages cache saving
-# startup process will die with IVLLM_PARENT_PID
-monitor_startup "$IVLLM_JOB" "$IVLLM_PARENT_PID" & IVLLM_STARTUP_MONITOR_PID=$!
-echo "[serve] vllm startup monitor for job $IVLLM_JOB: process $IVLLM_STARTUP_MONITOR_PID"
-
-wait $IVLLM_PARENT_PID
+echo "[head] process ($IVLLM_PARENT_PID) has exited. Shutting down."
+echo "[head] monitor shutting down for job $IVLLM_JOB."
+wait $IVLLM_PARENT_PID # reap zombie
 

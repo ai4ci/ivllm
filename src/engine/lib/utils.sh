@@ -29,7 +29,7 @@ export IVLLM_UTILS=1
 umask 0002
 
 if [[ -z ${IVLLM_PROJECTDIR:-} ]]; then
-    export IVLLM_PROJECTDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+    export IVLLM_PROJECTDIR=${PROJECTDIR:-$HOME/ivllm}
     echo "Setting project directory: $IVLLM_PROJECTDIR"
 fi
 
@@ -717,13 +717,32 @@ wait_all() {
       return $?
 }
 
+# Args: $1 - pid
+# Return 0 (true) if process has died or is a zombie, 1 (false) if it is alive
+# Usage: if process_died $pid; then ... fi
+process_died() {
+    local pid=${1?must supply pid}
+    local stat_file="/proc/$pid/stat"
+
+    # If the directory doesn't exist, the process is completely gone
+    [[ ! -d "/proc/$pid" ]] && return 0
+
+    # Read the process state. If it is 'Z', it is a zombie (dead)
+    if [[ -r "$stat_file" ]]; then
+        local state
+        read -r _ _ state _ < "$stat_file" 2>/dev/null
+        [[ "$state" == "Z" ]] && return 0
+    fi
+
+    return 1
+}
 
 # waits for a process to finish whilst reporting on its memory usage whilst in
 # the initialising state. This is designed to be run on a compute node and will
 # give the processes on that node (for the current user) and the local node
 # specific storage. can run on both head and worker nodes.
 # Args: $1 — job; $2 - pid for the process to monitor (usually the pid of the
-# actual vllm serve process);
+# actual vllm serve process); Must run in same shell as vllm process.
 # Usage: wait_report "$job" "$pid" "$node"
 wait_report() {
     local job=$1
@@ -734,14 +753,7 @@ wait_report() {
     local target_ms
     (( target_ms = IVLLM_CHECK_INTERVAL_SECS * 1000 ))
 
-    while true; do
-        # kill -0 succeeds on zombies too, so check /proc state directly.
-        kill -0 "$pid" 2>/dev/null || break
-        [[ -e "/proc/$pid" ]] || break
-        local state
-        state=$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)
-        [[ "$state" == "Z" || -z "$state" ]] && break
-
+    while ! process_died "$pid"; do
         if [ "$elapsed" -ge "$target_ms" ]; then
             if is_status "$job" "initialising"; then
                 report_memory "$job" "$node"
@@ -756,11 +768,17 @@ wait_report() {
     local code=$?
 
     if [[ $code != 0 ]]; then
-        update_status_failed "$job" "vllm crashed" "$code"
+        echo "[serve-$node] vllm crashed with exit code $code"
+        return $code
+    else
+        echo "[serve-$node] vllm exited normally"
+        # give a crashed node some time to win the signalling race.
+        sleep 1
     fi
 
-    return $code
-
+    # In normal operation wait_report should not exit. Its only if vllm fails
+    # that it exists. This is always an error and must be signalled as such.
+    return 1
 }
 
 
@@ -780,51 +798,75 @@ tidy_up() {
     # Graceful shutdown exit trap: kill vLLM, update lockfile, scancel job.
     local job="$1"
     local exit_code="$2"
-    shift 2
+    local monitor_pid="$3"
+    shift 3
     # $@ hold the pids
     local slurm_job_id
 
     # clear traps to stop tidy-up being called twice in different contexts
     trap - SIGUSR1 SIGUSR2 ERR EXIT
-
     slurm_job_id=$(get_job_status_setting "$job" ".slurmJobId")
+
+    kill_pid "$monitor_pid" "[shutdown] stopping vllm monitor"
 
     echo "[shutdown] shutting down job $job (vllm: ${pid:-unknown}, slurm: ${slurm_job_id:-unknown}, exit: $exit_code)"
 
     # Update lockfile based on exit code
     case "$exit_code" in
+        # slurm codes (mapped from SIGUSR1)
         200)
-            # SIGUSR1 — SLURM timeout
+            # SIGUSR1 — SLURM timeout this is a top down signal
             echo "[shutdown] received SIGUSR1: SLURM timeout"
             update_reason "$job" "SLURM timeout"
             update_status_stopped "$job"
             ;;
+        # monitor codes:
         201)
-            # SIGUSR2 — user cancel or idle timeout
-            # resaon has already been given
-            echo "[shutdown] received SIGUSR2: user cancel or idle timeout"
-            if is_status "$job" "failed"; then
-                echo "[shutdown] user cancel after failure"
-            else
-                update_status_stopped "$job"
-            fi
+            echo "[shutdown] received user cancel request"
+            update_reason "$job" "user cancel"
+            update_status_stopped "$job"
+            ;;
+        202)
+            echo "[shutdown] idle timeout"
+            update_reason "$job" "idle timeout"
+            update_status_stopped "$job"
+            ;;
+        203)
+            echo "[shutdown] stopped status"
+            # dont overwrite the stopped message
+            ;;
+        250)
+            echo "[shutdown] lockfile removed"
+            update_status_failed "$job" "lockfile missing" 300
+            capture_job_diagnostics "$job"
+            ;;
+        251)
+            echo "[shutdown] vllm failed to start"
+            # don;t overwrite the failure message
+            capture_job_diagnostics "$job"
+            ;;
+        252)
+            echo "[shutdown] vllm failed to warmup"
+            update_status_failed "$job" "warmup failure" 302
+            capture_job_diagnostics "$job"
             ;;
         0)
-            if is_status "$job" "failed"; then
-                echo "[shutdown] failed vLLM cleanup completed normally"
-            else
-                echo "[shutdown] vLLM terminated normally"
-                update_status_stopped "$job"
-            fi
+            # This is the result of a bottom up signal. This should not happen.
+            echo "[shutdown] vLLM terminated unexpectedly"
+            update_status_failed "$job" "unexpected termination"
+            capture_job_diagnostics "$job"
             ;;
         *)
-            if is_status "$job" "initialising" || is_status "$job" "pending"; then
-                echo "[shutdown] exit code $exit_code: vLLM failed to start"
-                update_status_failed "$job" "failed to start" "$exit_code"
+            # VLLM node ( or wait_report() ) initiated errors
+            local status
+            status=$(get_job_status_setting "$job" ".status")
+            if [[ $status == "pending" || $status == "initialising" ]]; then
+                echo "[shutdown] exit code $exit_code: vLLM crashed after startup"
+                update_status_failed "$job" "didn't start" "$exit_code"
                 capture_job_diagnostics "$job"
             else
-                echo "[shutdown] exit code $exit_code: vLLM crashed during inference"
-                update_status_failed "$job" "crashed during inference" "$exit_code"
+                echo "[shutdown] exit code $exit_code: vLLM crashed after startup"
+                update_status_failed "$job" "crashed after startup" "$exit_code"
                 capture_job_diagnostics "$job"
             fi
             ;;
@@ -843,6 +885,8 @@ tidy_up() {
     for pid in "$@"; do
         kill_pid "$pid" "srun vLLM process $pid"
     done
+
+    clear_localdir "$job"
 
     # Pretty sure everything is shutdown now.
     echo "[shutdown] cancel complete"
@@ -864,12 +908,12 @@ tidy_up() {
 # Usage: setup_traps "$job"
 setup_traps() {
     local job="${1?must supply job}"
-    shift 1
+    local monitor="${2?must supply monitor pid}"
+    shift 2
     local pids_string="$*" # Combines all remaining PID arguments into a space-separated string
-    trap 'tidy_up "'"$job"'" 200 '"$pids_string"'' SIGUSR1   # SLURM timeout
-    trap 'tidy_up "'"$job"'" 201 '"$pids_string"'' SIGUSR2   # user cancel or idle timeout
-    trap 'tidy_up "'"$job"'" $? '"$pids_string"'' ERR
-    trap 'tidy_up "'"$job"'" $? '"$pids_string"'' EXIT # deal with exit codes coming from child processes
+    trap 'tidy_up "'"$job"'" 200 '"$monitor"' '"$pids_string"'' SIGUSR1   # SLURM timeout
+    trap 'tidy_up "'"$job"'" $? '"$monitor"' '"$pids_string"'' ERR
+    trap 'tidy_up "'"$job"'" $? '"$monitor"' '"$pids_string"'' EXIT # deal with exit codes coming from child processes
 }
 
 # Remove the per-node local working directory (RAM-backed tmpfs).
@@ -888,50 +932,80 @@ clear_localdir() {
     fi
 }
 
-# ── Monitor: startup (foreground, head node only) ─────────────────────────
+# ── Monitor: head node (background) ───────────────────────────────────────
 
-# Monitor that runs on slurm step node and blocks until vLLM responds to
-# /health, then sends warmup, saves cache, then sets status to running.
-# This detects a ready state.
-# Will exit with vllm parent process has exited.
-# This does not usually control the vllm processes. Only detects healthy startup
-# and manages the post startup phase. The exception is if vllm fails to respond
-# to the warm up queries (after retries), it will signal to the vllm parent
-# process to shut down, otherwise it relies on the monitor_head process to keep
-# track.
-# Args: $1 — job name; $2 — vLLM parent process PID.
-# Reads serverPort and model from lockfile. Only runs on SLURM_NODEID==0.
-# 1) Polls /health until it returns 200, 2) saves JIT cache,
-# 3) sends warmup POST to /v1/chat/completions (up to 5 retries),
-# 4) saves JIT cache again, 5) calls update_status_running to notify watchers
-# that vllm is ready.
-# Part of the responsibilities here is to emit a log "[startup] startup complete"
-# which is looked for by the log tailers to know when to stop following logs.
-# Usage: monitor_startup "$job" "$vllm_parent_pid"
-monitor_startup() {
-    local job="${1?must set job}"
-    local vllm_parent="${2?must set parent pid}"
+# Background monitor on slurm step node that runs for the entire job lifetime.
+# runs in same process - communicates failure mode by exit code via traps
+# Args: $1 — job name;
+# Reads lockfile, log path, and idle_timeout from lockfile.
+# Runs in a loop checking: (1) lockfile exists, (2) terminal states (failed/stopped),
+#   (3) pending state, (4) vLLM liveness, (5) cancel flag, (6) idle timeout.
+# On idle: checks last 5000 log lines for API requests (not /health) in the idle window.
+# Usage: monitor_head "$job" &
+# exit codes: 201: user cancel; 250, missing lockfile; 251 - status stopped or failed
+# killed by tidy_up()
+monitor_head() {
+    local job="$1"
+    local lockfile
+    local log
+    local idle_timeout
     local server_port
     local model
+
+    lockfile=$(resolve_job_status "$job")
+    log=$(resolve_job_log "$job")
+    idle_timeout=$(get_job_status_setting "$job" ".idleTimeout")
 
     server_port=$(get_job_status_setting "$job" ".serverPort")
     model=$(get_job_status_setting "$job" ".model")
 
+    if [ ! -f "$lockfile" ]; then
+        echo "[head] FATAL: lockfile $lockfile missing on startup"
+        return 250
+    fi
+
+    echo "[head] starting monitor (idle_timeout=$idle_timeout)..."
+
     while true; do
 
-        if ! kill -0 "$vllm_parent" > /dev/null 2>&1; then
-            echo "[startup] parent process ($vllm_parent) for job $job has exited."
-            echo "[startup] startup complete: vLLM parent process exited."
-            return 1
+        # Lockfile deleted
+        if [ ! -f "$lockfile" ]; then
+            echo "[head] lockfile $lockfile has been deleted — shutting down"
+            # no lockfile to update
+            # exit with failure -> passed to $vllm_parent
+            return 250
         fi
 
-        if is_status "$job" "pending"; then
-            echo "[startup] waiting for job $job to initialise"
+        local status
+        status=$(get_job_status_setting "$job" ".status")
+
+        # Terminal states — exit loop
+        if [[ $status == "failed" ]]; then
+            # This is odd if the monitor is seeing this as it should be shutdown
+            echo "[head] WARNING: monitor detected failed status"
+            return 251
+        fi
+
+        if [[ $status == "stopped" ]]; then
+            # This is odd if the monitor is seeing this as it should be shutdown
+            echo "[head] WARNING: monitor detected stopped status"
+            return 203
+        fi
+
+        # Still pending — wait for SLURM allocation
+        if [[ $status == "pending" ]]; then
             sleep "$IVLLM_CHECK_INTERVAL_SECS"
             continue
         fi
 
-        if is_status "$job" "initialising"; then
+        # User requested cancel
+        if [[ $status ==  "cancel" ]]; then
+            echo "[head] user cancel request detected"
+            return 201
+        fi
+
+        # Still initialising — skip idle checks
+        if [[ $status ==  "initialising" ]]; then
             if curl -sf "http://localhost:$server_port/health" > /dev/null 2>&1; then
 
                 # Could save cache before warmup which may help in certain
@@ -964,106 +1038,22 @@ monitor_startup() {
                     echo "[startup] job $job startup complete."
                     update_status_running "$job"
                     echo "[startup] startup complete: vLLM is running."
-                    return 0
+                    continue
                 else
                     echo "[startup] ERROR: warmup failed after $max_retries attempts"
-                    update_reason "$job" "vLLM warmup failed"
                     echo "[startup] signalling for vllm to shut down."
-                    kill -s SIGUSR2 "$vllm_parent" 2>/dev/null
                     echo "[startup] startup complete: vLLM failed warmup."
-                    return 1
+                    return 252
                 fi
             else
                 echo "[startup] job $job waiting for vLLM /health"
                 sleep "$IVLLM_CHECK_INTERVAL_SECS"
                 continue
             fi
-        else
-            local status
-            status=$(get_job_status_setting "$job" ".status")
-            echo "[startup] ERROR: job $job is in unexpected state $status"
-            echo "[startup] startup complete: startup monitor unexpected state $status."
-            return 1
-        fi
-    done
-
-    # should never get here.
-    exit 1
-}
-
-# ── Monitor: head node (background) ───────────────────────────────────────
-
-# Background monitor on slurm step node that runs for the entire job lifetime.
-# Args: $1 — job name; $2 — vLLM parent process PID (not used directly).
-# Reads lockfile, log path, and idle_timeout from lockfile.
-# Runs in a loop checking: (1) lockfile exists, (2) terminal states (failed/stopped),
-#   (3) pending state, (4) vLLM liveness, (5) cancel flag, (6) idle timeout.
-# On idle: checks last 5000 log lines for API requests (not /health) in the idle window.
-# Usage: monitor_head "$job" "$vllm_parent_pid" &
-monitor_head() {
-    local job="$1"
-    local vllm_parent="$2"
-    local lockfile
-    local log
-    local idle_timeout
-
-    lockfile=$(resolve_job_status "$job")
-    log=$(resolve_job_log "$job")
-    idle_timeout=$(get_job_status_setting "$job" ".idleTimeout")
-
-    if [ ! -f "$lockfile" ]; then
-        echo "[head] FATAL: lockfile $lockfile missing on startup"
-        kill_pid "$vllm_parent" "vllm parent"
-        return 1
-    fi
-
-    echo "[head] starting monitor (idle_timeout=$idle_timeout)..."
-
-    while true; do
-
-        if ! kill -0 "$vllm_parent" 2>/dev/null; then
-            echo "Parent process ($vllm_parent) has exited. Shutting down monitor."
-            break
-        fi
-
-        # Lockfile deleted
-        if [ ! -f "$lockfile" ]; then
-            echo "[head] lockfile $lockfile has been deleted — shutting down"
-            kill_pid "$vllm_parent" "vllm parent"
-            return 1
-        fi
-
-        # Terminal states — exit loop
-        if is_status "$job" "failed" || is_status "$job" "stopped"; then
-            break
-        fi
-
-        # Still pending — wait for SLURM allocation
-        if is_status "$job" "pending"; then
-            sleep "$IVLLM_CHECK_INTERVAL_SECS"
-            continue
-        fi
-
-        # User requested cancel
-        if is_status "$job" "cancel"; then
-            echo "[head] user cancel request detected"
-            update_reason "$job" "user cancel"
-            break
-        fi
-
-        # Still initialising — skip idle checks
-        if is_status "$job" "initialising"; then
-            sleep "$IVLLM_CHECK_INTERVAL_SECS"
-            continue
         fi
 
         # Running — check idle timeout
-        if is_status "$job" "running" && [[ -n "$idle_timeout" ]] && [[ "$idle_timeout" -ge 0 ]]; then
-            if [ ! -f "$log" ]; then
-                echo "[head] log file $log is missing — shutting down"
-                update_reason "$job" "missing log file"
-                break
-            fi
+        if [[ $status == "running" && -n "$idle_timeout" && "$idle_timeout" -ge 0 ]]; then
 
             # Build time patterns for the idle window
             local time_patterns=()
@@ -1078,102 +1068,21 @@ monitor_head() {
 
             # Check for recent API requests (not /health)
             if tail -n 5000 "$log" 2>/dev/null | grep -F "${time_patterns[@]}" | grep -q -F "${endpoint_patterns[@]}"; then
+                # recent api request found
                 sleep "$IVLLM_CHECK_INTERVAL_SECS"
                 continue
+            else
+                echo "[head] no API requests for $idle_timeout minutes — shutting down"
+                return 202
             fi
-
-            echo "[head] no API requests for $idle_timeout minutes — shutting down"
-            update_reason "$job" "idle timeout"
-            break
         fi
 
         sleep "$IVLLM_CHECK_INTERVAL_SECS"
     done
 
-    # Signal shutdown to parent
-    # traps will forward to the vllm srun after tidy_up runs.
-    kill -s SIGUSR2 "$vllm_parent" 2>/dev/null
-
-    # Wait for parent to exit
-    while kill -0 "$vllm_parent" 2>/dev/null; do
-        sleep 2
-    done
-
-    clear_localdir "$job"
     echo "[head] monitor shutting down for job $job."
     return 0
 }
-
-# ── Monitor: worker node (background) ─────────────────────────────────────
-
-# Background monitor on worker nodes for multi-node jobs.
-# Args: $1 — job name; $2 — vLLM worker srun process PID.
-# This runs on the step host and monitors the process health of the worker
-# responding to changes in the lockfile state, and signalling those to the worker
-# Only runs on worker nodes (SLURM_NODEID != 0); exits with code 1 if started on head node.
-# Polls lockfile: pending → sleep, initialising → report_memory, running → sleep,
-#   any other status → shut down worker process via SIGTERM.
-# Usage: monitor_worker "$job" "$vllm_worker_pid" &
-# monitor_worker() {
-#     local job="$1"
-#     local vllm_worker="$2"
-#     local lockfile
-#     local node
-#
-#     lockfile=$(resolve_job_status "$job")
-#     node=${SLURM_NODEID:-0}
-#
-#     # This monitor is for worker nodes only
-#     if [ "$node" -eq 0 ]; then
-#         echo "[worker] ERROR: worker monitor started on head node"
-#         kill -s SIGTERM "$vllm_worker" 2>/dev/null
-#         return 1
-#     fi
-#
-#     if [ ! -f "$lockfile" ]; then
-#         echo "[worker $node] FATAL: lockfile $lockfile missing on startup"
-#         kill -s SIGTERM "$vllm_worker" 2>/dev/null
-#         return 1
-#     fi
-#
-#     echo "[worker $node] starting lockfile monitor..."
-#
-#     while true; do
-#
-#         if kill -0 "$vllm_worker" > /dev/null 2>&1; then
-#             echo "[worker $node] worker parent process ($vllm_worker) for job $job has exited."
-#             break
-#         fi
-#
-#         if [ ! -f "$lockfile" ]; then
-#             echo "[worker $node] lockfile deleted — shutting down"
-#             kill -s SIGTERM "$vllm_worker" 2>/dev/null
-#             exit 1
-#         fi
-#
-#         if is_status "$job" "pending"; then
-#             sleep "$IVLLM_CHECK_INTERVAL_SECS"
-#             continue
-#         fi
-#
-#         if is_status "$job" "initialising"; then
-#             sleep "$IVLLM_CHECK_INTERVAL_SECS"
-#             continue
-#         fi
-#
-#         if ! is_status "$job" "running"; then
-#             echo "[worker $node] job is not running (status=$(get_job_status_setting "$job" ".status")) — shutting down"
-#             break
-#         fi
-#
-#         sleep "$IVLLM_CHECK_INTERVAL_SECS"
-#     done
-#
-#     kill_pid "$vllm_worker" "worker $node"
-#     clear_localdir "$job"
-#     echo "[worker $node] monitor shutting down."
-#     return 0
-# }
 
 # ── Resource monitoring ───────────────────────────────────────────────────
 
