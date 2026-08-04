@@ -26,12 +26,31 @@ if [[ -v IVLLM_UTILS ]] && declare -f resolve_localdir > /dev/null; then
 fi
 export IVLLM_UTILS=1
 
-umask 0002
-
 if [[ -z ${IVLLM_PROJECTDIR:-} ]]; then
     export IVLLM_PROJECTDIR=${PROJECTDIR:-$HOME/ivllm}
     echo "Setting project directory: $IVLLM_PROJECTDIR"
 fi
+
+export IVLLM_GRP=$(stat "$IVLLM_PROJECTDIR" -c %g)
+
+# PERMISSIONS
+# This is critical:
+# Permissions for the engine and model dir are set to be group owned.
+# Whoever can read write to $IVLLM_PROJECTDIR can read write to subdirectories.
+# This is set with a sticky bit an ownership change in association with umask 0002
+# This means that anything that calls utils.sh (which is everything) will
+# write correct permissions (hopefully)
+
+umask 0002
+
+mkdir -p "$IVLLM_PROJECTDIR/model"
+chgrp "$IVLLM_GRP" "$IVLLM_PROJECTDIR/model"
+chmod g+rwXs "$IVLLM_PROJECTDIR/model"
+
+mkdir -p "$IVLLM_PROJECTDIR/engine"
+chgrp "$IVLLM_GRP" "$IVLLM_PROJECTDIR/engine"
+chmod g+rwXs "$IVLLM_PROJECTDIR/engine"
+
 
 export IVLLM_TIME_FMT="${IVLLM_TIME_FMT:-+%Y-%m-%d %H:%M}"
 export IVLLM_CHECK_INTERVAL_SECS="${IVLLM_CHECK_INTERVAL_SECS:-10}"
@@ -79,13 +98,14 @@ resolve_localdir() {
 # Usage: [[ -d $(resolve_model_dir "RedHatAI/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8-dynamic") ]] && echo "Exists")
 resolve_model_dir() {
     local model="${1:-}"
+
     # Create shared model directories (HF cache + venv) and export HF_HOME.
     # Sets $HF_HOME to point at the HuggingFace cache directory.
     # Returns: path to the model directory via stdout.
     mkdir -p "$IVLLM_PROJECTDIR/model/hf/hub"
     export HF_HOME="$IVLLM_PROJECTDIR/model/hf"
     mkdir -p "$IVLLM_PROJECTDIR/model/venv"
-    chmod g+rwX "$IVLLM_PROJECTDIR/model" "$IVLLM_PROJECTDIR/model/hf" "$IVLLM_PROJECTDIR/model/venv"
+
     if [[ -z $model ]]; then
         echo "$IVLLM_PROJECTDIR/model"
     else
@@ -95,25 +115,14 @@ resolve_model_dir() {
     fi
 }
 
-hf_cache_path() {
-    local project_hf_dir="$1"
-
-    # Replace the first '/' with '--' if it exists
-    cache_key="models--${model/\//--}"
-
-    echo "${project_hf_dir}/hub/${cache_key}"
-}
-
-
 # Create the NVHPC SDK base directory with group-write permissions.
 # Creates $IVLLM_PROJECTDIR/engine/nvhpc if it doesn't exist.
 # Returns: path to the NVHPC directory via stdout.
 # Usage: local dir=$(resolve_nvhpc_dir)
 resolve_nvhpc_dir() {
-    # Create the NVHPC SDK base directory with group-write permissions.
+    # Create the NVHPC SDK base directory with inherited permissions.
     # Returns: path to the NVHPC directory via stdout.
     mkdir -p "$IVLLM_PROJECTDIR/engine/nvhpc"
-    chmod g+rwX "$IVLLM_PROJECTDIR/engine/nvhpc"
     echo "$IVLLM_PROJECTDIR/engine/nvhpc"
 }
 
@@ -122,10 +131,9 @@ resolve_nvhpc_dir() {
 # Returns: path to the RDMA directory via stdout.
 # Usage: local dir=$(resolve_rdma_dir)
 resolve_rdma_dir() {
-    # Create the NVHPC SDK base directory with group-write permissions.
+    # Create the NVHPC SDK base directory with inherited permissions.
     # Returns: path to the NVHPC directory via stdout.
     mkdir -p "$IVLLM_PROJECTDIR/engine/rdma"
-    chmod g+rwX "$IVLLM_PROJECTDIR/engine/rdma"
     echo "$IVLLM_PROJECTDIR/engine/rdma"
 }
 
@@ -151,10 +159,9 @@ resolve_nvhpc_root() {
 # Returns: path to the vLLM directory via stdout.
 # Usage: local dir=$(resolve_vllm_dir)
 resolve_vllm_dir() {
-    # Create the vLLM virtual environment base directory with group-write permissions.
+    # Create the vLLM virtual environment base directory with inherited permissions.
     # Returns: path to the vLLM directory via stdout.
     mkdir -p "$IVLLM_PROJECTDIR/engine/vllm"
-    chmod g+rwX "$IVLLM_PROJECTDIR/engine/vllm"
     echo "$IVLLM_PROJECTDIR/engine/vllm"
 }
 
@@ -169,7 +176,6 @@ resolve_vllm_version_dir() {
     local version="${1:-}"
     local vllm_dir=$(resolve_vllm_dir)
     mkdir -p "$vllm_dir/$version"
-    chmod g+rwX "$vllm_dir/$version"
     echo "$vllm_dir/$version"
 }
 
@@ -181,7 +187,6 @@ resolve_job_root_dir() {
     # Create the shared job root directory with group-write permissions.
     # Returns: path to the job root directory via stdout.
     mkdir -p "$IVLLM_PROJECTDIR/engine/jobs"
-    chmod g+rwX "$IVLLM_PROJECTDIR/engine/jobs"
     echo "$IVLLM_PROJECTDIR/engine/jobs"
 }
 
@@ -202,7 +207,6 @@ resolve_job_dir() {
         out="$root/$job/$2"
     fi
     mkdir -p "$root/$job"
-    chmod g+rwX "$root/$job"
     echo "$out"
 }
 
@@ -684,7 +688,7 @@ resolve_diagnostics_dir() {
     timestamp=$(date +%Y%m%d_%H%M%S)
     local diag_dir="$IVLLM_PROJECTDIR/engine/diagnostics/$job/$timestamp"
     mkdir -p "$diag_dir"
-    chmod g+rwX "$diag_dir"
+    chmod g+rwXs"$diag_dir"
     echo "$diag_dir"
 }
 
@@ -706,7 +710,7 @@ capture_job_diagnostics() {
         cp -f "$job_dir"/vllm.yaml.clean.yaml "$diag_dir/" 2>/dev/null || true
         cp -f "$job_dir"/status.json "$diag_dir/" 2>/dev/null || true
 
-        chmod g+rwX "$diag_dir" "$diag_dir"/* 2>/dev/null || true
+        chmod g+rwXs"$diag_dir" "$diag_dir"/* 2>/dev/null || true
     fi
 }
 
@@ -1260,7 +1264,7 @@ save_cache() {
     if (( SLURM_NODEID == 0 )); then
         echo "[cache] archiving JIT cache to shared storage..."
 
-        chmod g+rwX "$localdir" 2>/dev/null || true
+        chmod g+rwXs"$localdir" 2>/dev/null || true
 
         tar czf "${cachetar}.tmp" \
             --owner=0 --group=0 \
