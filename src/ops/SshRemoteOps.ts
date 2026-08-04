@@ -464,7 +464,8 @@ export class SshRemoteOps extends RemoteOps {
                 if (
                     rawError.includes('401') ||
                     rawError.includes('invalid_grant') ||
-                    rawError.includes('token')
+                    rawError.includes('token') ||
+                    code == 255
                 ) {
                     console.error(
                         '💡 Hint: Check your SSH keys. Do you need to run keycloak authentication (e.g. clifton auth)?',

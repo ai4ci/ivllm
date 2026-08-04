@@ -396,6 +396,23 @@ claude --model "${model}"
 
 N.b. Some models do not work with claude code and fail with unsupported role.
 
+Docker sandbox (unverified)
+===========================
+
+# 1. Initialize the explicit sandbox named "local-vllm-claude" using your current directory (.)
+docker sandbox create --name="local-vllm-claude" shell .
+
+# 2. Add the host firewall exemption rule targeting only this named sandbox
+docker sandbox network proxy local-vllm-claude --allow-host localhost:${localPort}
+
+# 3. Start your environment inside that named sandbox with your variables passed inline
+docker sandbox run local-vllm-claude \
+-e ANTHROPIC_BASE_URL="http://host.docker.internal:${localPort}" \
+-e ANTHROPIC_API_KEY="placeholder" \
+-e ANTHROPIC_AUTH_TOKEN="ollama" \
+-e ANTHROPIC_MODEL="${model}" \
+claude --model "${model}"
+
 Launching copilot cli
 =====================
 
