@@ -1,6 +1,6 @@
 {
   "name": "ivllm",
-  "version": "3.5.0",
+  "version": "3.6.0",
   "module": "src/index.ts",
   "type": "module",
   "private": true,
