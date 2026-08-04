@@ -194,7 +194,8 @@ export class SshRemoteOps extends RemoteOps {
 
         // This causes an unpleasant hang on isambard due to the large number of small
         // files in the engine directory... For this to work we woudl need to
-        // move the script directory to somewhere else.
+        // move the script directory to somewhere else. - NOW DONE but still
+        // this turns out to be unnecessary
         // Thsi was added to fix a locally failing test but in fact e2e testing
         // shows it is not needed on isambard due to the umask most likely.
         // if (direction === 'up') {
@@ -210,8 +211,20 @@ export class SshRemoteOps extends RemoteOps {
         // }
     }
 
+    // TODO: Rethink login here between runRemote, and runRemoteSync
+    // Currently runRemote is a fire and forget job launcher as well as a
+    // background capture output and return it function. These work because when
+    // we are interested in the output and caputure it the comands we issued are
+    // quick
+    // runRemoteSync return a process handler and will emit output to the
+    // console, and now hopefully will terminate remote job when it is terminated
+    // however the behaviour of these two things is not clear.
+
     /**
      * Execute a command on the login node via SSH and stream output.
+     *
+     * This directly streams output to terminal (does not capture) and
+     * remote command dies with local process.
      *
      * Spawns ssh with batch mode and multiplexing via {@link SSH_MUX_OPTS}.
      * Stdout and stderr are forwarded directly to the local terminal.
@@ -221,11 +234,20 @@ export class SshRemoteOps extends RemoteOps {
      */
     runRemoteSync(command: string, env: EnvVarEntry[]): CloseableEventEmitter {
         const target = `${this.config.username}@${this.config.loginHost}`;
+        // const killableCommand = `trap "kill -TERM -\$\$" EXIT; ${command}`;
+        // const fullCommand = this.makeFullCommand(killableCommand, env);
         const fullCommand = this.makeFullCommand(command, env);
 
         const proc = spawn(
             'ssh',
-            [...SSH_MUX_OPTS, '-o', 'BatchMode=yes', target, fullCommand],
+            [
+                ...SSH_MUX_OPTS,
+                '-tt',
+                '-o',
+                'BatchMode=yes',
+                target,
+                fullCommand,
+            ],
             {
                 stdio: ['ignore', 'inherit', 'inherit'],
                 detached: false,

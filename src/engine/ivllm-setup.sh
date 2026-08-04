@@ -69,8 +69,9 @@ else
 
     # srun executes in the foreground, streams output live,
     # and automatically preserves/returns the exit code of the script.
+    # --partition=interactive \
+
     srun \
-        --partition=interactive \
         --reservation=interactive \
         --job-name=vllm-setup \
         --nodes=1 \

@@ -43,7 +43,7 @@ sandbox_run_test "login_serves_with_minimal_config" login '
         exit 1
     fi
     assert_shim_called "sbatch" "--job-name serve-job" || exit 1
-    assert_shim_called "sbatch" "--partition=interactive" || exit 1
+    assert_shim_called "sbatch" "--reservation=interactive" || exit 1
     assert_shim_called "sbatch" "slurm-vllm-serve.sh" || exit 1
     exit 0
 '

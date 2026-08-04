@@ -1,5 +1,5 @@
 #!/bin/bash
-# shellcheck disable=SC2155
+# shellcheck disable=SC2155,1091
 # ivllm-get-model.sh — Download or verify a model in the HuggingFace cache.
 #
 # Checks the shared HF cache and downloads if needed. Used by ivllm-serve.sh.
@@ -33,6 +33,7 @@ while getopts "m:t:l:h" opt; do
     esac
 done
 
+# shellcheck disable=2119
 modelDir=$(resolve_model_dir)
 export HF_HOME="$modelDir/hf"
 if [[ -z $LOG ]]; then
@@ -96,18 +97,17 @@ else
     echo "[model] downloading $HF_MODEL to $HF_HOME"
 
     # srun executes in the foreground, streams output live, which will end
-    # up in the log.
+    # up in the log due to the tee command above.
     # and automatically preserves/returns the exit code of the script.
     # HF_HOME and HF_TOKEN wil be resolved.
+    # --partition=interactive \ seems unnecessary?
+
     srun \
-        --partition=interactive \
         --reservation=interactive \
         --cpus-per-task=4 \
         --ntasks=1 \
         --mem=16G \
         --export=ALL \
-        --output="$LOG" \
-        --error="$LOG" \
         hf download "$HF_MODEL"
 
     # Capture the direct exit code of the srun command

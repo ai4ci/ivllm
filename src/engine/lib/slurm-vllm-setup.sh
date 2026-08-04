@@ -12,7 +12,6 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=03:00:00
 #SBATCH --export=ALL
-#SBATCH --partition=interactive
 #SBATCH --reservation=interactive
 
 set -euo pipefail

@@ -70,20 +70,40 @@ resolve_localdir() {
 }
 
 # Create shared model directories (HF cache + venv) and export HF_HOME.
-# Creates $IVLLM_PROJECTDIR/model/hf and $IVLLM_PROJECTDIR/model/venv if they don't exist.
+# Creates $IVLLM_PROJECTDIR/model/hf/hub and $IVLLM_PROJECTDIR/model/venv if they don't exist.
 # Sets $HF_HOME to point at the HuggingFace cache directory.
+# calculates model path based on name if model parameter given
+# Args: $1 [optional] a full HF model name like: RedHatAI/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8-dynamic
 # Returns: path to the model directory via stdout.
 # Usage: local modeldir=$(resolve_model_dir)
+# Usage: [[ -d $(resolve_model_dir "RedHatAI/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8-dynamic") ]] && echo "Exists")
 resolve_model_dir() {
+    local model="${1:-}"
     # Create shared model directories (HF cache + venv) and export HF_HOME.
     # Sets $HF_HOME to point at the HuggingFace cache directory.
     # Returns: path to the model directory via stdout.
-    mkdir -p "$IVLLM_PROJECTDIR/model/hf"
+    mkdir -p "$IVLLM_PROJECTDIR/model/hf/hub"
     export HF_HOME="$IVLLM_PROJECTDIR/model/hf"
     mkdir -p "$IVLLM_PROJECTDIR/model/venv"
     chmod g+rwX "$IVLLM_PROJECTDIR/model" "$IVLLM_PROJECTDIR/model/hf" "$IVLLM_PROJECTDIR/model/venv"
-    echo "$IVLLM_PROJECTDIR/model"
+    if [[ -z $model ]]; then
+        echo "$IVLLM_PROJECTDIR/model"
+    else
+        local cache_key
+        cache_key="models--${model/\//--}"
+        echo "$IVLLM_PROJECTDIR/model/hf/hub/${cache_key}"
+    fi
 }
+
+hf_cache_path() {
+    local project_hf_dir="$1"
+
+    # Replace the first '/' with '--' if it exists
+    cache_key="models--${model/\//--}"
+
+    echo "${project_hf_dir}/hub/${cache_key}"
+}
+
 
 # Create the NVHPC SDK base directory with group-write permissions.
 # Creates $IVLLM_PROJECTDIR/engine/nvhpc if it doesn't exist.
@@ -817,9 +837,9 @@ tidy_up() {
     case "$exit_code" in
         # slurm codes (mapped from SIGUSR1)
         200)
-            # SIGUSR1 — SLURM timeout this is a top down signal
-            echo "[shutdown] received SIGUSR1: SLURM timeout"
-            update_reason "$job" "SLURM timeout"
+            # SIGUSR1 — SLURM timeout or error this is a top down signal
+            echo "[shutdown] received SIGUSR1: SLURM error"
+            update_reason "$job" "SLURM job cancelled"
             update_status_stopped "$job"
             ;;
         # monitor codes:

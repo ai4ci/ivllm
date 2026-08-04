@@ -102,7 +102,9 @@ export abstract class RemoteOps {
      *
      * makeFullCommand('ls -la', [{ key: 'HF_HOME', value: '/tmp/hf' }]);
      * // → 'HF_HOME=/tmp/hf ls -la'
-     * @param command - The shell command to execute
+     * @param command - The shell command to execute. Complex commands shoudl be
+     * wrapped in bash -c '... cmd ...'. Exit traps will get added to the
+     * command to kill it if the local client gets a sigint
      * @param env - Environment variables to prepend
      * @returns The command string with env vars as prefix
      */

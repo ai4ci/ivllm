@@ -291,15 +291,20 @@ async function cmdConnect(
             '\n\n[Ctrl+C] Cancelling connection routine. Cleaning up local resources...',
         );
 
-        if (logWatcher) {
-            console.log('--> Stopping background log tailing...');
-            await logWatcher.close();
+        try {
+            if (logWatcher) {
+                console.log('--> Stopping background log tailing...');
+                await logWatcher.close();
+            }
+            if (tunnel) {
+                console.log('--> Disconnecting active SSH tunnel...');
+                await tunnel.close();
+            }
+        } catch (err) {
+            console.error('Error during cleanup:', err);
+        } finally {
+            process.exit(0); // Only exit once all promises have fully resolved
         }
-        if (tunnel) {
-            console.log('--> Disconnecting active SSH tunnel...');
-            await tunnel.close();
-        }
-        process.exit(0);
     };
 
     // // Register intercept vectors immediately before doing any heavy operations

@@ -24,7 +24,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$here/lib/utils.sh"
 
 IVLLM_JOB=""
-IVLLM_PARTITION="--partition=interactive --reservation=interactive"
+# IVLLM_PARTITION="--partition=interactive --reservation=interactive"
+IVLLM_PARTITION="--reservation=interactive"
 IVLLM_MAXTIME="08:00:00"
 
 OPTIND=1
@@ -64,7 +65,12 @@ model=$(get_job_config_setting "$IVLLM_JOB" ".model")
 echo "[serve] starting $model with vllm $vllmVersion: idle timeout: ${idleTimeout:-30} mins"
 
 # Check the model requested exists and download if not & fail if model download fails
-(source "$here/ivllm-get-model.sh" -m "$model" -l "$IVLLM_LOG") || exit 1
+if [[ -d $(resolve_model_dir "$model") ]]; then
+    echo "[serve] HF model download directory exists."
+else
+    echo "[serve] HF model download directory missing - download triggered."
+    (source "$here/ivllm-get-model.sh" -m "$model" -l "$IVLLM_LOG") || exit 1
+fi
 
 envExports=$(get_job_config_exports "$IVLLM_JOB")
 strippedConfig=$(resolve_stripped_job_config "$IVLLM_JOB")
@@ -140,31 +146,41 @@ echo "=================================="
 
 pushd "$here" || exit 1
 
-#shellcheck disable=2086
+#shellcheck disable=2068
 slurmJobId=$(sbatch \
     --parsable \
     --job-name "$IVLLM_JOB" \
     --nodes=$nNodes \
     --gpus-per-node=$nGpusPerNode \
     --cpus-per-gpu=64 \
-    --ntasks-per-node=1 $IVLLM_PARTITION \
+    --ntasks-per-node=1 "$IVLLM_PARTITION" \
     --mem=$memValue $exclusiveFlag \
     --time="$maxTime" \
     --output="$IVLLM_LOG" \
     --error="$IVLLM_LOG" \
     $@ \
-    $here/lib/slurm-vllm-serve.sh "$IVLLM_JOB" "$nGpusPerNode" "$memValue")
+    "$here/lib/slurm-vllm-serve.sh" "$IVLLM_JOB" "$nGpusPerNode" "$memValue")
 
-echo "  Slurm Job ID: $slurmJobId"
-echo "  Submitted from: $here"
-echo "=================================="
+EXIT_CODE=$?
 
-update_status_slurm_id "$IVLLM_JOB" "$slurmJobId"
+if [[ $EXIT_CODE == 0 ]]; then
+    echo "  Slurm Job ID: $slurmJobId"
+    echo "  Submitted from: $here"
+    echo "=================================="
 
-echo "  To monitor start up progress:"
-echo "  Tail log: ./ivllm-show-log.sh -j $IVLLM_JOB"
-echo "  Check status: ./ivllm-status.sh -j $IVLLM_JOB"
-echo "=================================="
-echo ""
+    update_status_slurm_id "$IVLLM_JOB" "$slurmJobId"
 
-popd || exit 1
+    echo "  To monitor start up progress:"
+    echo "  Tail log: ./ivllm-show-log.sh -j $IVLLM_JOB"
+    echo "  Check status: ./ivllm-status.sh -j $IVLLM_JOB"
+    echo "=================================="
+    echo ""
+else
+    echo "  Slurm job rejected"
+    echo "=================================="
+    export SLURM_NODEID=0
+    update_status_failed "$IVLLM_JOB" "SLURM rejection" "$EXIT_CODE"
+fi
+
+popd || exit $EXIT_CODE
+exit $EXIT_CODE

@@ -11,7 +11,7 @@ import fs from 'fs';
 import { homedir } from 'os';
 import { sleep } from 'bun';
 import { isLocalPortInUse } from '../local-ops';
-import { compareVersions } from '../utils';
+// import { compareVersions } from '../utils';
 
 export class IsambardBareMetalBackend extends Backend {
     ops: SshRemoteOps;
@@ -34,33 +34,44 @@ export class IsambardBareMetalBackend extends Backend {
         await this.ops.checkSSH();
         if (this.bootstrapped) return;
 
-        const localVersion = (globalThis as any).__VERSION__ as string;
-        const remoteVersion = await this.getRemoteEngineVersion();
+        const currentDir = import.meta.dir;
+        const enginePath = path.resolve(currentDir, '../engine');
+        const remoteEngine = await this.getRemoteEngine();
+        await this.ops.copyDirectory(
+            `${enginePath}/`,
+            `${remoteEngine}/`,
+            'up',
+        );
 
-        if (remoteVersion && compareVersions(localVersion, remoteVersion) < 0) {
-            throw new Error(`
-This ivllm client is version ${localVersion}, but the engine deployed at
-${this.creds.projectDir} is version ${remoteVersion}.
-Please upgrade your local ivllm install to ${remoteVersion} or later before continuing.
-(i.e. do a git pull)
-`);
-        }
-
-        if (
-            !remoteVersion ||
-            compareVersions(localVersion, remoteVersion) > 0
-        ) {
-            const currentDir = import.meta.dir;
-            const enginePath = path.resolve(currentDir, '../engine');
-            const remoteEngine = await this.getRemoteEngine();
-            await this.ops.copyDirectory(
-                `${enginePath}/`,
-                `${remoteEngine}/`,
-                'up',
-            );
-            // copy contents
-            await this.setRemoteEngineVersion(localVersion);
-        }
+        // DISABLED: script directory user specific so version checks not needed.
+        // now will always rsync but overhead to this is quite low given number of files
+        //         const localVersion = (globalThis as any).__VERSION__ as string;
+        //         const remoteVersion = await this.getRemoteEngineVersion();
+        //
+        //         if (remoteVersion && compareVersions(localVersion, remoteVersion) < 0) {
+        //             throw new Error(`
+        // This ivllm client is version ${localVersion}, but the engine deployed at
+        // ${this.creds.projectDir} is version ${remoteVersion}.
+        // Please upgrade your local ivllm install to ${remoteVersion} or later before continuing.
+        // (i.e. do a git pull)
+        // `);
+        //         }
+        //
+        //         if (
+        //             !remoteVersion ||
+        //             compareVersions(localVersion, remoteVersion) > 0
+        //         ) {
+        //             const currentDir = import.meta.dir;
+        //             const enginePath = path.resolve(currentDir, '../engine');
+        //             const remoteEngine = await this.getRemoteEngine();
+        //             await this.ops.copyDirectory(
+        //                 `${enginePath}/`,
+        //                 `${remoteEngine}/`,
+        //                 'up',
+        //             );
+        //             // copy contents
+        //             await this.setRemoteEngineVersion(localVersion);
+        //         }
 
         this.bootstrapped = true;
     }
@@ -249,18 +260,18 @@ Please upgrade your local ivllm install to ${remoteVersion} or later before cont
         return this.remoteHome;
     }
 
-    private async getRemoteEngineVersion(): Promise<string> {
-        const { stdout } = await this.ops.runRemote(
-            `cat "${await this.getRemoteHome()}/.config/ivllm/version" 2>/dev/null || true`,
-            { env: this.envs, silent: true },
-        );
-        return stdout.trim();
-    }
-
-    private async setRemoteEngineVersion(version: string): Promise<void> {
-        await this.ops.runRemote(
-            `umask 002 && mkdir -p "${await this.getRemoteHome()}/.config/ivllm" && echo "${version}" > "${await this.getRemoteHome()}/.config/ivllm/version"`,
-            { env: this.envs, silent: true },
-        );
-    }
+    // private async getRemoteEngineVersion(): Promise<string> {
+    //     const { stdout } = await this.ops.runRemote(
+    //         `cat "${await this.getRemoteHome()}/.config/ivllm/version" 2>/dev/null || true`,
+    //         { env: this.envs, silent: true },
+    //     );
+    //     return stdout.trim();
+    // }
+    //
+    // private async setRemoteEngineVersion(version: string): Promise<void> {
+    //     await this.ops.runRemote(
+    //         `umask 002 && mkdir -p "${await this.getRemoteHome()}/.config/ivllm" && echo "${version}" > "${await this.getRemoteHome()}/.config/ivllm/version"`,
+    //         { env: this.envs, silent: true },
+    //     );
+    // }
 }

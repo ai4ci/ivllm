@@ -49,7 +49,7 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
         --cpus-per-gpu=64 \
         --ntasks-per-node=1 \
         --export=ALL \
-        "$SLURM_SUBMIT_DIR/lib/run_head_vllm.sh" \
+        "$SLURM_SUBMIT_DIR/lib/run-head-vllm.sh" \
         "$IVLLM_JOB" \
         "$IVLLM_HEAD_NODE_IP" \
         & IVLLM_HEAD_PID=$!
@@ -74,7 +74,7 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
             --cpus-per-gpu=64 \
             --ntasks-per-node=1 \
             --export=ALL \
-            "$SLURM_SUBMIT_DIR/lib/run_worker_vllm.sh" \
+            "$SLURM_SUBMIT_DIR/lib/run-worker-vllm.sh" \
             "$IVLLM_JOB" \
             "$IVLLM_HEAD_NODE_IP" \
             "$count" \
@@ -97,7 +97,9 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
 ) & IVLLM_PARENT_PID=$!
 
 # Redirect slurm out of time signals to the parent orchestrator
+# Slurm errors also.
 trap 'kill -s SIGUSR1 "$IVLLM_PARENT_PID" 2>/dev/null' SIGUSR1
+trap 'kill -s SIGUSR1 "$IVLLM_PARENT_PID" 2>/dev/null' ERR
 
 while ! process_died "$IVLLM_PARENT_PID"; do
     sleep 1

@@ -84,9 +84,9 @@ echo "==================================="
 trap 'kill_pid "$IVLLM_PID" "vllm head"' SIGUSR2 SIGUSR1 SIGTERM
 export PYTHONUNBUFFERED=1 # remove stdout buffering.
 stdbuf -oL -eL vllm serve "${IVLLM_ARGS[@]}" &
-    IVLLM_PID=$!
+    IVLLM_HEAD_NODE_PID=$!
 
 sleep 1
-echo "[serve-0] initialised head node $IVLLM_HEAD_NODE_IP - vllm pid: $IVLLM_PID; jobid: $SLURM_JOB_ID"
+echo "[serve-0] initialised head node $IVLLM_HEAD_NODE_IP - vllm pid: $IVLLM_HEAD_NODE_PID; jobid: $SLURM_JOB_ID"
 
-wait_report "$IVLLM_JOB" "$IVLLM_PID"
+wait_report "$IVLLM_JOB" "$IVLLM_HEAD_NODE_PID"

@@ -90,15 +90,18 @@ echo "==================================="
 
 
 # make sure signals sent to this script via srun are propagated to vllm:
-trap 'kill_pid "$IVLLM_WORKER_PID" "vllm worker $IVLLM_NODE_RANK"' SIGUSR2 SIGUSR1 SIGTERM
+trap 'kill_pid "$IVLLM_WORKER_NODE_PID" "vllm worker $IVLLM_NODE_RANK"' SIGUSR2 SIGUSR1 SIGTERM
 export PYTHONUNBUFFERED=1 # remove stdout buffering.
 stdbuf -oL -eL vllm serve "${IVLLM_ARGS[@]}" &
-    IVLLM_WORKER_PID=$!
+    IVLLM_WORKER_NODE_PID=$!
+
+# N.B. careful not to collide naming of IVLLM_WORKER_PID which is the slurm
+# step host srun process
 
 # --port $serverPort \
 # --served-model-name "$model" "default" "$IVLLM_JOB" \
 
 echo "[serve-$IVLLM_NODE_RANK] initialised worker $IVLLM_NODE_RANK for $IVLLM_JOB"
 
-wait_report "$IVLLM_JOB" "$IVLLM_WORKER_PID" "$IVLLM_NODE_RANK"
+wait_report "$IVLLM_JOB" "$IVLLM_WORKER_NODE_PID" "$IVLLM_NODE_RANK"
 
