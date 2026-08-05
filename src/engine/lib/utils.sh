@@ -778,7 +778,7 @@ wait_report() {
 
     while ! process_died "$pid"; do
         if [ "$elapsed" -ge "$target_ms" ]; then
-            if is_status "$job" "initialising"; then
+            if is_status "$job" "initialising" || [[ "${IVLLM_RUNTIME_DEBUG:-0}" == "1" ]]; then
                 report_memory "$job" "$node"
             fi
             elapsed=0
@@ -1154,28 +1154,75 @@ echo "============================================"
 #   [HH:MM:SS-node N] Cache: XK | RAM: YM | Top: proc1=ZM proc2=WK ...
 # Usage: report_memory "$job"
 report_memory() {
-    local localdir
-    local node
+      local job="$1"
+      local localdir
+      local node
 
-    localdir=$(resolve_localdir "$1")
-    node=${2:-0}
+      localdir=$(resolve_localdir "$job")
+      node=${2:-0}
 
-    local raw_ps
-    raw_ps=$(ps -u "$USER" -o rss=,comm= 2>/dev/null || true)
+      local raw_ps
+      raw_ps=$(ps -u "$USER" -o pid=,rss=,comm= 2>/dev/null || true)
 
-    local total_ram
-    total_ram=$(echo "$raw_ps" | awk '{sum+=$1} END{if(sum>1024) printf "%dM", sum/1024; else printf "%dK", sum}')
+      local total_ram
+      total_ram=$(echo "$raw_ps" | awk '{sum+=$2} END{if(sum>1024) printf "%dM", sum/1024; else printf "%dK", sum}')
 
-    local top_6
-    top_6=$(echo "$raw_ps" | awk '{m[$2]+=$1} END{for(c in m) printf "%d %s\n", m[c], c}' | sort -rn | head -n 6 | awk '{if($1>1024) printf "%s=%dM ",$2,$1/1024; else printf "%s=%dK ",$2,$1}')
+      local top_6
+      top_6=$(echo "$raw_ps" | awk '{m[$3]+=$2} END{for(c in m) printf "%d %s\n", m[c], c}' | sort -rn | head -n 6 | awk '{if($1>1024) printf "%s=%dM ",$2,$1/1024; else printf
+  "%s=%dK ",$2,$1}')
 
-    printf "[%s-node %s] Cache: %sK | RAM: %s | Top: %s\n" \
-        "$(date +%H:%M:%S)" \
-        "$node" \
-        "$(du -sk "$localdir" 2>/dev/null | cut -f1)" \
-        "$total_ram" \
-        "$top_6"
-}
+      printf "[%s-node %s] Cache: %sK | RAM: %s | Top: %s\n" \
+          "$(date +%H:%M:%S)" "$node" \
+          "$(du -sk "$localdir" 2>/dev/null | cut -f1)" "$total_ram" "$top_6"
+
+      local debug_level="${IVLLM_DEBUG_LEVEL:-0}"
+      (( debug_level < 1 )) && return 0
+
+      # Level 1+: per-GPU utilisation/memory, cheap, no process attach.
+      if command -v nvidia-smi &>/dev/null; then
+          local gpu_line
+          gpu_line=$(nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total \
+              --format=csv,noheader,nounits 2>/dev/null | \
+              awk -F', ' '{printf "gpu%s=%s%%/%sM ", $1, $2, $3}')
+          printf "[%s-node %s] GPU: %s\n" "$(date +%H:%M:%S)" "$node" "$gpu_line"
+      fi
+
+      (( debug_level < 2 )) && return 0
+
+            # Level 2+: py-spy stack dumps of vLLM/Ray worker processes, appended to a
+      # persistent per-node file under the shared job dir (NOT $localdir — that's
+      # node-local tmpfs, invisible to other nodes and wiped by clear_localdir()
+      # on shutdown, i.e. gone exactly when we'd want it post-mortem).
+      if command -v py-spy &>/dev/null; then
+          local dumpdir
+          dumpdir=$(resolve_job_dir "$job" "debug")
+          mkdir -p "$dumpdir"
+          local dumpfile="$dumpdir/pyspy-node${node}.log"
+          local dumped=0
+
+          {
+              echo "### $(date +%Y-%m-%dT%H:%M:%S) ###"
+              while read -r pid rss comm; do
+                  case "$comm" in
+                      *RayWorkerP*|*EngineCor*|vllm|*VLLM*)
+                          echo "=== pid $pid rss=${rss}K comm=$comm ==="
+                          py-spy dump --pid "$pid" --nonblocking 2>&1
+                          echo
+                          (( dumped++ ))
+                          ;;
+                  esac
+              done <<< "$raw_ps"
+          } >> "$dumpfile"
+
+          (( dumped > 0 )) && printf "[%s-node %s] [debug] appended %d py-spy dump(s) to %s\n" \
+              "$(date +%H:%M:%S)" "$node" "$dumped" "$dumpfile"
+      else
+          printf "[%s-node %s] [debug] IVLLM_DEBUG_LEVEL=%s requested py-spy but it is not installed\n" \
+              "$(date +%H:%M:%S)" "$node" "$debug_level"
+      fi
+
+  }
+
 
 # ── JIT cache operations ──────────────────────────────────────────────────
 

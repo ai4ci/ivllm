@@ -89,3 +89,7 @@ compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}, "cudagraph_c
 # attention-backend: TRITON_ATTN
 # enable-flashinfer-autotune: false
 # gdn-prefill-backend: triton
+
+env:
+    IVLLM_DEBUG_LEVEL: 3
+    IVLLM_RUNTIME_DEBUG: 1

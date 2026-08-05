@@ -66,6 +66,12 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
 
         export IVLLM_WORKER_NODE_IP=$(dig +short "$IVLLM_WORKER")
 
+        # Node 0's output already lands in the job's own --output/--error
+        # (resolved once on the login node — see ivllm-serve.sh). Worker
+        # nodes need their own explicit --output/--error here, or srun's
+        # default forwards their stdout into that same node-0 file.
+        worker_log=$(resolve_job_dir "$IVLLM_JOB" "vllm.$count.log")
+
         srun \
             --overlap \
             --nodelist="$IVLLM_WORKER" \
@@ -75,6 +81,8 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
             --cpus-per-gpu=64 \
             --ntasks-per-node=1 \
             --export=ALL \
+            --output="$worker_log" \
+            --error="$worker_log" \
             "$SLURM_SUBMIT_DIR/lib/run-worker-vllm.sh" \
             "$IVLLM_JOB" \
             "$IVLLM_HEAD_NODE_IP" \

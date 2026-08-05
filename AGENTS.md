@@ -14,7 +14,7 @@
 * **IT IS ALWAYS HELPFUL TO DOCUMENT PRE-EXISTING BUGS IN `design/active-issues.md` (n.b. create it if it does not exist)**
 * If you are asked to work on documentation, ONLY change documentation files:
     When documenting **do NOT fix bugs, refactor code, or modify any non-documentation files, even when you discover bugs.**
-    Document discovered bugs instead (see below).
+    Document discovered bugs instead (see above).
 * When you discover a bug during any task:
     1. If the bug was INTRODUCED BY YOUR OWN PREVIOUS CHANGE → fix it immediately
     2. If the bug is PRE-EXISTING (introduced by the user or existed before) document it in `design/active-issues.md` and do NOT fix it
@@ -35,5 +35,5 @@
     3) **DESIGN DOCUMENTATION IS UP TO DATE**,
     4) **PATCH VERSION NUMBER IS INCREMENTED**
 * When you or the user have fixed an active issue remove it from `design/active-issues.md`
-
+* git push is the users responsibility. **DO NOT TRY AND GIT PUSH THE PROJECT**
 
