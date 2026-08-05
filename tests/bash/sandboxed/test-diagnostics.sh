@@ -70,7 +70,10 @@ sandbox_run_test "capture_job_diagnostics_forces_group_writable_even_from_restri
     diag_dir=$(find "$diag_root" -mindepth 1 -maxdepth 1 -type d | head -n1)
     [[ -n "$diag_dir" ]] || { echo "FAIL: no timestamped diagnostics dir found"; exit 1; }
 
-    assert_perm "$diag_dir" "775" || exit 1
+    # Directories are 2775 (setgid, so files created underneath inherit the
+    # project group) since the multi-user permissions overhaul; plain files
+    # still only need group-write, not setgid.
+    assert_perm "$diag_dir" "2775" || exit 1
     assert_perm "$diag_dir/vllm.0.log" "664" || exit 1
 '
 

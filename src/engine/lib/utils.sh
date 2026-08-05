@@ -705,10 +705,7 @@ capture_job_diagnostics() {
         diag_dir=$(resolve_diagnostics_dir "$job")
         echo "[diagnostics] archiving failed job artifacts to $diag_dir"
 
-        cp -f "$job_dir"/vllm*.log "$diag_dir/" 2>/dev/null || true
-        cp -f "$job_dir"/vllm.yaml "$diag_dir/" 2>/dev/null || true
-        cp -f "$job_dir"/vllm.yaml.clean.yaml "$diag_dir/" 2>/dev/null || true
-        cp -f "$job_dir"/status.json "$diag_dir/" 2>/dev/null || true
+        cp -rf "$job_dir"/* "$diag_dir/" 2>/dev/null || true
 
     fi
 }
@@ -1168,8 +1165,7 @@ report_memory() {
       total_ram=$(echo "$raw_ps" | awk '{sum+=$2} END{if(sum>1024) printf "%dM", sum/1024; else printf "%dK", sum}')
 
       local top_6
-      top_6=$(echo "$raw_ps" | awk '{m[$3]+=$2} END{for(c in m) printf "%d %s\n", m[c], c}' | sort -rn | head -n 6 | awk '{if($1>1024) printf "%s=%dM ",$2,$1/1024; else printf
-  "%s=%dK ",$2,$1}')
+      top_6=$(echo "$raw_ps" | awk '{m[$3]+=$2} END{for(c in m) printf "%d %s\n", m[c], c}' | sort -rn | head -n 6 | awk '{if($1>1024) printf "%s=%dM ",$2,$1/1024; else printf "%s=%dK ",$2,$1}')
 
       printf "[%s-node %s] Cache: %sK | RAM: %s | Top: %s\n" \
           "$(date +%H:%M:%S)" "$node" \

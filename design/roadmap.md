@@ -319,33 +319,48 @@ discover and dispatch to any backend.
 
 ### Model performance benchmarking — `ivllm compare`
 
-**ADR-118** (Ephemeral diagnostic jobs for model benchmarking)
+**ADR-118** (revised 2026-08-05 — persistent-path reuse against a shadow
+project directory; supersedes the original ephemeral-job design in place)
 
 Let an agent submit several candidate vLLM configs, get throughput/latency
-numbers for each, and compare them — without ever creating a persistent,
-connectable `ivllm connect`-managed job. Benchmarking is implemented
-**only** as ephemeral, disposable diagnostic jobs (this replaces, not
-complements, the earlier idea of benchmarking an already-running job).
+numbers for each, and compare them. **Revised decision**: reuse the real,
+unmodified `ivllm-serve.sh`/lockfile/monitor-triad path exactly as production
+uses it — pointed at a separate `$BENCH_PROJECTDIR` whose expensive
+subdirectories (`engine/vllm`, `engine/nvhpc`, `engine/rdma`, `model`) are
+symlinked back to the real project directory, so nothing is re-downloaded or
+recompiled, but `engine/jobs`/`engine/diagnostics` stay independent so
+benchmark runs never collide with real job state. This replaces the original
+"ephemeral, lockfile-free job" design — see `design/adr.md` ADR-118 for the
+full rationale (numbers should describe what actually gets deployed, not a
+parallel launch path that can silently drift from it).
 
 | Step | Description | Dependencies |
 |------|-------------|--------------|
-| 1. | Extract `IVLLM_ARGS`-building logic out of `run_head_vllm.sh`/`run_worker_vllm.sh` into a shared function taking `port`/`model`/`config` as plain parameters (today they read `serverPort` from the lockfile, which an ephemeral job doesn't have) | — |
-| 2. | New ephemeral job script(s): launch vLLM (head + optional workers), health-poll (no lockfile), run `vllm bench serve --dataset-name random` against `localhost:$port`, save `bench.json`, kill everything, exit | Step 1 |
-| 3. | Worker coordination for multi-node ephemeral jobs via SLURM's own job-teardown semantics (no `monitor_worker`/lockfile polling needed). | Step 2 |
-| 4. | Integrate `tidy_up` exit trap (from `utils.sh`) into the ephemeral runner to guarantee automatic failure diagnostics capture (logs + config) on crash. | Step 2 |
-| 5. | CLI: `ivllm compare <comparisonName> --submit <config1.yaml> <config2.yaml> ...` — non-blocking `sbatch` per config, writes `comparison.json` manifest (configName → slurmJobId, submittedAt, status) | Step 2 |
+| 1. | One-time admin setup: create `$BENCH_PROJECTDIR` with `engine/vllm`, `engine/nvhpc`, `engine/rdma`, `model` symlinked to the real project dir's equivalents; `engine/jobs`/`engine/diagnostics` left as real, independent directories | — |
+| 2. | `run_vllm_bench()` (new, small function in `utils.sh`): activate the vLLM venv (`resolve_vllm_version_dir` + `source bin/activate` — `monitor_head`'s shell doesn't have this on `PATH` by default, unlike `run_head_vllm.sh`), then run `vllm bench serve --host localhost --port "$server_port" --dataset-name random`, save `bench.json` | — |
+| 3. | Add an `IVLLM_BENCH_MODE` env-var-gated branch in `monitor_head()`, right after `update_status_running "$job"` (`utils.sh:1061` — the same point that already confirms healthy *and* warmed-up): call `run_vllm_bench()` then `request_cancel "$job"`, driving the *existing* graceful-shutdown path — no new shutdown logic needed | Step 2 |
+| 4. | CLI: new `benchmarkProjectDir` config field (`ivllm config --benchmark-project-dir <path>`) so `compare` never risks reusing/clobbering the regular `projectDir` setting | — |
+| 5. | CLI: `ivllm compare <comparisonName> --submit <config1.yaml> <config2.yaml> ...` — for each config, a real `Backend.requestStart()` call (`ivllm-serve.sh -b`, non-interactive batch partition — already skips the interactive reservation, no new code needed for this) with `IVLLM_BENCH_MODE=1` injected into that job's env exports; writes `comparison.json` manifest (configName → slurmJobId, submittedAt, status) | Steps 3-4 |
 | 6. | CLI: `ivllm compare <comparisonName> --analyse` — one-shot status check against the manifest, rsyncs down newly-completed configs' diagnostics, prints a status table with metrics inline; no verdict-picking | Step 5 |
-| 7. | Diagnostics stored at `$PROJECTDIR/engine/diagnostics/<comparisonName>/<configName>/{vllm.yaml,slurm.sh,vllm.log,bench.json}` | — |
-| 8. | Regular batch partition (not interactive) for `--submit` jobs — sidesteps the interactive reservation's 1-sbatch-job limit, enables true parallel submission across configs | — |
-| 9. | Default `--time` of 2 hours (large/multi-node model load + warmup can itself take 45–60+ min), overridable per comparison run | — |
+| 7. | Diagnostics stored at `$BENCH_PROJECTDIR/engine/diagnostics/<comparisonName>/<configName>/{vllm.yaml,slurm.sh,vllm.log,bench.json}` — reuses the existing `capture_job_diagnostics`/`tidy_up` machinery automatically, since these are ordinary jobs on the real path | — |
+| 8. | Default `--time` of 2 hours (large/multi-node model load + warmup can itself take 45–60+ min), overridable per comparison run | — |
 
-**Rationale:** No lockfile, no monitor triad, no SSH tunnel, no lingering
-GPU-hour risk (self-terminating by construction), trivially parallelisable
-across many configs, and sidesteps the interactive-reservation single-job
-limit entirely. Sits deliberately outside the `Backend` lifecycle contract
-defined in `design/backend-contract.md` — a one-shot benchmark run doesn't
-need any of the properties (detach/reattach, multi-user sharing, idle
-timeout) that contract exists to guarantee.
+**No longer needed, removed from scope by the revision:** extracting
+`IVLLM_ARGS`-building logic out of `run_head_vllm.sh`/`run_worker_vllm.sh`
+into a lockfile-free shared function, and a separate ephemeral-job
+multi-node coordination design — both were needed only to support a
+lockfile-free launch path. Since Option 3 reuses the real, lockfile-backed
+path unmodified, multi-node benchmarking works automatically with zero new
+coordination code.
+
+**Rationale:** the thing being benchmarked is now *exactly* the thing that
+gets deployed (same scripts, same lockfile/monitor triad, same JIT-cache
+handling, same multi-node coordination) rather than a parallel
+implementation that has to be kept in sync by hand — more honest numbers,
+and less new code to maintain than the original design, despite reusing
+more. Still sits outside any new `Backend` lifecycle method — benchmark jobs
+are ordinary `Backend.requestStart()` calls with `IVLLM_BENCH_MODE=1` set
+and a different project dir, not a new state machine.
 
 ### Advanced scheduling
 

@@ -150,6 +150,17 @@ else
 
 fi
 
+# NCCL version pin — see design/prototype/nccl-probe.sh + design/active-issues.md.
+# Torch's default bundled nvidia-nccl-cu12 (2.28.9 as of vllm 0.25.1) is
+# exactly the class of build vLLM issue #46097 traces a multi-node TP
+# CUDA-graph-replay collective desync to. 2.30.4 is reported clean under
+# sustained multi-hour multi-node load by a third party on the same
+# architecture family, and verified here to still correctly select the
+# Cassini/libfabric (cxi) transport via the existing aws-ofi-nccl 1.8.1-aws
+# plugin, with a correct cross-node all_reduce (nccl-probe.sh section [7]).
+echo "=== Pinning nvidia-nccl-cu12 to 2.30.4 (see vLLM issue #46097) ==="
+uv pip install --upgrade nvidia-nccl-cu12==2.30.4
+
 export FLASHINFER=$(uv pip list --format=json | jq '.[] | select(.name == "flashinfer-python") | .version' -r)
 
 if uv pip show flashinfer-jit-cache &>/dev/null; then

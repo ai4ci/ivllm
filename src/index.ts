@@ -379,12 +379,8 @@ async function cmdConnect(
         tunnel = await backend.connect(jobName, localPort);
         const lockfile = await backend.getJobStatus(jobName).catch(() => null);
         const model = lockfile?.model;
+        const slurm = lockfile?.slurmJobId;
         console.log(`
-[connect] job ${jobName} is ${status}.
-SSH tunnel connected - OpenAI api: http://localhost:${localPort}/v1 ...
-
-Sandboxing: the sandbox must be able to access localhost port ${localPort}
-
 Launching claude
 ================
 
@@ -398,6 +394,8 @@ N.b. Some models do not work with claude code and fail with unsupported role.
 
 Docker sandbox (unverified)
 ===========================
+
+Sandboxing: the sandbox must be able to access localhost port ${localPort}
 
 # 1. Initialize the explicit sandbox named "local-vllm-claude" using your current directory (.)
 docker sandbox create --name="local-vllm-claude" shell .
@@ -427,16 +425,24 @@ use the vllm model selector plugin:
 pi install https://github.com/ai4ci/pi-vllm
 run pi and select the model with "/vllm" command.
 
-Tunnel will stay open until you press Ctrl-C ...
+VLLM crashes
+============
 
-A crash in vllm remotely will not appear here. You might see a message saying, e.g.:
+A crash in vllm running remotely will not appear here. You might see a message in your
+agent saying, e.g.:
 
   Error: EngineCore encountered an issue. See stack trace (above) for the root cause.
 
-That means vllm has died - you can use 'ivllm status' to confirm. it might be a
-good idea to call 'ivllm cancel ${jobName}' particularly if the model has
-stopped responding and the status is still 'running'
+That means vllm has died - you can use 'ivllm status' to confirm and you'll need
+to press Ctrl-C to close this tunnel.
 
+SUCCESSFULLY CONNECTED:
+=======================
+
+[connect] job ${jobName} is ${status}.
+SSH tunnel connected - OpenAI api: http://localhost:${localPort}/v1 ...
+
+Tunnel will stay open until you press Ctrl-C ...
 `);
 
         // Block CLI execution loop natively while the tunnel stays open
@@ -448,9 +454,19 @@ SSH forwarding tunnel disconnected.
 ${model} is still running and you can reconnect immediately with:
 'ivllm connect ${jobName}'.
 
-If you want to stop it you should run:
-'ivllm cancel ${jobName}'
-but it will time-out by itself if no one else is using it.
+It will time-out by itself if no one else is using it.
+
+If you think it has crashed or you want to stop it you should run:
+
+  ivllm cancel ${jobName}
+  ivllm cancel ${jobName} --force
+
+or log in to Isambard and:
+
+  squeue --reservation=interactive --me
+  squeue --me
+  scancel ${slurm || '<slurm-id>'}
+
 `);
                 resolve();
             });
