@@ -286,6 +286,7 @@ resolve_stripped_job_config() {
         | yq d - config \
         | yq d - numa-bind \
         | yq d - served-model-name \
+        | yq d - distributed-backend-executor \
         | yq d - metadata > "$output_file"
     echo "$output_file"
 }
@@ -688,7 +689,6 @@ resolve_diagnostics_dir() {
     timestamp=$(date +%Y%m%d_%H%M%S)
     local diag_dir="$IVLLM_PROJECTDIR/engine/diagnostics/$job/$timestamp"
     mkdir -p "$diag_dir"
-    chmod g+rwXs"$diag_dir"
     echo "$diag_dir"
 }
 
@@ -710,7 +710,6 @@ capture_job_diagnostics() {
         cp -f "$job_dir"/vllm.yaml.clean.yaml "$diag_dir/" 2>/dev/null || true
         cp -f "$job_dir"/status.json "$diag_dir/" 2>/dev/null || true
 
-        chmod g+rwXs"$diag_dir" "$diag_dir"/* 2>/dev/null || true
     fi
 }
 
@@ -1264,13 +1263,15 @@ save_cache() {
     if (( SLURM_NODEID == 0 )); then
         echo "[cache] archiving JIT cache to shared storage..."
 
-        chmod g+rwXs"$localdir" 2>/dev/null || true
+#         chgrp -R "$IVLLM_GRP" "$localdir"
+#         chmod g+rwXs "$localdir" 2>/dev/null || true
 
         tar czf "${cachetar}.tmp" \
             --owner=0 --group=0 \
             --mode='g+rwX,o-rwx' \
             -C "$localdir" . 2>/dev/null && \
             mv "$cachetar.tmp" "$cachetar" && \
+            chgrp "$IVLLM_GRP" "$cachetar" && \
             chmod 664 "$cachetar" && \
             echo "[cache] saved: $(du -sh "$cachetar" | cut -f1)" || \
             echo "[cache] failed to save JIT cache"

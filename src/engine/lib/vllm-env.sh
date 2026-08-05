@@ -120,6 +120,7 @@ export VLLM_COMPILE_CACHE_SAVE_FORMAT="unpacked"
 
 # ── HF Models flags:
 # ─────────────────────────────────
+# shellcheck disable=2119
 export HF_HOME="$(resolve_model_dir)/hf"
 export HF_HUB_OFFLINE=1
 

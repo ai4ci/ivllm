@@ -246,7 +246,6 @@ export class IsambardBareMetalBackend extends Backend {
     }
 
     private async getRemoteEngine(): Promise<string> {
-        const engine = `${await this.getRemoteHome()}/.local/bin`;
         return `${await this.getRemoteHome()}/.local/bin`;
     }
 

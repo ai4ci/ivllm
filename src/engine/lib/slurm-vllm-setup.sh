@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=1091,2155
 # slurm-vllm-setup.sh — vLLM installation script.
 #
 # Installs the specified vLLM version into a shared versioned directory.
@@ -129,7 +130,7 @@ else
   echo "Downloading and installing vLLM $vllmVersion wheels (may be slow — large download)..."
   uv pip install vllm=="$vllmVersion" ray[default] \
     --torch-backend=auto \
-    --extra-index-url https://wheels.vllm.ai/$vllmVersion/cu129 \
+    --extra-index-url "https://wheels.vllm.ai/$vllmVersion/cu129" \
     --extra-index-url https://pypi.org/simple/
 
   echo "vllm install complete."
@@ -164,7 +165,7 @@ fi
 if uv pip show deep_gemm &>/dev/null; then
   echo "DeepGEMM already installed"
 else
-  deepGEMMRef=$(curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm/refs/heads/releases/v${vllmVersion}/tools/install_deepgemm.sh | grep "DEEPGEMM_GIT_REF=" | head -n 1 | sed 's/.*="\(.*\)".*/\1/')
+  deepGEMMRef=$(curl -fsSL "https://raw.githubusercontent.com/vllm-project/vllm/refs/heads/releases/v$vllmVersion"/tools/install_deepgemm.sh | grep "DEEPGEMM_GIT_REF=" | head -n 1 | sed 's/.*="\(.*\)".*/\1/')
 
   if [[ -z ${deepGEMMRef:-} ]]; then
     echo "WARNING: no DeepGEMM git reference found to compile"
@@ -223,7 +224,7 @@ else
 
       pushd "$workingDir/uccl"
       echo "--> Compiling P2P extension components..."
-          cd p2p && make clean && make -j$(nproc) && cd ..
+          cd p2p && make clean && make "-j$(nproc)" && cd ..
 
           mkdir -p uccl/lib
           cp p2p/libuccl_p2p.so uccl/lib/
@@ -235,7 +236,7 @@ else
           if [[ "$py_stable_abi_ok" == "1" ]]; then
               for f in uccl/*.cpython-*.so; do
                   if [[ -f "$f" ]]; then
-                      #shellcheck disable 2001
+                      #shellcheck disable=2001
                       newname=$(echo "$f" | sed 's/\.cpython-[^.]*-[^.]*-[^.]*\.so/.abi3.so/')
                       mv "$f" "$newname"
                   fi
@@ -244,11 +245,13 @@ else
 
           # 3. Replicate 'build_ep' function from build_inner.sh
           echo "--> Compiling EP extension components..."
-          cd ep && make clean && rm -rf build || true
+          pushd ep
+          make clean
+          rm -rf build || true
 
           # Run the setup.py inline tracking hook inside ep/
           python3 setup.py build_ext --inplace
-          cd ..
+          popd
 
           # Mirror the metadata hooks into the target workspace
           cp -r ep/build/lib.linux-aarch64-*/* uccl/ 2>/dev/null || cp -r ep/*.so uccl/ 2>/dev/null || true

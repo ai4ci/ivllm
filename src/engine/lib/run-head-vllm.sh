@@ -81,8 +81,9 @@ echo "[serve-0] executing: vllm serve $(printf '%q ' "${IVLLM_ARGS[@]}")"
 echo "==================================="
 
 # make sure signals sent to this script via srun are propagated to vllm:
-trap 'kill_pid "$IVLLM_PID" "vllm head"' SIGUSR2 SIGUSR1 SIGTERM
+trap 'kill_pid "$IVLLM_HEAD_NODE_PID" "vllm head"' SIGUSR2 SIGUSR1 SIGTERM
 export PYTHONUNBUFFERED=1 # remove stdout buffering.
+export VLLM_HOST_IP="$IVLLM_HEAD_NODE_IP"
 stdbuf -oL -eL vllm serve "${IVLLM_ARGS[@]}" &
     IVLLM_HEAD_NODE_PID=$!
 

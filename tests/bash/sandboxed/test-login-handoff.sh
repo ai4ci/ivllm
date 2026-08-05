@@ -1,5 +1,5 @@
 #!/bin/bash
-# shellcheck disable=SC2016
+# shellcheck disable=SC2016,1091
 # tests/bash/sandboxed/test-login-handoff.sh — Login-node wrapper script tests.
 #
 # Tests the login-node wrapper scripts (ivllm-cancel.sh, ivllm-status.sh,

@@ -429,6 +429,14 @@ run pi and select the model with "/vllm" command.
 
 Tunnel will stay open until you press Ctrl-C ...
 
+A crash in vllm remotely will not appear here. You might see a message saying, e.g.:
+
+  Error: EngineCore encountered an issue. See stack trace (above) for the root cause.
+
+That means vllm has died - you can use 'ivllm status' to confirm. it might be a
+good idea to call 'ivllm cancel ${jobName}' particularly if the model has
+stopped responding and the status is still 'running'
+
 `);
 
         // Block CLI execution loop natively while the tunnel stays open

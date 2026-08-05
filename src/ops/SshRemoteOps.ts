@@ -163,7 +163,7 @@ export class SshRemoteOps extends RemoteOps {
         if (direction === 'up') {
             await this.runRemote(`umask 0002 && mkdir -p "${remotePath}"`);
         } else {
-            fs.mkdirSync(dest);
+            fs.mkdirSync(dest, { recursive: true });
         }
 
         await new Promise<void>((resolve, reject) => {

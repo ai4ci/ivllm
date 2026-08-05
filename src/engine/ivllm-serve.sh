@@ -27,6 +27,8 @@ IVLLM_JOB=""
 # IVLLM_PARTITION="--partition=interactive --reservation=interactive"
 IVLLM_PARTITION="--reservation=interactive"
 IVLLM_MAXTIME="08:00:00"
+IVLLM_USE_RAY=0
+
 
 OPTIND=1
 while getopts "j:t:bh" opt; do
@@ -59,6 +61,7 @@ vllmVersion=$(select_closest_version "$minVllmVersion")
 # redirect output to log
 exec > >(tee "$IVLLM_LOG") 2>&1
 
+distExec=$(get_job_config_setting "$IVLLM_JOB" ".distributed-backend-executor")
 idleTimeout=$(get_job_config_setting "$IVLLM_JOB" ".idle-timeout")
 model=$(get_job_config_setting "$IVLLM_JOB" ".model")
 
@@ -86,6 +89,20 @@ nGpus=$((${dp:-1} * ${tp:-1} * ${pp:-1}))
 
 # Calculate nodes, rounding up to ensure a minimum of 1 node is allocated
 nNodes=$(( (nGpus + 3) / 4 ))
+
+# use ray if a multinode script mentions it
+if [[ $nNodes == 1 ]]; then
+    IVLLM_USE_RAY=0
+    echo "[serve] single node job: default distributed-backend-executor (mp)"
+else
+    if [[ -n $distExec && $distExec == "ray" ]]; then
+        echo "[serve] multi-node job: distributed-backend-executor ray"
+        IVLLM_USE_RAY=1
+    else
+        echo "[serve] multi-node job: default distributed-backend-executor (mp)"
+        IVLLM_USE_RAY=0
+    fi
+fi
 
 # GPUS per nodes (multinode jobs grab whole node.)
 nGpusPerNode=$(( nNodes > 1 ? 4 : nGpus ))
@@ -146,22 +163,46 @@ echo "=================================="
 
 pushd "$here" || exit 1
 
-#shellcheck disable=2068
-slurmJobId=$(sbatch \
-    --parsable \
-    --job-name "$IVLLM_JOB" \
-    --nodes=$nNodes \
-    --gpus-per-node=$nGpusPerNode \
-    --cpus-per-gpu=64 \
-    --ntasks-per-node=1 "$IVLLM_PARTITION" \
-    --mem=$memValue $exclusiveFlag \
-    --time="$maxTime" \
-    --output="$IVLLM_LOG" \
-    --error="$IVLLM_LOG" \
-    $@ \
-    "$here/lib/slurm-vllm-serve.sh" "$IVLLM_JOB" "$nGpusPerNode" "$memValue")
+if [[ $IVLLM_USE_RAY == 0 ]]; then
 
-EXIT_CODE=$?
+    #shellcheck disable=2068
+    slurmJobId=$(sbatch \
+        --parsable \
+        --job-name "$IVLLM_JOB" \
+        --nodes=$nNodes \
+        --gpus-per-node=$nGpusPerNode \
+        --cpus-per-gpu=64 \
+        --ntasks-per-node=1 "$IVLLM_PARTITION" \
+        --mem=$memValue $exclusiveFlag \
+        --time="$maxTime" \
+        --output="$IVLLM_LOG" \
+        --error="$IVLLM_LOG" \
+        $@ \
+        "$here/lib/slurm-vllm-serve.sh" "$IVLLM_JOB" "$nGpusPerNode" "$memValue")
+
+    EXIT_CODE=$?
+
+else
+
+    #shellcheck disable=2068
+    slurmJobId=$(sbatch \
+        --parsable \
+        --job-name "$IVLLM_JOB" \
+        --nodes=$nNodes \
+        --gpus-per-node=$nGpusPerNode \
+        --cpus-per-gpu=64 \
+        --ntasks-per-node=1 "$IVLLM_PARTITION" \
+        --mem=$memValue $exclusiveFlag \
+        --time="$maxTime" \
+        --output="$IVLLM_LOG" \
+        --error="$IVLLM_LOG" \
+        $@ \
+        "$here/lib/slurm-ray-vllm-serve.sh" "$IVLLM_JOB" "$nGpusPerNode" "$memValue")
+
+    EXIT_CODE=$?
+
+
+fi
 
 if [[ $EXIT_CODE == 0 ]]; then
     echo "  Slurm Job ID: $slurmJobId"

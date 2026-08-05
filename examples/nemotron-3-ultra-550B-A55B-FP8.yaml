@@ -29,31 +29,24 @@ idle-timeout: 60
 model: RedHatAI/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8-dynamic
 
 # Hybrid EP: TP=4, DP=2, EP=8 (2 nodes × 4 GPUs)
-tensor-parallel-size: 4
-data-parallel-size: 2
+tensor-parallel-size: 8
+# data-parallel-size: 2
 enable-expert-parallel: true
 
-# MoE backend: deep_gemm for FP8 block-quantized experts
-moe-backend: deep_gemm
-
-# All2All backend: deepep_low_latency (decode-optimized)
-all2all-backend: deepep_low_latency
-
-# Quantization: FP8
-quantization: fp8
+distributed-backend-executor: ray
+disable-custom-all-reduce: true
 
 # KV cache: FP8
 kv-cache-dtype: fp8_e4m3
 
-# Context: 128K on-GPU (tight VRAM fit)
-# Use Mooncake offloading for longer context
-max-model-len: 131072
+# Context: 384K on-GPU (tight VRAM fit)
+max-model-len: 1048576
 
-# KV Offloading: UVA for GH200 (tight VRAM fit)
-# 68.75 GB weights leaves minimal KV headroom
-# Uses NVLink-C2C zero-copy access
-cpu-offload-gb: 64
-offload-backend: uva
+# kv-cache-memory-bytes: 10G
+
+# Size of the KV cache offloading buffer in GiB. When TP > 1, this is the total buffer size summed across all TP ranks. By default, this is set to None, which means no KV offloading is enabled. When set, vLLM will enable KV cache offloading to CPU using the kv\_offloading\_backend.
+# kv-offloading-size: 200
+# kv-offloading-backend: native
 
 # Memory tuning (70 GB usable per GPU - TIGHT FIT)
 # 68.75 GB weights + 1.25 GB KV cache (minimal!)
@@ -78,6 +71,8 @@ async-scheduling: true
 # Trust remote code
 trust-remote-code: true
 
+moe-backend: marlin
+
 # Mamba backend: flashinfer for Mamba SSM layers
 mamba-backend: flashinfer
 mamba-ssm-cache-dtype: float16
@@ -87,13 +82,10 @@ mamba-cache-philox-rounds: 5
 # Speculative decoding: Nemotron H-MTP (5 tokens)
 speculative-config: '{"method": "nemotron_h_mtp", "num_speculative_tokens": 5}'
 
-# Multi-thread loading
-model-loader-extra-config: '{"enable_multithread_load": true, "num_threads": 96}'
-
 # Compilation fix
 compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}, "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32, 64]}'
 
 # Disable FlashInfer autotune (2+ hour startup on MoE)
-attention-backend: TRITON_ATTN
-enable-flashinfer-autotune: false
-gdn-prefill-backend: triton
+# attention-backend: TRITON_ATTN
+# enable-flashinfer-autotune: false
+# gdn-prefill-backend: triton
