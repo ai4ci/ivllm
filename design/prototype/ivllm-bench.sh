@@ -6,31 +6,45 @@
 # design, taken one step further per discussion: instead of adding an
 # IVLLM_BENCH_MODE hook inside monitor_head() (a change to an existing
 # production file), this version is a **standalone login-node orchestrator**
-# that drives the existing, completely UNMODIFIED external CLI surface —
-# ivllm-serve.sh, ivllm-cancel.sh, and utils.sh's read-only status/config
-# helpers (sourced, never edited). Zero existing files touched. This trades
-# a little bit of measurement purity (the `vllm bench serve` client runs on
-# the login node, reaching the job's `computeHostname:serverPort` over
-# Isambard's internal network — a real hop, not literal in-process
-# `localhost` — though still nothing like the WAN/SSH-tunnel latency ADR-118
-# explicitly rejected as "meaningless") for a design that is easy to reason
-# about, easy to integrate into the TypeScript CLI later (it's just another
-# external command the backend shells out to), and carries zero risk to any
-# currently-working script.
+# that drives the existing external CLI surface — ivllm-serve.sh,
+# ivllm-cancel.sh, and utils.sh's status/config helpers (sourced, not
+# reimplemented). One small production change was needed alongside this:
+# capture_job_diagnostics() (utils.sh) now does `cp -rf "$job_dir"/*
+# "$diag_dir/"` — sweep everything in the job directory, not a hardcoded
+# vllm.yaml/status.json/vllm*.log list — specifically so this script's
+# bench.json (and IVLLM_DEBUG_LEVEL=2's debug/pyspy dumps) get archived too
+# without needing a parallel, separately-timestamped copy step of their own.
+#
+# The login node cannot reach a compute node's port directly (confirmed —
+# Isambard's compute nodes are network-isolated from the login node except
+# via SLURM itself), so the `vllm bench serve` CLIENT is launched via `srun
+# --overlap --jobid=<slurmJobId>` (the job ID read straight out of the
+# lockfile) — riding on the already-running job's existing allocation to
+# execute the bench client ON the compute node hosting the API server, no
+# new resource request. This is the same `--overlap` pattern
+# slurm-vllm-serve.sh/slurm-ray-vllm-serve.sh already use internally for
+# their own head/worker srun steps, just invoked here from outside the job.
+# Net effect: this ends up MORE honest than a login-node network hop would
+# have been — genuine same-node `localhost`, not a workaround, a bonus.
 #
 # What this does, end to end, for `ivllm-bench.sh -c <comparison_directory>`:
 #   1. Reads every `*.yaml`/`*.yml` file in <comparison_directory> — one
 #      candidate vLLM config per file, job name = filename stem.
-#   2. Creates a "benchmark" shadow project directory as a subfolder of the
-#      REAL project directory (read from $PROJECTDIR/$IVLLM_PROJECTDIR,
-#      which must already be set in the environment — same convention
-#      utils.sh itself uses). Symlinks the expensive shared subdirectories
-#      (engine/vllm, engine/nvhpc, engine/rdma, model) back to the real
-#      project dir so nothing is re-downloaded or recompiled; engine/jobs
-#      and engine/diagnostics are real, independent directories so
-#      benchmark runs never collide with real job state.
-#   3. For each config: wipes any stale prior benchmark state for that job
-#      name, copies the config into place at the path utils.sh expects.
+#   2. Creates a "benchmark" shadow project directory as a subfolder of
+#      <comparison_directory> itself (not of the real project dir — each
+#      comparison run gets its own fully independent shadow tree this way,
+#      so two different comparisons can reuse the same config/job names
+#      without colliding). The REAL project directory (read from
+#      $PROJECTDIR/$IVLLM_PROJECTDIR, which must already be set in the
+#      environment — same convention utils.sh itself uses) is only
+#      consulted as the symlink *target*: engine/vllm, engine/nvhpc,
+#      engine/rdma, and model are symlinked back to it so nothing is
+#      re-downloaded or recompiled; engine/jobs and engine/diagnostics are
+#      real, independent directories under the shadow tree.
+#   3. For each config: copies it into place at the path utils.sh expects.
+#      Prior state for the same job name is deliberately NOT wiped —
+#      rerunning a comparison adds a new timestamped entry alongside
+#      previous ones in diagnostics rather than overwriting history.
 #   4. Submits all jobs concurrently via the real `ivllm-serve.sh -j <job>
 #      -b` (non-interactive batch partition — already skips the interactive
 #      reservation's 1-job limit, no new code needed for that).
@@ -39,32 +53,37 @@
 #      reaches "running", with a wall-clock giving-up point per job so a
 #      stuck/hung job (see design/active-issues.md — this exists for a
 #      reason) can't hang the whole orchestrator forever.
-#   6. Once running: activates that job's own vLLM venv (same
-#      resolve_vllm_version_dir()+source pattern ivllm-serve.sh itself
-#      uses) and runs `vllm bench serve` against the job's
-#      `computeHostname:serverPort`, saving JSON output into that job's
-#      diagnostics directory.
-#   7. Requests a graceful cancel (`ivllm-cancel.sh -j <job>`) — driving the
-#      existing, unmodified shutdown/diagnostics-capture path.
-#   8. Once every job has finished (benched-and-cancelled, or failed/timed
-#      out on its own), copies the whole diagnostics tree back into
-#      <comparison_directory>/results-<timestamp>/ and prints a plain
-#      status table — no verdict, per ADR-118's original design intent.
+#   6. Once running: via `srun --overlap --jobid=<slurmJobId>` targeting the
+#      job's own `computeHostname`, runs a health check then `vllm bench
+#      serve --host localhost ...` co-located with the API server (see
+#      above), saving JSON output straight into the job's own working
+#      directory (swept into diagnostics in step 7, alongside everything
+#      else). The venv activation happens INSIDE the srun'd remote shell,
+#      not on the login node — needs to execute where `vllm` actually needs
+#      to resolve on PATH.
+#   7. Requests a graceful cancel (`ivllm-cancel.sh -j <job>`), waits for the
+#      job to actually reach a terminal status (cancel is fire-and-forget —
+#      shutdown happens asynchronously once monitor_head notices it), then
+#      calls `capture_job_diagnostics()` explicitly — its cancel/timeout/
+#      idle-timeout paths (exit codes 200-203, utils.sh:837-895) deliberately
+#      don't call it themselves, only crash paths do, so a normal successful
+#      benchmark run would never get archived without this.
+#   8. Once every job has finished, copies the whole diagnostics tree back
+#      into <comparison_directory>/results/ and prints a plain status table
+#      — no verdict, per ADR-118's original design intent.
 #
 # All 8 job-lifecycle steps run in parallel, one per config, as independent
 # background subshells — this is the "trivially parallelisable across
 # configs" property ADR-118 always wanted.
 #
-# Untested assumptions worth checking on a real run before trusting this:
-#   - The login node can reach a compute node's hostname:port directly
-#     (plain HTTP, no SSH tunnel) — this is what the SSH tunnel in
-#     `IsambardBareMetalBackend.ts` exists to provide for a machine OUTSIDE
-#     Isambard's network; it's assumed (not yet confirmed here) that the
-#     login node itself doesn't need that tunnel to reach a sibling compute
-#     node.
-#   - Activating a vLLM venv (for the `vllm bench serve` CLIENT only — no
-#     GPU/CUDA needed for that side) works fine on the login node's
-#     architecture — should be true (same aarch64 family) but unconfirmed.
+# Still untested/worth checking on a real run before trusting this fully:
+#   - `srun --overlap --jobid=<id>` targeting a job submitted by a
+#     DIFFERENT `sbatch` invocation (this script's own, not the running
+#     job's own orchestrator subshell) — used internally elsewhere in this
+#     codebase only from within a job targeting its OWN allocation, never
+#     yet from an external script attaching to a job by ID after the fact.
+#     Should work (that's what --overlap + --jobid is for), but hasn't
+#     actually been run.
 #   - Exact `vllm bench serve` flags below may need adjusting per vLLM
 #     version — check `vllm bench serve --help` against whatever
 #     min-vllm-version each config declares.
@@ -76,6 +95,17 @@
 #
 # where ~/bench-configs/nemotron-tuning/ contains e.g. tp4dp2.yaml,
 # tp8.yaml, wide-ep.yaml — one candidate config per file.
+
+# TODO: This needs to be possible to run in fire and forget mode. Likely use is
+# setup a directory put some files in it. Call the benchmarking, go away, come
+# back much later. Retrieve results. The typescript CLI will not be waiting for
+# this to finish. It woudl be nice if this could be a slurm job but realistically
+# since it is launching slurm jobs that is unlikely to be simple.
+#
+# retrieving results is likely just look in the results directory. more
+# interesting is the check status of running benchmarking job. Is some level of
+# 8 jobs pending; 3 initialising; 1 running; 0 failed; 1 stopped (likely complete);
+# feedback possible through a benchmarking_status.json (could be in the $resultDir)
 
 set -uo pipefail
 
@@ -109,7 +139,8 @@ done
 [[ -d "$COMPARISON_DIR" ]] || { echo "[bench] ERROR: not a directory: $COMPARISON_DIR" >&2; exit 1; }
 [[ -z "$REAL_PROJECTDIR" ]] && { echo "[bench] ERROR: \$PROJECTDIR/\$IVLLM_PROJECTDIR not set — point it at the real project dir first" >&2; exit 1; }
 
-BENCH_PROJECTDIR="$REAL_PROJECTDIR/benchmark"
+# Benchmarking project dir for each comparison.
+BENCH_PROJECTDIR="$COMPARISON_DIR/benchmark"
 
 echo "[bench] real project dir:      $REAL_PROJECTDIR"
 echo "[bench] benchmark shadow dir:  $BENCH_PROJECTDIR"
@@ -140,10 +171,12 @@ else
     echo "[bench] symlinked model -> $REAL_PROJECTDIR/model"
 fi
 mkdir -p "$BENCH_PROJECTDIR/engine/jobs" "$BENCH_PROJECTDIR/engine/diagnostics"
+# rerunning a benchmarking job will add into existing results in diagostics
 
 # Everything below runs against the SHADOW project dir. utils.sh is sourced
-# (never edited) purely to reuse its existing, already-correct path/status
-# helpers instead of re-deriving path conventions by hand here.
+# purely to reuse its existing path/status helpers instead of re-deriving
+# path conventions by hand here (see the capture_job_diagnostics() change
+# noted at the top — the one intentional exception to "unmodified").
 export IVLLM_PROJECTDIR="$BENCH_PROJECTDIR"
 export PROJECTDIR="$BENCH_PROJECTDIR"
 # shellcheck disable=SC1091
@@ -154,14 +187,10 @@ source "$IVLLM_BIN/lib/utils.sh"
 # configs" property comes from. ──
 process_job() {
     local job="$1" configFile="$2"
-    local jobDir diagDir vllmVersion vllmVersionDir minVllmVersion model computeHostname serverPort
+    local jobDir vllmVersion vllmVersionDir minVllmVersion model computeHostname serverPort slurmJobId
     local waited=0
 
     echo "[bench:$job] preparing"
-
-    # Clean slate — benchmark jobs are disposable, don't inherit a stale
-    # result from a previous comparison run under the same config name.
-    rm -rf "${IVLLM_PROJECTDIR:?}/engine/jobs/${job:?}" "${IVLLM_PROJECTDIR:?}/engine/diagnostics/${job:?}"
 
     jobDir=$(resolve_job_dir "$job")
     cp "$configFile" "$(resolve_job_config "$job")"
@@ -193,45 +222,87 @@ process_job() {
     model=$(get_job_status_setting "$job" ".model")
     computeHostname=$(get_job_status_setting "$job" ".computeHostname")
     serverPort=$(get_job_status_setting "$job" ".serverPort")
-    echo "[bench:$job] running on $computeHostname:$serverPort ($model) — starting vllm bench serve"
-
-    # Reachability check first — fail fast with a clear message rather than
-    # letting `vllm bench serve` fail confusingly deep inside its own client.
-    if ! curl -sf --max-time 10 "http://$computeHostname:$serverPort/health" >/dev/null; then
-        echo "[bench:$job] ERROR: cannot reach http://$computeHostname:$serverPort/health from the login node"
-        echo "[bench:$job]        (untested assumption in this prototype — see header comment)"
-        "$IVLLM_BIN/ivllm-cancel.sh" -j "$job" >>"$jobDir/bench-submit.log" 2>&1
-        return 1
-    fi
+    slurmJobId=$(get_job_status_setting "$job" ".slurmJobId")
+    echo "[bench:$job] running on $computeHostname:$serverPort ($model, slurm job $slurmJobId)"
 
     minVllmVersion=$(get_job_config_setting "$job" ".min-vllm-version")
     vllmVersion=$(select_closest_version "$minVllmVersion")
     vllmVersionDir=$(resolve_vllm_version_dir "$vllmVersion")
-    # shellcheck disable=SC1091
-    source "$vllmVersionDir/bin/activate"
 
-    diagDir=$(resolve_diagnostics_dir "$job")
-    if vllm bench serve \
-        --host "$computeHostname" \
-        --port "$serverPort" \
-        --model "$model" \
-        --dataset-name random \
-        --save-result \
-        --result-dir "$diagDir" \
-        --result-filename "bench.json" \
-        > "$diagDir/bench.log" 2>&1
+    # The login node cannot reach a compute node's port directly (confirmed —
+    # not just an untested assumption, see conversation history). So the
+    # bench client must actually EXECUTE on the compute node, not just be
+    # aimed at it from here. `srun --overlap --jobid=<slurmJobId>` rides on
+    # the ALREADY-RUNNING job's existing allocation (no new resource
+    # request, same pattern slurm-vllm-serve.sh/slurm-ray-vllm-serve.sh
+    # already use internally for their own head/worker srun steps — just
+    # invoked here from outside the job, against a job ID read back out of
+    # the lockfile) to run a lightweight extra step on the head node.
+    # Bonus: this also means the client hits genuine same-node `localhost`,
+    # which is a MORE honest measurement than the original login-node/
+    # network-hop design, not just a workaround for the reachability gap.
+    local overlapArgs=(--overlap --jobid="$slurmJobId" --nodelist="$computeHostname" --nodes=1 --ntasks=1)
+
+    echo "[bench:$job] health check via srun --overlap (confirms the compute node is actually reachable this way)"
+    if ! srun "${overlapArgs[@]}" curl -sf --max-time 10 "http://localhost:$serverPort/health" >>"$jobDir/bench-submit.log" 2>&1; then
+        echo "[bench:$job] ERROR: srun --overlap health check failed — see $jobDir/bench-submit.log for srun's own error"
+        "$IVLLM_BIN/ivllm-cancel.sh" -j "$job" >>"$jobDir/bench-submit.log" 2>&1
+        return 1
+    fi
+
+    # capture_job_diagnostics() now does `cp -rf "$job_dir"/* "$diag_dir/"`
+    # (changed to sweep everything, incl. IVLLM_DEBUG_LEVEL=2's debug/pyspy
+    # dumps, not just a hardcoded vllm.yaml/status.json/vllm*.log list) — so
+    # writing straight into $jobDir and archiving once at the end is enough;
+    # no separate bench-specific folder needed.
+    if srun "${overlapArgs[@]}" bash -c "
+        source '$vllmVersionDir/bin/activate' &&
+        vllm bench serve \
+            --host localhost \
+            --port '$serverPort' \
+            --model '$model' \
+            --dataset-name random \
+            --save-result \
+            --result-dir '$jobDir' \
+            --result-filename bench.json
+        " > "$jobDir/bench.log" 2>&1
     then
-        echo "[bench:$job] bench complete — $diagDir/bench.json"
+        echo "[bench:$job] bench complete — $jobDir/bench.json"
     else
-        echo "[bench:$job] vllm bench serve FAILED — see $diagDir/bench.log"
+        echo "[bench:$job] vllm bench serve FAILED — see $jobDir/bench.log"
     fi
 
     echo "[bench:$job] requesting graceful cancel"
     "$IVLLM_BIN/ivllm-cancel.sh" -j "$job" >>"$jobDir/bench-submit.log" 2>&1
-    cp "$configFile" "$diagDir/" 2>/dev/null || true
+
+    # ivllm-cancel.sh only writes the cancel request and returns immediately
+    # — the real shutdown (and the status.json update we actually want to
+    # read) happens asynchronously once monitor_head notices it. Capturing
+    # diagnostics before that finishes would archive a stale in-flight
+    # snapshot instead of the final status/reason.
+    local cancelWaited=0
+    while ! is_status "$job" "stopped" && ! is_status "$job" "failed"; do
+        if (( cancelWaited >= 300 )); then
+            echo "[bench:$job] WARNING: job did not reach a terminal state within 300s of cancel request — archiving whatever state exists now"
+            # TODO: scancel the slurm job by id for this job if its not going down cleanly.
+            break
+        fi
+        sleep 5
+        (( cancelWaited += 5 ))
+    done
+
+    # tidy_up()'s cancel/timeout/idle-timeout paths (exit codes 200-203)
+    # deliberately do NOT call this themselves (see utils.sh:837-895) — only
+    # crash paths do. A benchmark run's logs/config are the actual point of
+    # the run, not just failure evidence, so archive unconditionally here.
+    capture_job_diagnostics "$job"
 }
 
 # ── Steps 1-4/8: discover configs, fan out, wait, collect ──
+
+# TODO: For consideration: hard fail if any of the models are not yet downloaded.
+# why - not the benchmarkers job to download models? why not - no reason really?
+
 declare -a jobNames=()
 shopt -s nullglob
 for f in "$COMPARISON_DIR"/*.yaml "$COMPARISON_DIR"/*.yml; do
@@ -251,16 +322,61 @@ fi
 echo "[bench] ${#jobNames[@]} job(s) running in parallel: ${jobNames[*]}"
 wait
 
-resultsDir="$COMPARISON_DIR/results-$(date +%Y%m%d_%H%M%S)"
+resultsDir="$COMPARISON_DIR/results"
 mkdir -p "$resultsDir"
 cp -r "$BENCH_PROJECTDIR/engine/diagnostics/." "$resultsDir/" 2>/dev/null || true
 
+# TODO: capture this summary output to a file in $resultsDir
 echo
 echo "=== Comparison complete — results copied to $resultsDir ==="
-printf '%-20s %-12s %s\n' "JOB" "STATUS" "BENCH RESULT"
+printf '%-20s %-10s %-22s %-10s %-10s %-10s %s\n' \
+    "JOB" "STATUS" "REASON" "REQ/S" "OUT TOK/S" "TTFT(ms)" "BENCH FILE"
 for job in "${jobNames[@]}"; do
-    status=$(get_job_status_setting "$job" ".status" 2>/dev/null || echo "unknown")
-    benchFile=$(find "$resultsDir/$job" -name "bench.json" 2>/dev/null | head -n1)
-    printf '%-20s %-12s %s\n' "$job" "$status" "${benchFile:-<no result>}"
+    jobResultsDir="$resultsDir/$job"
+
+    # Deliberately read from the ARCHIVED copy under $resultsDir, not the
+    # live $IVLLM_PROJECTDIR/engine/jobs/ lockfile — this is what actually
+    # gets shipped back once a future TypeScript `compare --analyse` only
+    # rsyncs engine/diagnostics/, not engine/jobs/, so the summary here
+    # should be self-sufficient from the same tree a user/agent would
+    # actually receive. One timestamped folder per job run (capture_job_
+    # diagnostics() sweeps the whole job dir — status.json, bench.json,
+    # debug/pyspy dumps, everything — into it in one shot), named with a
+    # timestamp it generates internally, so find the newest one rather than
+    # trying to predict the exact name.
+
+    # TODO: The summary should include all previous runs
+    # why? - tweaking things and rerunning comparison is what is going to happen
+    # comparing newest run with other runs is naturally going to be what we want
+    # and changing configuration is sometimes going to make things worse, so we
+    # want to compare what we had.
+    # why not? - semantics of what one "job" is changes over time. need to have a
+    # indication of the run - via the timestamp of the diagnostics directory.
+
+    latestRunDir=$(find "$jobResultsDir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | tail -n1)
+
+    status="unknown"; reason=""
+    if [[ -n "$latestRunDir" && -f "$latestRunDir/status.json" ]]; then
+        status=$(jq -r '.status // "unknown"' "$latestRunDir/status.json")
+        reason=$(jq -r '.reason // ""' "$latestRunDir/status.json")
+    fi
+
+    benchFile=""; reqPerSec="-"; outTokPerSec="-"; ttft="-"
+    if [[ -n "$latestRunDir" && -f "$latestRunDir/bench.json" ]]; then
+        benchFile="$latestRunDir/bench.json"
+        # Field names below are current as of vLLM's `vllm bench serve
+        # --save-result` output at the time this was written — check
+        # `jq keys` on an actual bench.json if these come back as "?" on a
+        # different vLLM version.
+        reqPerSec=$(jq -r '.request_throughput // "?"' "$benchFile")
+        outTokPerSec=$(jq -r '.output_throughput // "?"' "$benchFile")
+        ttft=$(jq -r '.mean_ttft_ms // "?"' "$benchFile")
+    fi
+
+    printf '%-20s %-10s %-22s %-10s %-10s %-10s %s\n' \
+        "$job" "$status" "$reason" "$reqPerSec" "$outTokPerSec" "$ttft" "${benchFile:-<no result>}"
 done
 echo "=== No verdict computed — read the bench.json files to compare numbers yourself ==="
+
+# TODO: more for the typescript client $resultDir is what we want to rsync back
+# to the local machine to analyse results.
