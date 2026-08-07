@@ -18,9 +18,9 @@
 set -euo pipefail
 umask 0002
 
-source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
+vllmVersion=${1:?must supply a vllm version to setup.sh}
 
-vllmVersion=${1?must supply a vllm version to setup.sh}
+source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 vllmVersionDir=$(resolve_vllm_version_dir "$vllmVersion")
 
 echo "=== ivllm-setup ==="
@@ -318,7 +318,7 @@ else
     # Passing --no-build-isolation forces the setup layout to acknowledge Slingshot structures
     # NIXL_EP requires UCX/UCP which is Infiniband specific no path exists to
     # install on Slingshot as far as I can see.
-    python3 -m build --wheel --no-isolation \
+    python3 -m build --wheel --no-isolation --skip-dependency-check \
       -Csetup-args="-Dcudapath_inc=$CUDA_HOME/include" \
       -Csetup-args="-Dcudapath_lib=$CUDA_HOME/lib64" \
       -Csetup-args="-Ddisable_gds_backend=true" \

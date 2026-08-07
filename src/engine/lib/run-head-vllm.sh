@@ -8,12 +8,13 @@ if [[ -z $SLURM_SUBMIT_DIR ]]; then
     exit 1
 fi
 
+
+IVLLM_JOB=${1:?must set job name}
+IVLLM_HEAD_NODE_IP=${2:?must set head node}
+
 # slurm srun node scripts are copied to a /var/run directory and executed from there
 # so we can;t rely on the script location to find the libraries
 source "$SLURM_SUBMIT_DIR/lib/utils.sh"
-
-IVLLM_JOB=${1?must set job name}
-IVLLM_HEAD_NODE_IP=${2?must set head node}
 
 restore_cache "$IVLLM_JOB"
 set_jit_caches "$IVLLM_JOB"

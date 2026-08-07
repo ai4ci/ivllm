@@ -3,7 +3,7 @@ metadata:
     created-by: Rob
     version: 0.4.1
     lifecycle: experimental
-min-vllm-version: "0.23.0"
+min-vllm-version: "0.26.0"
 idle-timeout: 60
 
 # vLLM config for zai-org/GLM-5.2-FP8 on Isambard AI
@@ -16,19 +16,13 @@ idle-timeout: 60
 # Quantization: FP8 (1 byte/param)
 #   Total weight footprint: ~743 GB
 #
-# Parallelism: Hybrid EP across 3 nodes
-#   TP=4 (within each node - shards attention layers)
-#   DP=3 (data parallel across 3 nodes)
-#   EP=12 (experts distributed across all 12 GPUs)
-#
 # KV Cache Offloading:
 #   1M context requires significant KV cache
 
 model: zai-org/GLM-5.2-FP8
 
-# Hybrid EP: TP=4, DP=3, EP=12 (3 nodes × 4 GPUs)
-tensor-parallel-size: 4
-data-parallel-size: 3
+tensor-parallel-size: 12
+distributed-executor-backend: ray
 enable-expert-parallel: true
 
 # MoE backend: deep_gemm for FP8 block-quantized experts
@@ -46,14 +40,9 @@ max-model-len: 262144
 
 # Memory tuning (70 GB usable per GPU)
 # 62 GB weights + 8 GB KV cache headroom
-gpu-memory-utilization: 0.85
+gpu-memory-utilization: 0.90
 max-num-seqs: 16
 max-num-batched-tokens: 16384
-
-# KV Offloading: UVA for GH200 unified memory
-# 900 GB/s NVLink-C2C bandwidth, zero-copy access
-cpu-offload-gb: 64
-offload-backend: uva
 
 # Chunked prefill for long context
 enable-chunked-prefill: true
@@ -63,7 +52,11 @@ speculative-config: '{"method": "mtp", "num_speculative_tokens": 5}'
 
 # Skip DeepGEMM warmup (faster startup)
 env:
-  VLLM_DEEP_GEMM_WARMUP: skip
+    VLLM_DEEP_GEMM_WARMUP: skip
+    IVLLM_DISABLE_FLASHINFER: 1
+    IVLLM_DEBUG_LEVEL: 3
+    IVLLM_RUNTIME_DEBUG: 1
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 1800
 
 # Parsers (GLM-5.2 custom)
 enable-auto-tool-choice: true
@@ -75,3 +68,5 @@ enable-prefix-caching: true
 
 # Multi-node compilation fix
 compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'
+
+

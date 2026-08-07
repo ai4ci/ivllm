@@ -48,7 +48,7 @@
 
 set -uo pipefail
 
-VLLM_VERSION=${1?"usage: $0 <vllm-version> (e.g. 0.25.1) — must already be installed via 'ivllm setup'"}
+VLLM_VERSION=${1:?"usage: $0 <vllm-version> (e.g. 0.25.1) — must already be installed via 'ivllm setup'"}
 ENGINE_LIB="$HOME/.local/bin/lib"
 
 hash_of() {

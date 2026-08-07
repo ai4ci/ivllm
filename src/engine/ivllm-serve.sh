@@ -139,8 +139,10 @@ if is_status "$IVLLM_JOB" "cancel"; then
     exit 1
 fi
 
+resources="${nGpus} GPUs"
+
 # Create the lockfile & fail if cannot get a lockfile.
-serverPort=$(create_status_pending "$IVLLM_JOB" "$model" "${idleTimeout:-30}") || exit 1
+serverPort=$(create_status_pending "$IVLLM_JOB" "$model" "${idleTimeout:-30}" "$resources") || exit 1
 
 echo ""
 echo "=================================="

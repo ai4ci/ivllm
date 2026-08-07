@@ -12,11 +12,13 @@
 # N.b. set the log in the wrapper script (sbatch --output and --error flags)
 # and most parameters
 
+IVLLM_JOB=${1:?must supply job name}
+IVLLM_GPUS_PER_NODE=${2:?must specify gpus per node}
+IVLLM_MEM_PER_NODE=${3:?must specify mem per node}
+
 source "$SLURM_SUBMIT_DIR/lib/utils.sh"
 
-IVLLM_JOB=${1?must supply job name}
-IVLLM_GPUS_PER_NODE=${2?must specify gpus per node}
-IVLLM_MEM_PER_NODE=${3?must specify mem per node}
+
 export RAY_PORT=6379
 
 export IVLLM_HEAD_NODE=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)

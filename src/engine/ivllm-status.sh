@@ -73,26 +73,27 @@ else
 
   else
 
-    FMT="%-8s %-10s %-8s %-20s %-8s %s\n"
+    FMT="%-10s %-10s %-9s %-12s %-20s %-12s %s\n"
 
     # Print table headers (tabs used as delimiters for column command)
-    printf "$FMT" "JOB" "STATUS" "USER" "MODEL" "UNTIL" "INFO"
-    printf "$FMT" "===" "======" "====" "=====" "=====" "===="
+    printf "$FMT" "JOB" "STATUS" "RESOURCES" "UNTIL" "INFO" "USER" "MODEL"
+    printf "$FMT" "===" "======" "=========" "=====" "====" "====" "====="
 
     # Loop through all status.json files in the hierarchy
     for status_file in "${status_files[@]}"; do
         # Ensure the file is not empty and contains valid JSON
         if [[ -s "$status_file" ]]; then
             jq -r '[
-                (.jobName // "N/A"),
-                (.status // "N/A"),
-                (.user // "N/A"),
-                (.model // "N/A"),
-                (.stopTime // "N/A"),
-                (.reason // "")
+                (.jobName),
+                (.status),
+                (.resources // "-"),
+                (if .stopTime then (.stopTime | sub("\\+00:00"; "") | strptime("%Y-%m-%dT%H:%M:%S") | strftime("%H:%M %d/%m")) else "N/A" end),
+                (.reason // "-"),
+                (.user // "-"),
+                (.model)
             ] | @tsv' "$status_file"
         fi
-    done | awk -F'\t' -v fmt="$FMT" '{printf fmt, $1, $2, $3, $4, $5, $6}'
+    done | awk -F'\t' -v fmt="$FMT" '{printf fmt, $1, $2, $3, $4, $5, $6, $7}'
 
   fi
 fi

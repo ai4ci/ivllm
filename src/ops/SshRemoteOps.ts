@@ -465,14 +465,20 @@ export class SshRemoteOps extends RemoteOps {
                 }
 
                 // Provide actionable hints based on common SSH outputs
-                if (
+                if (rawError.includes('keyboard-interactive')) {
+                    console.error(
+                        '💡 Hint: You need to cache your credentials with ssh-agent so that you can login to the server without authentication',
+                        '(e.g. ssh-add ~/.ssh/id_ed25519)',
+                    );
+                } else if (
                     rawError.includes('401') ||
                     rawError.includes('invalid_grant') ||
                     rawError.includes('token') ||
                     code == 255
                 ) {
                     console.error(
-                        '💡 Hint: Check your SSH keys. Do you need to run keycloak authentication (e.g. clifton auth)?',
+                        '💡 Hint: Check your SSH keys. Do you need to run keycloak authentication',
+                        '(e.g. clifton auth)?',
                     );
                 } else if (rawError.includes('Permission denied')) {
                     console.error(

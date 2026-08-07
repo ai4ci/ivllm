@@ -44,12 +44,16 @@ export IVLLM_GRP=$(stat "$IVLLM_PROJECTDIR" -c %g)
 umask 0002
 
 mkdir -p "$IVLLM_PROJECTDIR/model"
-chgrp "$IVLLM_GRP" "$IVLLM_PROJECTDIR/model"
-chmod g+rwXs "$IVLLM_PROJECTDIR/model"
+if [[ -O "$IVLLM_PROJECTDIR/model" ]]; then
+    chgrp "$IVLLM_GRP" "$IVLLM_PROJECTDIR/model"
+    chmod g+rwXs "$IVLLM_PROJECTDIR/model"
+fi
 
 mkdir -p "$IVLLM_PROJECTDIR/engine"
-chgrp "$IVLLM_GRP" "$IVLLM_PROJECTDIR/engine"
-chmod g+rwXs "$IVLLM_PROJECTDIR/engine"
+if [[ -O "$IVLLM_PROJECTDIR/engine" ]]; then
+    chgrp "$IVLLM_GRP" "$IVLLM_PROJECTDIR/engine"
+    chmod g+rwXs "$IVLLM_PROJECTDIR/engine"
+fi
 
 
 export IVLLM_TIME_FMT="${IVLLM_TIME_FMT:-+%Y-%m-%d %H:%M}"
@@ -61,6 +65,13 @@ export IVLLM_TARGET_ENDPOINTS=(
     "/v1/responses"
     "/v1/completions"
     "/v1/messages"
+)
+
+export IVLLM_CRASH_INDICATORS=(
+    "torch.OutOfMemoryError"
+    "EngineDeadError"
+    "WorkerProc hit an exception"
+    "CUDA error"
 )
 
 # ── Path helpers ───────────────────────────────────────────────────────────
@@ -408,7 +419,7 @@ get_job_config_exports() {
 # Usage: set_jit_caches
 set_jit_caches() {
     # Set VLLM and Triton JIT cache environment variables under the node-local directory.
-    job=${1?must set job name}
+    job=${1:?must set job name}
     local localdir=$(resolve_localdir "$job")
     export VLLM_CACHE_ROOT="$localdir/vllm"
     export EP_JIT_CACHE_DIR="$localdir/deep_ep_cache"
@@ -433,11 +444,14 @@ create_status_pending() {
     local job="$1"
     local model="$2"
     local idle_timeout="${3:-30}"
+    local resources="${4:-unknown}"
     local lockfile
     local server_port
+    local jobdir
 
+    jobdir="$(resolve_job_dir "$job")"
     lockfile=$(resolve_job_status "$job")
-    mkdir -p "$(resolve_job_dir "$job")"
+    mkdir -p "$jobdir"
 
     # Generate random high port for the vLLM server
     server_port=$(shuf -i 49152-65535 -n 1)
@@ -458,6 +472,10 @@ create_status_pending() {
         fi
     fi
 
+    # clear out old logs etc
+
+    rm -r "${jobdir:?must be not empty}/*"
+
     # Atomic create with noclobber
     (
         set -C
@@ -466,9 +484,10 @@ create_status_pending() {
             --arg model "$model" \
             --argjson server_port "$server_port" \
             --argjson idle_timeout "$idle_timeout" \
+            --arg res "$resources" \
             --arg req_time "$(date -Iseconds)" \
             --arg user "$(whoami)" \
-            '{status: "pending", jobName: $job_name, model: $model, serverPort: $server_port, requestedTime: $req_time, idleTimeout: $idle_timeout, user: $user}' \
+            '{status: "pending", jobName: $job_name, model: $model, serverPort: $server_port, requestedTime: $req_time, idleTimeout: $idle_timeout, user: $user, resources: $res}' \
             > "$lockfile"
     ) 2>/dev/null || {
         echo "[startup] ERROR: lockfile already exists for job $job" >&2
@@ -614,8 +633,8 @@ request_cancel() {
 # Usage: update_reason "$job" "$reason_text"
 update_reason() {
 
-    local job="${1?must supply job name}"
-    local reason="${2?must supply reason}"
+    local job="${1:?must supply job name}"
+    local reason="${2:?must supply reason}"
     local lockfile
 
     lockfile=$(resolve_job_status "$job")
@@ -638,7 +657,7 @@ is_status() {
     fi
     lockfile=$(resolve_job_status "${1}")
     [ ! -f "$lockfile" ] && return 1
-    jq -e --arg test "${2?must supply status}" 'has("status") and .status == $test' "$lockfile" > /dev/null 2>&1
+    jq -e --arg test "${2:?must supply status}" 'has("status") and .status == $test' "$lockfile" > /dev/null 2>&1
 }
 
 # Check if the slurm job exists (owned by current user).
@@ -657,7 +676,7 @@ is_cancellable() {
 # Usage: is_startable "$job"
 is_startable() {
     # Check existing status before starting job.
-    local job=${1?must supply job id}
+    local job=${1:?must supply job id}
     if is_status "$job" "pending"; then
         echo "ERROR: job $job is already submitted and waiting resources" >&2
         return 1
@@ -716,7 +735,7 @@ capture_job_diagnostics() {
 # Args: $1 — pid for the process; $2 - optional name for log message.
 # Usage: capture_job_diagnostics "$job"
 kill_pid() {
-    local pid=${1?must supply pid}
+    local pid=${1:?must supply pid}
     local name=${2:-process}
     # Kill vLLM process if still alive
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
@@ -741,7 +760,7 @@ wait_all() {
 # Return 0 (true) if process has died or is a zombie, 1 (false) if it is alive
 # Usage: if process_died $pid; then ... fi
 process_died() {
-    local pid=${1?must supply pid}
+    local pid=${1:?must supply pid}
     local stat_file="/proc/$pid/stat"
 
     # If the directory doesn't exist, the process is completely gone
@@ -765,8 +784,8 @@ process_died() {
 # actual vllm serve process); Must run in same shell as vllm process.
 # Usage: wait_report "$job" "$pid" "$node"
 wait_report() {
-    local job=$1
-    local pid=$2
+    local job=${1:?must provide job}
+    local pid=${2:?must provide pid}
     local node=${3:-0}
     local elapsed=0
     local tick_ms=100
@@ -859,7 +878,7 @@ tidy_up() {
             ;;
         250)
             echo "[shutdown] lockfile removed"
-            update_status_failed "$job" "lockfile missing" 300
+            update_status_failed "$job" "lockfile missing" 250
             capture_job_diagnostics "$job"
             ;;
         251)
@@ -869,7 +888,12 @@ tidy_up() {
             ;;
         252)
             echo "[shutdown] vllm failed to warmup"
-            update_status_failed "$job" "warmup failure" 302
+            update_status_failed "$job" "warmup failure" 252
+            capture_job_diagnostics "$job"
+            ;;
+        253)
+            echo "[shutdown] vllm monitor hung"
+            update_status_failed "$job" "slient crash detected" 253
             capture_job_diagnostics "$job"
             ;;
         0)
@@ -929,8 +953,8 @@ tidy_up() {
 #   EXIT → tidy_up with captured $?
 # Usage: setup_traps "$job"
 setup_traps() {
-    local job="${1?must supply job}"
-    local monitor="${2?must supply monitor pid}"
+    local job="${1:?must supply job}"
+    local monitor="${2:?must supply monitor pid}"
     shift 2
     local pids_string="$*" # Combines all remaining PID arguments into a space-separated string
     trap 'tidy_up "'"$job"'" 200 '"$monitor"' '"$pids_string"'' SIGUSR1   # SLURM timeout
@@ -1026,6 +1050,23 @@ monitor_head() {
             return 201
         fi
 
+        # Exit at any time (running or initialising if we detect a crash in logs)
+        local crash_patterns=()
+        for crash in "${IVLLM_CRASH_INDICATORS[@]}"; do
+            crash_patterns+=("-e" "$crash")
+        done
+
+        # Check for recent crash related messages
+        if tail -n 5000 "$log" 2>/dev/null | grep -q -F "${crash_patterns[@]}"; then
+            # a log message showed a crash. give it a chance to close itself.
+            echo "[head] monitor detected a crash in head log file."
+            sleep 60
+            echo "[head] monitor shutting down."
+            return 253
+        fi
+
+        # No crash marker detected - has vllm come up?
+
         # Still initialising — skip idle checks
         if [[ $status ==  "initialising" ]]; then
             if curl -sf "http://localhost:$server_port/health" > /dev/null 2>&1; then
@@ -1099,7 +1140,6 @@ monitor_head() {
             fi
         fi
 
-        sleep "$IVLLM_CHECK_INTERVAL_SECS"
     done
 
     echo "[head] monitor shutting down for job $job."
@@ -1151,7 +1191,7 @@ echo "============================================"
 #   [HH:MM:SS-node N] Cache: XK | RAM: YM | Top: proc1=ZM proc2=WK ...
 # Usage: report_memory "$job"
 report_memory() {
-      local job="$1"
+      local job="${1:?must provide job}"
       local localdir
       local node
 
@@ -1185,7 +1225,7 @@ report_memory() {
 
       (( debug_level < 2 )) && return 0
 
-            # Level 2+: py-spy stack dumps of vLLM/Ray worker processes, appended to a
+      # Level 2+: py-spy stack dumps of vLLM/Ray worker processes, appended to a
       # persistent per-node file under the shared job dir (NOT $localdir — that's
       # node-local tmpfs, invisible to other nodes and wiped by clear_localdir()
       # on shutdown, i.e. gone exactly when we'd want it post-mortem).
@@ -1195,6 +1235,9 @@ report_memory() {
           mkdir -p "$dumpdir"
           local dumpfile="$dumpdir/pyspy-node${node}.log"
           local dumped=0
+          local pid
+          local rss
+          local comm
 
           {
               echo "### $(date +%Y-%m-%dT%H:%M:%S) ###"
@@ -1223,8 +1266,8 @@ report_memory() {
 # ── JIT cache operations ──────────────────────────────────────────────────
 
 run_vllm_warmup() {
-  local MODEL_NAME="${1?must supply model}"
-  local PORT="${2?must supply server port}"
+  local MODEL_NAME="${1:?must supply model}"
+  local PORT="${2:?must supply server port}"
   local URL="http://localhost:${PORT}/v1/chat/completions"
   local RESPONSE_CODE
 

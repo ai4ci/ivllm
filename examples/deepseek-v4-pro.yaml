@@ -28,15 +28,10 @@ idle-timeout: 60
 
 model: deepseek-ai/DeepSeek-V4-Pro-DSpark
 
-# ❌ THIS CONFIG DOESN'T WORK - SHARED LAYERS WON'T FIT
-# tensor-parallel-size: 1
-# data-parallel-size: 4
-# enable-expert-parallel: true
-
-# ✅ MINIMUM VIABLE (requires 16 nodes!):
-tensor-parallel-size: 8
-data-parallel-size: 8
+# ✅ MINIMUM VIABLE (requires 4 nodes!):
+tensor-parallel-size: 16
 enable-expert-parallel: true
+distributed-backend-executor: ray
 
 # MoE backend: humming for W4A8 (FP4×FP8)
 moe-backend: humming
@@ -83,5 +78,7 @@ env:
 
 # Disable FlashInfer autotune
 attention-backend: TRITON_ATTN
-enable-flashinfer-autotune: false
+# This will not have been picked up by vllm as it suppresses : false in the options
+# enable-flashinfer-autotune: false
+kernel-config: '{"enable_flashinfer_autotune": false}'
 gdn-prefill-backend: triton

@@ -13,6 +13,8 @@ if [[ -z $SLURM_SUBMIT_DIR ]]; then
     exit 1
 fi
 
+IVLLM_JOB=${1:?must set job name}
+
 # slurm srun node scripts are copied to a /var/run directory and executed from there
 # so we can;t rely on the script location to find the libraries
 # this has almost certainly been run.
@@ -38,7 +40,6 @@ export RAY_RUNTIME_ENV_LOG_TO_DRIVER=1
 eval "$envExports"
 source "$vllmVersionDir/bin/activate"
 
-IVLLM_JOB=${1?must set job name}
 
 model=$(get_job_config_setting "$IVLLM_JOB" ".model")
 # modelPath=$(resolve_model_dir "$model")

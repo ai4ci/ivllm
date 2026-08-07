@@ -198,6 +198,7 @@ export interface LockfileV3 {
     stopTime?: string;
     reason?: string;
     exitCode?: number;
+    resources?: string;
 }
 
 /**

@@ -54,6 +54,10 @@
 #       assert_status "$(resolve_job_status job1)" "pending"
 #   '
 #
+# design/prototype/*.sh scripts are also reachable inside the sandbox, at
+# /work/prototype/<name>.sh — `source /work/prototype/ivllm-bench.sh` (say)
+# to unit test a prototype's functions before it's promoted to src/engine/.
+#
 # See design/testing.md for the full architecture writeup.
 
 SANDBOX_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,6 +65,14 @@ SANDBOX_TESTS_DIR="$(cd "$SANDBOX_LIB_DIR/.." && pwd)"
 SANDBOX_REPO_ROOT="$(cd "$SANDBOX_TESTS_DIR/../.." && pwd)"
 SANDBOX_ENGINE_SRC="$SANDBOX_REPO_ROOT/src/engine"
 SANDBOX_SHIMS_DIR="$SANDBOX_TESTS_DIR/shims"
+# Prototype scripts under design/prototype/ aren't part of src/engine yet
+# (see AGENTS.md: design/ scripts are instructional, not production) but
+# still need real, non-mocked sandbox testing to validate their bash logic
+# before promotion — bound separately at /work/prototype/ rather than
+# folded into the src/engine bind loop below, so it's obvious from a test
+# body which category a sourced script falls into. Missing file is not
+# fatal here (only tests that actually source it will notice).
+SANDBOX_PROTOTYPE_DIR="$SANDBOX_REPO_ROOT/design/prototype"
 
 if ! command -v bwrap >/dev/null 2>&1; then
     echo "FATAL: bwrap (bubblewrap) not found on PATH — install bubblewrap to run sandboxed bash tests" >&2
@@ -188,6 +200,10 @@ sandbox_run() {
         --ro-bind "$SANDBOX_TESTS_DIR/lib" /work/testlib
         --ro-bind "$SANDBOX_SHIMS_DIR" /work/shims
         --ro-bind "$SANDBOX_TESTS_DIR/fixtures" /work/fixtures
+    )
+    [[ -d "$SANDBOX_PROTOTYPE_DIR" ]] && args+=(--ro-bind "$SANDBOX_PROTOTYPE_DIR" /work/prototype)
+
+    args+=(
         --setenv HOME /work/home
         --setenv PATH "/work/shims:/usr/local/bin:/usr/bin:/bin$(_sandbox_extra_path_suffix)"
         --setenv IVLLM_PROJECTDIR /work/project

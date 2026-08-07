@@ -1,4 +1,5 @@
 import type { LockfileV3 } from './types.ts';
+import { format, isPast } from 'date-fns';
 
 /**
  * Format a single job's lockfile status as a single-row string.
@@ -8,13 +9,19 @@ import type { LockfileV3 } from './types.ts';
  * @returns Formatted row string
  */
 export function formatJobRow(job: LockfileV3): string {
+    const stop =
+        job.stopTime && !isPast(new Date(job.stopTime!))
+            ? format(new Date(job.stopTime!), 'HH:mm dd/MM')
+            : undefined;
+
     const parts: string[] = [
         job.jobName.padEnd(10),
-        job.status.padEnd(14),
-        (job.user ?? 'unknown').padEnd(12),
-        (job.model ?? 'unknown').padEnd(40),
-        (job.stopTime ?? '-').padEnd(25),
-        job.reason ?? '-',
+        job.status.padEnd(10).slice(0, 10),
+        (job.resources ?? '-').padEnd(9).slice(0, 9),
+        (stop ?? '-').padEnd(12),
+        (job.reason ?? '-').padEnd(12).slice(0, 12),
+        (job.user ?? 'unknown').padEnd(12).slice(0, 12),
+        job.model ?? 'unknown',
     ];
     return parts.join('  ').trimEnd();
 }
@@ -31,15 +38,18 @@ export function formatJobTable(jobs: LockfileV3[]): string {
     const header =
         'JOB'.padEnd(10) +
         '  ' +
-        'STATUS'.padEnd(14) +
+        'STATUS'.padEnd(10) +
+        '  ' +
+        'RESOURCES'.padEnd(9) +
+        '  ' +
+        'UNTIL'.padEnd(12) +
+        '  ' +
+        'INFO'.padEnd(12) +
         '  ' +
         'USER'.padEnd(12) +
         '  ' +
-        'MODEL'.padEnd(40) +
-        '  ' +
-        'UNTIL'.padEnd(25) +
-        '  ' +
-        'INFO';
+        'MODEL';
+
     const separator = '-'.repeat(header.length);
     const rows = jobs.map(formatJobRow);
     return [header, separator, ...rows].join('\n');

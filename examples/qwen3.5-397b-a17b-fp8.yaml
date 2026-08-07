@@ -57,7 +57,11 @@ enable-prefix-caching: true
 gdn-prefill-backend: "triton"
 moe-backend: triton             # Forces vLLM to use pre-compiled Triton MoE kernels
 attention-config: '{"backend":"TRITON_ATTN"}'
-enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
+
+# This will not have been picked up by vllm as it suppresses : false in the options
+# enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
+# it appears to be working without
+
 disable-custom-all-reduce: true
 
 # disable-custom-all-reduce only disables vLLM's own custom quick-allreduce

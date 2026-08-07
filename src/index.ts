@@ -490,7 +490,6 @@ async function cmdDiagnostics(
     jobName: string,
     options: { out?: string },
 ): Promise<void> {
-    console.clear();
     const config = loadCredentials();
     assertConfigured(config);
     const backend = getBackend(config);

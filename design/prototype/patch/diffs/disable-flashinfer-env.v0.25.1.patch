@@ -1,0 +1,42 @@
+--- a/vllm/model_executor/layers/fused_allreduce_gemma_rms_norm.py
++++ b/vllm/model_executor/layers/fused_allreduce_gemma_rms_norm.py
+@@ -14,6 +14,8 @@
+ numerically identical to the unfused model path.
+ """
+
++import os
++
+ import torch
+
+ from vllm.distributed.communication_op import tensor_model_parallel_all_reduce
+@@ -22,8 +24,11 @@
+     get_tensor_model_parallel_world_size,
+     get_tp_group,
+ )
++from vllm.logger import init_logger
+ from vllm.model_executor.layers.layernorm import GemmaRMSNorm
+
++logger = init_logger(__name__)
++
+ MiB = 1024 * 1024
+
+ # flashinfer fused all-reduce + RMSNorm is wired as a registered custom op in
+@@ -66,6 +71,18 @@
+
+ def _can_use_flashinfer(hidden_states: torch.Tensor, tp_size: int) -> tuple[bool, int]:
+     """Whether the flashinfer fused path applies; returns (ok, max_token_num)."""
++    # ivllm patch: IVLLM_DISABLE_FLASHINFER=1 unconditionally skips the fused
++    # allreduce+RMSNorm path, falling back to plain all_reduce + GemmaRMSNorm
++    # (numerically identical, per this module's own docstring). Opt-in per
++    # job via the yaml env: block, so other models/jobs sharing this venv are
++    # unaffected unless they explicitly set it too. See
++    # design/active-issues.md / design/prototype/patch/README.md.
++    if os.environ.get("IVLLM_DISABLE_FLASHINFER") == "1":
++        logger.info_once(
++            "IVLLM_DISABLE_FLASHINFER=1 — skipping flashinfer fused "
++            "allreduce+RMSNorm, using plain all_reduce + GemmaRMSNorm."
++        )
++        return False, 0
+     if (
+         flashinfer_trtllm_fused_allreduce_norm is None
+         or get_fi_ar_workspace is None

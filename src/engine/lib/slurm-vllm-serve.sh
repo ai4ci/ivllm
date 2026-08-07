@@ -13,9 +13,9 @@
 
 source "$SLURM_SUBMIT_DIR/lib/utils.sh"
 
-IVLLM_JOB=${1?must supply job name}
-IVLLM_GPUS_PER_NODE=${2?must specify gpus per node}
-IVLLM_MEM_PER_NODE=${3?must specify mem per node}
+IVLLM_JOB=${1:?must supply job name}
+IVLLM_GPUS_PER_NODE=${2:?must specify gpus per node}
+IVLLM_MEM_PER_NODE=${3:?must specify mem per node}
 
 export IVLLM_HEAD_NODE=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)
 export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
@@ -70,7 +70,9 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
         # (resolved once on the login node — see ivllm-serve.sh). Worker
         # nodes need their own explicit --output/--error here, or srun's
         # default forwards their stdout into that same node-0 file.
-        worker_log=$(resolve_job_dir "$IVLLM_JOB" "vllm.$count.log")
+        # worker_log=$(resolve_job_dir "$IVLLM_JOB" "vllm.$count.log")
+        # this is much harder to achieve in ray and it turns out better to have
+        # a single log to detect crashes in workers.
 
         srun \
             --overlap \
@@ -81,8 +83,6 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
             --cpus-per-gpu=64 \
             --ntasks-per-node=1 \
             --export=ALL \
-            --output="$worker_log" \
-            --error="$worker_log" \
             "$SLURM_SUBMIT_DIR/lib/run-worker-vllm.sh" \
             "$IVLLM_JOB" \
             "$IVLLM_HEAD_NODE_IP" \
