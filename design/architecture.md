@@ -100,6 +100,8 @@ limits of slurm permissions.
 
 ## Lockfile Protocol
 
+TODO: update to include abort state
+
 The lockfile (`status.json`) is the single source of truth for a job's state.
 It lives on the parallel filesystem, visible to all nodes. All parties
 (LOCAL, LOGIN, COMPUTE) communicate through it.
@@ -559,6 +561,8 @@ functionally equivalent vLLM runtimes. The container path:
 See ADR-114 (dual installation path) and ADR-115 (model recipe database).
 
 ### 2. Multiprocessing (MP) vs Ray for multi-node
+
+TODO: review as this is implemented now
 
 The `isambard_containers` project uses `--distributed-executor-backend mp`
 for multi-node vLLM — the vLLM-native multiprocessing backend. This is

@@ -28,20 +28,113 @@ no-op rather than an error (checked via a dry-run in both directions before
 touching anything).
 
 ```bash
-bash design/prototype/patch/apply-vllm-patch.sh 0.25.1 \
-    design/prototype/patch/diffs/skip-flashinfer-fusion-multinode.v0.25.1.patch
+bash design/prototype/patch/apply-vllm-patch.sh 0.26.0 \
+    design/prototype/patch/diffs/shm-broadcast-lost-notify-fix.v0.26.0.v1.patch
 
-bash design/prototype/patch/apply-vllm-patch.sh 0.25.1 \
-    design/prototype/patch/diffs/skip-flashinfer-fusion-multinode.v0.25.1.patch --revert
+bash design/prototype/patch/apply-vllm-patch.sh 0.26.0 \
+    design/prototype/patch/diffs/shm-broadcast-lost-notify-fix.v0.26.0.v1.patch --revert
 ```
+
+**Naming convention: `<descriptive-name>.v<vllm-version>.v<revision>.patch`.** Every patch file is versioned by filename, not edited in place — when a patch's content needs to change, save it as a new file with the revision number bumped (`...v1.patch` → `...v2.patch`) rather than overwriting the existing one. Superseded revisions and fully-retired patches move to `diffs/old/` (kept for reference, not deleted) rather than being removed outright.
+
+This exists because editing an already-applied patch file in place is genuinely dangerous: the dry-run idempotency check only compares the *current* file content against the *current* venv state, with no way to know an *older* version of that same file is what's actually installed. If new content partially overlaps old (some hunks match, some don't), *both* the forward and reverse dry-runs can fail, and the script falls back to printing `"already applied — nothing to do"` and exits without applying anything — silently leaving the venv in whatever incomplete state the old version left it in, with no error. Confirmed by direct testing while what's now `shm-broadcast-stuck-queue-diagnostics.v0.26.0.v2.patch` was still being developed (see `design/active-issues.md`). `apply-vllm-patch.sh` now also cross-checks the `.ivllm-patches-applied` manifest for *other* revisions of the same base name and warns if one's still recorded as applied — but reverting the old revision before applying a new one remains the correct sequence regardless; the warning is a safety net, not a substitute.
 
 Requires `$IVLLM_PROJECTDIR` to already be set — it sources `utils.sh` and
 reuses `resolve_vllm_version_dir()` rather than reconstructing the venv path
 itself, so it stays correct if that resolution logic ever changes.
 
-### `diffs/disable-flashinfer-env.v0.25.1.patch`
+### `diffs/shm-broadcast-stuck-queue-diagnostics.v0.26.0.v2.patch`
 
-**Supersedes `skip-flashinfer-fusion-multinode.v0.25.1.patch` for MiniMax-M3**
+**Purpose**: a diagnostic-only patch, not a fix — enriches the existing
+`"No available shared memory broadcast block found"` warning (which already
+fires in every GLM-5.2-INT4 hang, but says nothing about *why*) with the
+actual ring-buffer metadata state at the moment it fires. Every prior pyspy
+capture this investigation left one question unanswered: was the response
+actually written and something just failed to notice (a "lost notification"
+shape — see `shm-broadcast-lost-notify-fix.v0.26.0.v1.patch` above), or was it
+never written at all (pointing at a genuinely stuck collective upstream, in
+NCCL/GPU work, not the IPC layer)? This patch answers that directly, every
+time the warning fires, with zero overhead in the non-hanging case (the new
+logging is gated behind the exact same existing warning condition).
+
+**What it does**:
+- On the reader side (`acquire_read`, hit by `EngineCore` waiting on worker
+  responses *and* by workers waiting on the request-broadcast queue from
+  `EngineCore`): logs `written_flag` (0 = the writer never got there; 1 =
+  data is ready but this reader hasn't consumed it) and this reader's own
+  read-flag, plus a label identifying *which* queue.
+- On the writer side (`acquire_write`): logs `written_flag` and every
+  reader's flag for the block it's trying to reuse, plus how many readers
+  are outstanding.
+- Tags each `MessageQueue` in `multiproc_executor.py` with a human-readable
+  `_ivllm_debug_label` (`"request_broadcast"`, `"response[rank=N]"`) at the
+  one place `rank` is already naturally available when the queues are
+  constructed — `shm_broadcast.py` itself has no rank concept, so without
+  this the diagnostic log would only be able to name a queue by its raw
+  shared-memory segment name (still logged as a fallback if the attribute
+  isn't set, so this degrades gracefully for any caller that doesn't tag
+  its queues).
+
+**Status (2026-08-11)**: prepared and verified to apply cleanly
+(`git apply --check`) against `vendor/vllm-0.26.0`; not yet tested against a
+real hang. Safe to apply alongside `shm-broadcast-lost-notify-fix.v0.26.0.v1.patch`
+— they touch overlapping but non-conflicting regions of the same functions.
+Grep job logs for `[ivllm-diag]` to find the new lines.
+
+**v2 (2026-08-12)**: the first real run showed `queue=psm_<hex>` (the raw
+shared-memory segment name) instead of a friendly label — `RayExecutorV2`
+builds its own `rpc_broadcast_mq`/`response_mqs` independently of
+`MultiprocExecutor`'s `__init__` (different code path, same base class), so
+the v1 labeling in `multiproc_executor.py` never ran for this project's
+actual deployment (which always uses the Ray executor). v2 adds the same
+`_ivllm_debug_label` tagging to `ray_executor_v2.py`'s own construction
+sites. Verified to still apply cleanly, alone and stacked with
+`shm-broadcast-lost-notify-fix.v0.26.0.v1.patch`.
+
+### `diffs/shm-broadcast-lost-notify-fix.v0.26.0.v1.patch`
+
+**Problem it works around**: the GLM-5.2-AWQ-INT4 multi-node hang investigation
+(see `design/active-issues.md`) traced every observed hang to
+`vllm/distributed/device_communicators/shm_broadcast.py` — `EngineCore` or a
+worker waiting indefinitely for a `shm_broadcast` response that, from the
+other side's perspective, was already sent. Checking `vendor/vllm`'s full git
+history found this exact file had two relevant bugfixes land upstream
+*after* `0.26.0` (this project's currently-installed version) but *before*
+`0.27.0`/`0.27.1` (both already tagged upstream as of 2026-08-11):
+
+- [`10c75477b`](https://github.com/vllm-project/vllm/commit/10c75477b) (#45224) — an idle
+  reader waiting indefinitely with no active warning/deadline could get an
+  unbounded poll timeout on the ZMQ notify socket, with no periodic fallback
+  recheck of the actual shared-memory flag. If that one wake-up notification
+  is ever lost, the reader hangs forever even though the data was already
+  correctly written. Fixed by capping every wait at a new
+  `SHM_READER_RECHECK_INTERVAL_MS = 5000` regardless of state. Same commit
+  also wraps the read-flag-setting code in `try`/`finally`, so an exception
+  while a caller processes a dequeued buffer (e.g. handling an aborted
+  request) can no longer permanently strand that reader's slot as "not read."
+- [`48aa8d8d7`](https://github.com/vllm-project/vllm/commit/48aa8d8d7) (#41357) — a sign
+  bug: a deadline computation going slightly negative produced a negative
+  timeout passed to `zmq.Socket.poll()`, which treats negative timeouts as
+  *block indefinitely* (libzmq's own `-1` convention) rather than *already
+  expired*. Fixed via `max(0, ...)` clamping.
+
+**What the patch does**: cherry-picks both commits' changes onto the
+installed `0.26.0` tree (built by cherry-picking both onto a `v0.26.0`
+worktree of `vendor/vllm` and diffing the result — both applied with zero
+conflicts). Touches `shm_broadcast.py` (both fixes) and
+`v1/executor/multiproc_executor.py` (the second fix's other call site).
+
+**Status (2026-08-11)**: prepared and verified to apply cleanly
+(`git apply --check`) against `vendor/vllm-0.26.0`; not yet tested against a
+real hang. This is the current leading theory and immediate next test for
+the GLM-5.2-INT4 hang — see `design/active-issues.md` for the full
+evidence chain (including a related, still-unconfirmed weak-memory-ordering
+angle in the same file, upstream issue
+[`#27858`](https://github.com/vllm-project/vllm/issues/27858)).
+
+### `diffs/disable-flashinfer-env.v0.25.1.v1.patch`
+
+**Supersedes `old/skip-flashinfer-fusion-multinode.v0.25.1.patch` for MiniMax-M3**
 now that the remaining crash (see `design/active-issues.md`) is confirmed
 independent of allreduce backend — no need for node-count logic in vLLM
 itself when the real fix is "don't use flashinfer's fused path for this
@@ -63,7 +156,10 @@ subject to the boolean-`false`-dropping bug documented in
 in the job's env-var dump in the log either way, and logs an explicit
 `info_once` line when it actually takes effect.
 
-### `diffs/skip-flashinfer-fusion-multinode.v0.25.1.patch`
+### `diffs/old/skip-flashinfer-fusion-multinode.v0.25.1.patch` (archived, superseded)
+
+Moved to `old/` — superseded by `disable-flashinfer-env.v0.25.1.v1.patch`
+above, kept for reference only. Not meant to be applied going forward.
 
 **Problem it works around**: `hybrid-trtllm.sh` (below) fixes `trtllm`
 selection for the case where the TP group is node-local but the *deployment*

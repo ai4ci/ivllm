@@ -63,7 +63,6 @@ tensor-parallel-size: 1
 
 - **Hardware**: Requires fast CPU-GPU interconnect (NVLink-C2C on GH200)
 - **vLLM version**: ≥ 0.6.0 (OffloadConfig introduced in this version)
-- **CLI only**: `--cpu-offload-gb` is a CLI argument, NOT a YAML config key
 
 ### When to Use
 

@@ -32,6 +32,13 @@
 # $IVLLM_PROJECTDIR to already be set (same as the rest of the engine scripts)
 # — sources utils.sh to reuse resolve_vllm_version_dir() rather than
 # reconstructing the venv path here.
+#
+# Maintains a plain-text manifest of currently-applied patches at
+# <vllm_version_dir>/.ivllm-patches-applied (one basename per line) — outside
+# site-packages so it's clearly ivllm's own bookkeeping, not vLLM code. Any
+# job-launch script can check this to announce in its own log whether the
+# vLLM venv it's about to run is patched, and with what, without vLLM itself
+# needing to know or care.
 
 usage() {
     echo "Usage: $0 <vllm-version> <patch-file> [--revert]" >&2
@@ -99,20 +106,42 @@ main() {
         exit 1
     fi
 
+    local manifest="$vllm_version_dir/.ivllm-patches-applied"
+    local patch_name
+    patch_name="$(basename "$patch_file")"
+
+    # Patches are named <descriptive-name>.v<vllm-version>.v<revision>.patch —
+    # warn if a *different* revision of this same patch is already recorded
+    # as applied, since reapplying a changed .patch file under a fresh
+    # revision suffix over an older applied revision is exactly the scenario
+    # the dry-run check below can't detect on its own (see README.md).
+    local base_name="${patch_name%.v[0-9]*.patch}"
+    if [[ -f "$manifest" ]]; then
+        local other_revisions
+        other_revisions=$(grep -F "${base_name}.v" "$manifest" 2>/dev/null | grep -vxF "$patch_name" || true)
+        if [[ -n "$other_revisions" ]]; then
+            echo "[patch] WARNING: a different revision of this same patch is already recorded as applied:" >&2
+            echo "$other_revisions" | sed 's/^/[patch]   /' >&2
+            echo "[patch] revert it first if it's still applied, to avoid a partial/mixed state." >&2
+        fi
+    fi
+
     if (( revert == 1 )); then
         if (( currently_applied != 0 )); then
-            echo "[patch] $(basename "$patch_file") is not currently applied to vLLM $version — nothing to revert."
+            echo "[patch] $patch_name is not currently applied to vLLM $version — nothing to revert."
             exit 0
         fi
         patch "${reverse_args[@]}" <"$patch_file"
-        echo "[patch] reverted $(basename "$patch_file") from vLLM $version at $site_packages"
+        [[ -f "$manifest" ]] && grep -vxF "$patch_name" "$manifest" > "$manifest.tmp" && mv "$manifest.tmp" "$manifest"
+        echo "[patch] reverted $patch_name from vLLM $version at $site_packages"
     else
         if (( currently_clean != 0 )); then
-            echo "[patch] $(basename "$patch_file") is already applied to vLLM $version — nothing to do."
+            echo "[patch] $patch_name is already applied to vLLM $version — nothing to do."
             exit 0
         fi
         patch "${forward_args[@]}" <"$patch_file"
-        echo "[patch] applied $(basename "$patch_file") to vLLM $version at $site_packages"
+        grep -qxF "$patch_name" "$manifest" 2>/dev/null || echo "$patch_name" >> "$manifest"
+        echo "[patch] applied $patch_name to vLLM $version at $site_packages"
     fi
 }
 
