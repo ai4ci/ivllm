@@ -5,9 +5,10 @@
 # Sources by run_head_vllm.sh and run_worker_vllm.sh. Resolves NVHPC root,
 # sets CUDA_HOME, CC/CXX compilers, LD_LIBRARY_PATH, NCCL vars, and
 # Slingshot 11 fabric tuning. Designed to be sourced multiple times safely.
-# cuda.sh - Common settings for installation and runtime of vllm
-
-# Sets up CUDA_HOME, CC, CXX, CUDA_VERSION, NVHPC_ROOT
+# Core environment variables that are required for everything to work.
+# Sets up CUDA_HOME, CC, CXX, CUDA_VERSION, NVHPC_ROOT.
+# These flags should not need to know the vllm version, and are setup before
+# vllm install.
 
 [[ -v IVLLM_CUDA ]] && return
 export IVLLM_CUDA=
@@ -15,6 +16,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 
 # ── Module setup ──────────────────────────────────────────────────────
 module purge
+module load brics/default
+module load brics/userenv
 module load brics/nccl
 module load libfabric
 
@@ -46,7 +49,7 @@ export NVCC_APPEND_FLAGS="-arch=sm_90a"
 export OMP_NUM_THREADS=16
 export TORCHINDUCTOR_COMPILE_THREADS=4
 export VLLM_USE_PRECOMPILED=1
-# These are probably vllm compile time only flags and amybe have no runtime effect:
+# These are probably vllm compile time only flags and maybe have no runtime effect:
 export MAX_JOBS=8
 export NVCC_THREADS=4
 
@@ -66,6 +69,10 @@ export CPLUS_INCLUDE_PATH="$CUDA_HOME/include:${CPLUS_INCLUDE_PATH:-}"
 # flashinfer JIT kernels include cublasLt.h which is in math_libs, not cuda/include.
 export CPATH="$NVHPC_ROOT/math_libs/$CUDA_VERSION/include:${CPATH:-}"
 
+# ── Triton flags:
+# ─────────────────────────────────
+export TRITON_PTXAS_PATH="$NVHPC_ROOT/cuda/12.9/bin/ptxas"
+
 # ── NVSHMEM slingshot support
 # ──────────────────────────────────────
 # From: https://docs.nvidia.com/nvshmem/archives/nvshmem-260/pdf/NVSHMEM-Release-Notes.pdf
@@ -80,12 +87,18 @@ export NVSHMEM_REMOTE_TRANSPORT="libfabric"
 export NVSHMEM_LIBFABRIC_PROVIDER="cxi"
 export NVSHMEM_DISABLE_CUDA_VMM=1
 
+# ── Network interface selection
+# ──────────────────────────────────────
+export GLOO_SOCKET_IFNAME=hsn0
+export NCCL_SOCKET_IFNAME=hsn
+# Force PyTorch's internal TensorPipe layer to follow Gloo to the exact index
+export TP_SOCKET_IFNAME=hsn0
+
 # ── UCCL slingshot support
 # ──────────────────────────────────────
 export RDMA_ROOT=$(resolve_rdma_dir)
 export USE_LIBFABRIC_CXI=1
 export USE_DMABUF=1
-export EP_DISABLE_GIN=1
 export UCCL_SOCKET_IFNAME=hsn0
 
 # To avoid possible hangs, we suggest setting env variables explicitly including NCCL_IB_GID_INDEX, UCCL_IB_GID_INDEX, NCCL_SOCKET_IFNAME, and UCCL_SOCKET_IFNAME:
@@ -115,4 +128,7 @@ export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:$RDMA_ROOT/lib:$NVHPC_ROOT/cuda/$CUDA
 export VLLM_ENABLE_CUDA_COMPATIBILITY=1
 export VLLM_CUDA_COMPATIBILITY_PATH="$NVHPC_ROOT/cuda/$CUDA_VERSION/compat"
 
-
+# ── HF Models flags:
+# ─────────────────────────────────
+# shellcheck disable=2119
+export HF_HOME="$(resolve_model_dir)/hf"

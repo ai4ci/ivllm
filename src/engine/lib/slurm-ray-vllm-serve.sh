@@ -64,7 +64,7 @@ source "$vllmVersionDir/bin/activate"
         --nodes=1 \
         --gpus="$IVLLM_GPUS_PER_NODE" \
         --mem="$IVLLM_MEM_PER_NODE" \
-        --cpus-per-gpu=64 \
+        --cpus-per-gpu=72 \
         --ntasks-per-node=1 \
         --export=ALL \
         "$SLURM_SUBMIT_DIR/lib/ray-setup.sh" \
@@ -83,6 +83,7 @@ source "$vllmVersionDir/bin/activate"
     IVLLM_WORKER_NODES=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | tail -n+2)
     for IVLLM_WORKER in $IVLLM_WORKER_NODES; do
 
+        sleep 2             # give slurm a moment to compose itself
         export IVLLM_WORKER_NODE_IP=$(dig +short "$IVLLM_WORKER")
 
         srun \
@@ -91,7 +92,7 @@ source "$vllmVersionDir/bin/activate"
             --nodes=1 \
             --gpus="$IVLLM_GPUS_PER_NODE" \
             --mem="$IVLLM_MEM_PER_NODE" \
-            --cpus-per-gpu=64 \
+            --cpus-per-gpu=72 \
             --ntasks-per-node=1 \
             --export=ALL \
             "$SLURM_SUBMIT_DIR/lib/ray-setup.sh" \
@@ -106,7 +107,7 @@ source "$vllmVersionDir/bin/activate"
         setup_traps "$IVLLM_JOB" "$IVLLM_MONITOR_PID" "${SRUN_PIDS[@]}"
 
         echo "[serve-$count] ray worker start srun process $IVLLM_WORKER_PID on $IVLLM_WORKER_NODE_IP"
-        count+=1          # Increment
+        count+=1            # Increment
 
     done
 
@@ -120,7 +121,6 @@ source "$vllmVersionDir/bin/activate"
         --nodes=1 \
         --gpus="$IVLLM_GPUS_PER_NODE" \
         --mem="$IVLLM_MEM_PER_NODE" \
-        --cpus-per-gpu=64 \
         --ntasks-per-node=1 \
         --export=ALL \
         "$SLURM_SUBMIT_DIR/lib/ray-run-vllm.sh" \

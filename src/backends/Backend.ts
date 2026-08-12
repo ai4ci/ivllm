@@ -1,4 +1,9 @@
-import type { CloseableEventEmitter, LockfileV3, Credentials } from '../types';
+import type {
+    CloseableEventEmitter,
+    LockfileV3,
+    Credentials,
+    BenchmarkStatus,
+} from '../types';
 
 // ====== Beckend class definition =======
 
@@ -50,7 +55,11 @@ export abstract class Backend {
      * @param job — Job name
      * @param force — If true, kill via scancel; otherwise write cancel to lockfile
      */
-    abstract requestCancel(job: string, force: boolean): Promise<void>;
+    abstract requestCancel(
+        job: string,
+        force: boolean,
+        abort: boolean,
+    ): Promise<void>;
 
     /**
      * Start a new vLLM job or restart a stopped one.
@@ -191,5 +200,55 @@ export abstract class Backend {
     async isStarting(job: string): Promise<boolean> {
         const status = await this.getStatusFlag(job);
         return status === 'pending' || status === 'initialising';
+    }
+
+    /**
+     * Submit a benchmark comparison — upload configs, launch ivllm-bench.sh
+     * detached (fire-and-forget; does NOT wait for jobs to reach "running",
+     * let alone complete).
+     * @param comparison — Comparison name; becomes the remote directory name
+     *   under `${projectDir}/engine/comparisons/<comparison>/`
+     * @param configs — Local paths to one or more vLLM YAML configs
+     * @param options.time — SLURM `--time` per job (passed through to
+     *   ivllm-bench.sh's own `IVLLM_BENCH_TIME`), default matches ADR-118 (2h)
+     */
+    requestBenchmark(
+        comparison: string, // eslint-disable-line
+        configs: string[], // eslint-disable-line
+        time?: string, // eslint-disable-line
+    ): Promise<void> {
+        throw new Error('Benchmarking is not enabled on this backend');
+    }
+
+    /**
+     * Poll a benchmark comparison's progress — cheap, safe to call often.
+     * @param comparison — Comparison name
+     * @returns Parsed benchmarking_status.json
+     * @throws Error if the comparison directory / status file doesn't exist
+     *   (e.g. wrong name, or submit failed before the first write)
+     */
+
+    getBenchmarkStatus(
+        comparison: string, // eslint-disable-line
+    ): Promise<BenchmarkStatus> {
+        throw new Error('Benchmarking is not enabled on this backend');
+    }
+
+    /**
+     * Fetch a benchmark comparison's results, only if complete.
+     * @param comparison — Comparison name
+     * @param localDest — Local destination directory
+     * @returns A discriminated result — `ready: false` carries the current
+     *   status snapshot instead of throwing, since "still running" is an
+     *   expected state for a fire-and-forget job, not an exceptional one
+     */
+    fetchBenchmarkResults(
+        comparison: string, // eslint-disable-line
+        localDest: string, // eslint-disable-line
+    ): Promise<
+        | { ready: true; path: string }
+        | { ready: false; status: BenchmarkStatus }
+    > {
+        throw new Error('Benchmarking is not enabled on this backend');
     }
 }

@@ -8,12 +8,11 @@
 # preamble.sh — Isambard GH200 environment setup for vLLM GPU workloads.
 #
 # Source this at the top of any SLURM script before starting vLLM. It sets
-# all required environment variables for:
-#   - NVIDIA HPC SDK (CUDA 12.9 forward compatibility)
-#   - NCCL + Slingshot 11 (CXI fabric) tuning
-#   - Compiler selection for JIT kernels (gcc-native)
+# all default environment variables for vllm:
 #   - Triton/FlashInfer/DeepGEMM compilation flags
 #   - vLLM runtime overrides
+#   - vLLM specific slingshot tuning
+#
 
 source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 
@@ -25,13 +24,6 @@ export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 # ──────────────────────────────────────────────
 # N.B. this is needed to ensure that vllm logs time stamps for events so that we can query for inactivity.
 export VLLM_LOGGING_CONFIG_PATH="$(dirname "${BASH_SOURCE[0]}")/vllm_logs.json"
-
-# ── Network interface selection
-# ──────────────────────────────────────
-export GLOO_SOCKET_IFNAME=hsn0
-export NCCL_SOCKET_IFNAME=hsn
-# Force PyTorch's internal TensorPipe layer to follow Gloo to the exact index
-export TP_SOCKET_IFNAME=hsn0
 
 # ── NCCL + Slingshot 11 tuning
 # ──────────────────────────────────────
@@ -72,7 +64,7 @@ export NCCL_CUMEM_ENABLE=0
 # N.B. unproven value
 export NCCL_IB_PCI_RELAXED_ORDERING=1
 
-# ── vLLM networking and compilation overrides
+# ── vLLM compilation overrides
 # ──────────────────────────────────────────────
 export VLLM_FLASHINFER_ALLREDUCE_BACKEND=trtllm  # Force standard NCCL for Slingshot stability
 export VLLM_ENGINE_ITERATION_TIMEOUT_S=1800       # Prevent timeouts during multi-node graph setup
@@ -82,8 +74,8 @@ export VLLM_ALLREDUCE_USE_SYMM_MEM=0             # Disable broken experimental s
 # ─────────────────────────────────
 # See: https://github.com/deepseek-ai/DeepEP:
 # /opt/cray/libfabric/1.22.0/bin/fi_info -p cxi on login.
+export EP_DISABLE_GIN=1
 export EP_NIC_NAME="cxi0"
-export USE_LIBFABRIC_CXI=1
 
 # ── DeepGEMM flags:
 # ─────────────────────────────────
@@ -98,10 +90,6 @@ export VLLM_USE_DEEP_GEMM_E8M0=0
 # These are unvalidated:
 export FLASHINFER_HEAD_DIMS="128"
 export FLASHINFER_POS_ENCODING_MODES="0"
-
-# ── Triton flags:
-# ─────────────────────────────────
-export TRITON_PTXAS_PATH="$NVHPC_ROOT/cuda/12.9/bin/ptxas"
 
 # ── Torch inductor flags:
 # ─────────────────────────────────

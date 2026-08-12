@@ -1,4 +1,4 @@
-import type { LockfileV3 } from './types.ts';
+import type { LockfileV3, BenchmarkStatus } from './types.ts';
 import { format, isPast } from 'date-fns';
 
 /**
@@ -68,4 +68,8 @@ export function compareVersions(a: string, b: string): number {
         if (diff !== 0) return diff;
     }
     return 0;
+}
+
+export function formatBenchStatus(status: BenchmarkStatus) {
+    return JSON.stringify(status, null, 2);
 }

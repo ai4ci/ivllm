@@ -24,7 +24,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$here/lib/utils.sh"
 
 IVLLM_JOB=""
-# IVLLM_PARTITION="--partition=interactive --reservation=interactive"
+# IVLLM_PARTITION="--partition=interactive --reservation=interactive "
 IVLLM_PARTITION="--reservation=interactive"
 IVLLM_MAXTIME="08:00:00"
 IVLLM_USE_RAY=0
@@ -35,7 +35,7 @@ while getopts "j:t:bh" opt; do
     case $opt in
         j) IVLLM_JOB="$OPTARG" ;;
         t) IVLLM_MAXTIME="$OPTARG" ;;
-        b) unset IVLLM_PARTITION ;;
+        b) IVLLM_PARTITION="" ;;
         h) ivllm-serve_usage ;;
         \?) echo "Error: Invalid option -$OPTARG" >&2; ivllm-serve_usage ;;
         :)  echo "Error: Option -$OPTARG requires an argument" >&2; ivllm-serve_usage ;;
@@ -96,10 +96,10 @@ if [[ $nNodes == 1 ]]; then
     echo "[serve] single node job: default distributed-backend-executor (mp)"
 else
     if [[ -n $distExec && $distExec == "ray" ]]; then
-        echo "[serve] multi-node job: distributed-backend-executor ray"
+        echo "[serve] multi-node job: distributed-backend-executor: $distExec"
         IVLLM_USE_RAY=1
     else
-        echo "[serve] multi-node job: default distributed-backend-executor (mp)"
+        echo "[serve] multi-node job: default distributed-backend-executor (${distExec:-mp})"
         IVLLM_USE_RAY=0
     fi
 fi
@@ -157,6 +157,13 @@ echo "  Gpus per node: $nGpusPerNode"
 echo "  Memory per node: $memValue"
 echo "  Max wall time: $maxTime"
 echo "  Target vllm version: $vllmVersion"
+patchesManifest="$(resolve_vllm_version_dir "$vllmVersion")/.ivllm-patches-applied"
+if [[ -s "$patchesManifest" ]]; then
+    echo "  Applied vLLM patches: $(paste -sd, "$patchesManifest")"
+else
+    echo "  Applied vLLM patches: none"
+fi
+
 echo "=== Custom environment exports ==="
 echo "$envExports" | awk '{print "  " $0}'
 echo "=== Stripped configuration ======="
@@ -165,17 +172,20 @@ echo "=================================="
 
 pushd "$here" || exit 1
 
+# TODO: costruct sbatch command using an array so that partition flags
+# and exclusive flags are tidier:
 if [[ $IVLLM_USE_RAY == 0 ]]; then
 
-    #shellcheck disable=2068
+    #shellcheck disable=2086,2068
     slurmJobId=$(sbatch \
         --parsable \
         --job-name "$IVLLM_JOB" \
         --nodes=$nNodes \
         --gpus-per-node=$nGpusPerNode \
-        --cpus-per-gpu=64 \
-        --ntasks-per-node=1 "$IVLLM_PARTITION" \
+        --cpus-per-gpu=72 \
+        --ntasks-per-node=1 $IVLLM_PARTITION \
         --mem=$memValue $exclusiveFlag \
+        --network=disable_rdzv_get \
         --time="$maxTime" \
         --output="$IVLLM_LOG" \
         --error="$IVLLM_LOG" \
@@ -186,15 +196,16 @@ if [[ $IVLLM_USE_RAY == 0 ]]; then
 
 else
 
-    #shellcheck disable=2068
+    #shellcheck disable=2086,2068
     slurmJobId=$(sbatch \
         --parsable \
         --job-name "$IVLLM_JOB" \
         --nodes=$nNodes \
+        --cpus-per-gpu=72 \
         --gpus-per-node=$nGpusPerNode \
-        --cpus-per-gpu=64 \
-        --ntasks-per-node=1 "$IVLLM_PARTITION" \
+        --ntasks-per-node=1 $IVLLM_PARTITION \
         --mem=$memValue $exclusiveFlag \
+        --network=disable_rdzv_get \
         --time="$maxTime" \
         --output="$IVLLM_LOG" \
         --error="$IVLLM_LOG" \

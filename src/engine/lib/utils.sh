@@ -87,6 +87,8 @@ resolve_localdir() {
     local job="$1"
     local id=$(id -u)
 
+    # TODO: brics/userenv creates a $LOCALDIR and a $SCRATCHDIR env variable.
+    # how does the setting here relate to what is set by brics?
     unset LOCALDIR
     export LOCALDIR="/local/user/$id"
     mkdir -p "$LOCALDIR"
@@ -221,19 +223,42 @@ resolve_job_dir() {
     echo "$out"
 }
 
-# Resolve the path to a per-job JIT cache tarball (~/.cache/ivllm/<job>/jit-cache.tar.gz).
-# Caches are user-specific because cache files contain hard-coded paths that cause
+# Resolve the path to a per-job JIT cache tarball (~/.cache/ivllm/<job>/jit-cache-<hash>.tar.gz).
+# Caches are user-specific because cache files contain hard-coded paths.
 # permission issues if shared between users.
 # Args: $1 — job name.
 # Creates the parent cache directory if it doesn't exist.
-# Returns: path to the cache tarball via stdout. Does not check if the file exists.
+# Returns: path to the cache tarball via stdout. Does not check if the file
+# exists, but does make parent directories
 # Usage: local cache=$(resolve_job_jit_cache "$job")
 resolve_job_jit_cache() {
-    # Resolve the path to a per-job JIT cache tarball (~/.cache/ivllm/<job>/jit-cache.tar.gz).
-    # Caches are user-specific because cache files contain hard-coded paths.
-    # Returns: path to the cache tarball via stdout.
-    mkdir -p "$HOME/.cache/ivllm/$1/"
-    echo "$HOME/.cache/ivllm/$1/jit-cache.tar.gz"
+    local job=${1:?must define job}
+
+    local model dp tp pp ep pp_node minVllmVersion vllmVersion hash
+
+    minVllmVersion=$(get_job_config_setting "$job" ".min-vllm-version")
+    vllmVersion=$(select_closest_version "$minVllmVersion")
+
+    model=$(get_job_config_setting "$job" ".model")
+
+    dp=$(get_job_config_setting "$job" ".data-parallel-size")
+    tp=$(get_job_config_setting "$job" ".tensor-parallel-size")
+    pp=$(get_job_config_setting "$job" ".pipeline-parallel-size")
+
+    if [[ ${pp:-1} -gt 1 ]]; then
+        nodes_per_stage=$(( SLURM_JOB_NUM_NODES / pp ))
+        pp_node=$(( SLURM_NODEID / nodes_per_stage ))
+    else
+        pp_node="0"
+    fi
+
+    ep=$(get_job_config_setting "$job" ".enable-expert-parallel")
+
+
+    hash=$(echo "$IVLLM_PROJECTDIR $vllmVersion $model ${dp:-1} ${tp:-1} ${pp_node} ${ep:-false}" | md5sum | cut -f1 -d " ")
+
+    mkdir -p "$HOME/.cache/ivllm/$job/"
+    echo "$HOME/.cache/ivllm/$job/jit-cache-$hash.tar.gz"
 }
 
 # Resolve the path to a job's lockfile (status.json) under the job directory.
@@ -295,7 +320,6 @@ resolve_stripped_job_config() {
         | yq d - data-parallel-rpc-port \
         | yq d - data-parallel-start-rank \
         | yq d - config \
-        | yq d - numa-bind \
         | yq d - served-model-name \
         | yq d - distributed-backend-executor \
         | yq d - metadata > "$output_file"
@@ -606,9 +630,11 @@ update_status_failed() {
 # to detect. Can be run from LOGIN node or any client.
 # Write "cancel" to the lockfile to request graceful shutdown.
 # Sets .status to "cancel" (for monitor to detect). Exits 1 if lockfile missing.
+# $1: the job $2 optional "cancel" or "abort" (abort captures diagnostics)
 # Usage: request_cancel "$job"
 request_cancel() {
     local job="$1"
+    local type="${2:-cancel}"
     local lockfile
 
     lockfile=$(resolve_job_status "$job")
@@ -619,11 +645,19 @@ request_cancel() {
     fi
 
     if is_status "$job" "pending"; then
-        echo "[cancel] pending job $job cancelled."
-        tidy_up "$job" 201
+        if [[ $type == "cancel" ]]; then
+            echo "[cancel] pending job $job cancelled."
+            tidy_up "$job" 201
+        else
+            echo "[cancel] pending job $job aborted."
+            tidy_up "$job" 254
+        fi
     else
-        echo "[cancel] requesting cancel for job $job."
-        jq '.status = "cancel"' "$lockfile" > "$lockfile.tmp" && mv "$lockfile.tmp" "$lockfile"
+        echo "[cancel] requesting $type for job $job."
+        jq \
+            --arg type "$type" \
+            '.status = $type' \
+            "$lockfile" > "$lockfile.tmp" && mv "$lockfile.tmp" "$lockfile"
     fi
 }
 
@@ -896,6 +930,11 @@ tidy_up() {
             update_status_failed "$job" "slient crash detected" 253
             capture_job_diagnostics "$job"
             ;;
+        254)
+            echo "[shutdown] received user abort request"
+            update_status_failed "$job" "user abort" 254
+            capture_job_diagnostics "$job"
+            ;;
         0)
             # This is the result of a bottom up signal. This should not happen.
             echo "[shutdown] vLLM terminated unexpectedly"
@@ -1050,6 +1089,12 @@ monitor_head() {
             return 201
         fi
 
+        # User requested abort
+        if [[ $status ==  "abort" ]]; then
+            echo "[head] user abort request detected"
+            return 254
+        fi
+
         # Exit at any time (running or initialising if we detect a crash in logs)
         local crash_patterns=()
         for crash in "${IVLLM_CRASH_INDICATORS[@]}"; do
@@ -1084,6 +1129,14 @@ monitor_head() {
 
                 echo "[startup] sending warmup request..."
                 while (( attempt <= max_retries )); do
+
+                    local tmp_status=$(get_job_status_setting "$job" ".status")
+                    # User requested cancel
+                    if [[ ! $tmp_status == "initialising" ]]; then
+                        warmup_ok=1
+                        echo "[head] status $tmp_status during warmup"
+                        break;
+                    fi
 
                     if run_vllm_warmup "$model" "$server_port"; then
                         warmup_ok=0
@@ -1268,12 +1321,24 @@ report_memory() {
 run_vllm_warmup() {
   local MODEL_NAME="${1:?must supply model}"
   local PORT="${2:?must supply server port}"
+  local LONG_CONTEXT_TOKENS="${3:-40000}"
   local URL="http://localhost:${PORT}/v1/chat/completions"
   local RESPONSE_CODE
+
+  curl -s -o /dev/null -w "%{http_code}" -X POST "$URL" \
+    --max-time 60 \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"model\": \"$MODEL_NAME\",
+      \"messages\": [{\"role\": \"user\", \"content\": \"Ping\"}],
+      \"max_tokens\": 5,
+      \"n\": 1
+    }"
 
   # 1. Warm up batch_memcpy_kernel via multiple parallel streams/messages
   echo "[startup] warming up multi-sequence memory kernels..."
   RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$URL" \
+    --max-time 20 \
     -H "Content-Type: application/json" \
     -d "{
       \"model\": \"$MODEL_NAME\",
@@ -1293,6 +1358,7 @@ run_vllm_warmup() {
   LARGE_CONTENT=$(python3 -c 'print("verify context " * 512)')
 
   RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$URL" \
+    --max-time 10 \
     -H "Content-Type: application/json" \
     -d "{
       \"model\": \"$MODEL_NAME\",
@@ -1305,8 +1371,51 @@ run_vllm_warmup() {
     return 1
   fi
 
-  echo "[startup] warmup complete. All major JIT variations compiled."
-  return 0
+  # 3. Warm up long-context code paths (chunked-prefill beyond max-num-batched-tokens,
+  # any length-gated compile range / sparse-attention path, decode over a large KV
+  # cache) — these are only exercised once real context crosses this size, and if
+  # warmup never covers it, the first time it happens is mid-conversation instead
+  # of during this safe, pre-serving window. See design/active-issues.md.
+  echo "[startup] warming up long-context ($LONG_CONTEXT_TOKENS-token) code paths..."
+  local body_file
+  body_file=$(mktemp)
+  python3 -c "
+import json, sys
+# Numbered tokens rather than a repeated phrase: most BPE tokenizers don't
+# collapse a long run of distinct small integers the way they would a
+# repeated word, so token count tracks word count much more predictably.
+text = ' '.join(str(i) for i in range($LONG_CONTEXT_TOKENS))
+print(json.dumps({
+    'model': '$MODEL_NAME',
+    'messages': [{'role': 'user', 'content': text}],
+    'max_tokens': 16,
+}))
+" > "$body_file"
+
+    local response
+    response=$(curl -s -w '\n%{http_code}' -X POST "$URL" \
+      --max-time 30 \
+      -H "Content-Type: application/json" \
+      --data @"$body_file")
+    RESPONSE_CODE=$(echo "$response" | tail -n1)
+    rm -f "$body_file"
+
+    if [ "$RESPONSE_CODE" -ne 200 ]; then
+      echo "[startup] WARNING: long-context warmup failed with HTTP status: $RESPONSE_CODE" >&2
+      return 1
+    fi
+
+    # Log the actual achieved prompt_tokens so the target can be tuned against
+    # this model's real tokenizer rather than the word-count estimate above.
+    local achieved
+    achieved=$(echo "$response" | head -n -1 | python3 -c '
+import json,sys
+print(json.load(sys.stdin).get("usage",{}).get("prompt_tokens","?"))
+' 2>/dev/null)
+    echo "[startup] long-context warmup achieved prompt_tokens=$achieved (target words=$LONG_CONTEXT_TOKENS)"
+
+    echo "[startup] warmup complete. All major JIT variations compiled."
+    return 0
 }
 
 # Restore the JIT compilation cache from shared storage to local tmpfs.
@@ -1326,8 +1435,10 @@ restore_cache() {
     if [ -f "$cachetar" ]; then
         echo "[cache] restoring JIT cache from shared storage..."
         tar xzf "$cachetar" --no-same-permissions -C "$localdir" 2>/dev/null && \
-            echo "[cache] cache restored" || \
+            echo "[cache] cache restored to $localdir" || \
             echo "[cache] cache corrupt — recompiling"
+    else
+        echo "[cache] nothing to restore, new cache in $localdir"
     fi
 }
 
@@ -1347,20 +1458,29 @@ save_cache() {
     localdir=$(resolve_localdir "$job")
 
     if (( SLURM_NODEID == 0 )); then
-        echo "[cache] archiving JIT cache to shared storage..."
+        echo "[cache] archiving JIT cache to user storage: $cachetar"
 
 #         chgrp -R "$IVLLM_GRP" "$localdir"
 #         chmod g+rwXs "$localdir" 2>/dev/null || true
+#
+        rm "${cachetar}.tmp" 2>/dev/null || true
 
-        tar czf "${cachetar}.tmp" \
-            --owner=0 --group=0 \
-            --mode='g+rwX,o-rwx' \
-            -C "$localdir" . 2>/dev/null && \
-            mv "$cachetar.tmp" "$cachetar" && \
-            chgrp "$IVLLM_GRP" "$cachetar" && \
-            chmod 664 "$cachetar" && \
-            echo "[cache] saved: $(du -sh "$cachetar" | cut -f1)" || \
-            echo "[cache] failed to save JIT cache"
+        # delay write to allow caches to finish.
+        sleep 5
+
+        tar czf "${cachetar}.tmp" --owner=0 --group=0 --mode='g+rwX,o-rwx' -C "$localdir" .
+        local tar_status=$?
+
+        # tolerate some changes during tar operation due to
+        # slow
+        if (( tar_status <= 1 )); then
+            mv "$cachetar.tmp" "$cachetar"
+            chgrp "$IVLLM_GRP" "$cachetar"
+            chmod 664 "$cachetar"
+            echo "[cache] saved: $(du -sh "$cachetar" | cut -f1)"
+        else
+            echo "[cache] failed to save JIT cache (exit $tar_status)"
+        fi
     fi
 }
 

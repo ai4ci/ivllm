@@ -7,10 +7,12 @@ import {
     assertConfigured,
     saveCredentials,
 } from './config.ts';
-import { formatJobRow, formatJobTable } from './utils.ts';
+import { formatJobRow, formatJobTable, formatBenchStatus } from './utils.ts';
 import type { CloseableEventEmitter } from './types.ts';
 import { sleep } from 'bun';
 import { isLocalPortInUse } from './local-ops.ts';
+import path from 'path';
+import fs from 'fs';
 
 // Assign globally across Node.js/Browser using the universal globalThis object
 const { version } = await import('../package.json');
@@ -54,9 +56,10 @@ when graceful shutdown fails or the monitor is unresponsive.`,
         )
         .option(
             '--force',
-            'Use slurm scancel directly instead of graceful cancel',
+            'use slurm scancel directly instead of graceful cancel',
             false,
         )
+        .option('--abort', 'abort the job capturing diagnostics', false)
         .action(cmdCancel);
 
     program
@@ -117,6 +120,45 @@ If the job doesn't exist, creates it and starts it.`,
         .option('--out <path>', 'local destination directory')
         .action(cmdDiagnostics);
 
+    const bench = program
+        .command('bench')
+        .description(
+            '[experimental] Benchmark and compare vLLM configurations',
+        );
+
+    bench
+        .command('submit')
+        .description('Submit a set of vLLM configs as a benchmark comparison')
+        .argument(
+            '<comparison>',
+            'name or config directory for this comparison run, e.g. qwen35',
+        )
+        .argument(
+            '<configs...>',
+            'one or more vLLM YAML config files with distinctive names, e.g. tp4-pp2.yaml, tp8.yaml, ... if non provided defaults to all yaml files in comparison directory',
+        )
+        .option('--time <duration>', 'SLURM time limit per job as <hh:mm:ss>')
+        .action(cmdBenchSubmit);
+
+    bench
+        .command('status')
+        .description('Check progress of a benchmark comparison')
+        .argument(
+            '<comparison>',
+            'comparison name or config directory from `ivllm bench submit`',
+        )
+        .action(cmdBenchStatus);
+
+    bench
+        .command('results')
+        .description('Fetch results of a completed benchmark comparison')
+        .argument('<comparison>', 'comparison name or config directory')
+        .argument(
+            '[outDir]',
+            'local directory to copy results into (defaults to `<comparison>/result`)',
+        )
+        .action(cmdBenchResults);
+
     await program.parseAsync(process.argv);
 }
 
@@ -131,7 +173,7 @@ If the job doesn't exist, creates it and starts it.`,
  */
 async function cmdCancel(
     jobName: string,
-    options: { force: boolean },
+    options: { force: boolean; abort: boolean },
 ): Promise<void> {
     // Load and validate credentials
     const config = loadCredentials();
@@ -139,7 +181,7 @@ async function cmdCancel(
 
     assertConfigured(config);
     const backend = getBackend(config);
-    await backend.requestCancel(jobName, options.force);
+    await backend.requestCancel(jobName, options.force, options.abort);
 
     // 1. Global Intercept Cleanup Handler
     const cleanupAndExit = async () => {
@@ -356,6 +398,12 @@ async function cmdConnect(
             );
         }
 
+        if (status === 'abort') {
+            throw new Error(
+                `[connect] ERROR: job has been aborted, and is in process of shutting down.`,
+            );
+        }
+
         // Process is no longer starting. May have failed
         if (status === '' || status === 'failed' || status === 'stopped') {
             throw new Error(
@@ -495,6 +543,94 @@ async function cmdDiagnostics(
     const backend = getBackend(config);
     const localPath = await backend.fetchDiagnostics(jobName, options.out);
     console.log(`✓ Diagnostics saved to: ${localPath}`);
+}
+
+/**
+ * Benchmark job submit handler.
+ *
+ * Submits a benchmarking job
+ * @param comparison - a comparison name or directory - used to identify the comparison job
+ * @param configs — an array of vllm configurations to benchmark job-1.yaml, may be empty
+ * @param options.time — A hours to run each comparison e.g. "02:00:00"
+ */
+async function cmdBenchSubmit(
+    comparison: string,
+    configs: string[],
+    options: { time?: string },
+): Promise<void> {
+    const config = loadCredentials();
+    if (configs.length == 0) {
+        if (fs.existsSync(comparison)) {
+            configs = fs.globSync('*.yaml', { cwd: comparison });
+            if (configs.length == 0) {
+                throw new Error(`no vllm yaml files found in ${comparison}`);
+            } else {
+                comparison = path.basename(comparison);
+                console.log(`found ${configs.length} configs in ${comparison}`);
+            }
+        } else {
+            throw new Error(
+                'no vllm config files given and comparison is not a directory',
+            );
+        }
+    }
+    assertConfigured(config);
+    const backend = getBackend(config);
+    await backend.requestBenchmark(comparison, configs, options.time);
+    console.log(`✓ Benchmaring run submitted: ${comparison}`);
+}
+
+/**
+ * Benchmark job check status.
+ *
+ * Downloads status for a benchmarking.
+ * @param comparison - a comparison name or directory - used to identify the comparison job
+ *
+ */
+async function cmdBenchStatus(comparison: string): Promise<void> {
+    const config = loadCredentials();
+    assertConfigured(config);
+    const backend = getBackend(config);
+    const result = await backend.getBenchmarkStatus(comparison);
+    comparison = path.basename(comparison);
+    if (!result.complete) {
+        console.log(`Comparison '${comparison}' is in progress:`);
+        console.log(formatBenchStatus(result));
+    } else {
+        console.log(`Comparison '${comparison}' is complete:`);
+        console.log(
+            `use ivllm bench results ${comparison} <out-dir> to retrieve`,
+        );
+    }
+}
+
+/**
+ * Benchmark job fetch results.
+ *
+ * Downloads status and results for a benchmarking job .
+ * @param comparison - a comparison name or directory - used to identify the comparison job
+ * @param outDir - a directory to write results to - defaults to <comparison>/result
+ */
+async function cmdBenchResults(
+    comparison: string,
+    outDir?: string,
+): Promise<void> {
+    const config = loadCredentials();
+    assertConfigured(config);
+    const backend = getBackend(config);
+    if (!outDir) {
+        outDir = path.join(comparison, 'result');
+    }
+    fs.mkdirSync(outDir);
+    comparison = path.basename(comparison);
+    const result = await backend.fetchBenchmarkResults(comparison, outDir);
+    if (!result.ready) {
+        console.log(`Comparison '${comparison}' is not finished yet:`);
+        console.log(formatBenchStatus(result.status));
+        process.exitCode = 1; // distinguishable from a real error for scripting
+        return;
+    }
+    console.log(`✓ Results saved to: ${result.path}`);
 }
 
 main();

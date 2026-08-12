@@ -11,6 +11,7 @@ ivllm_cancel_usage() {
     echo ""
     echo "Options:"
     echo "  -j job      The name of the job to start."
+    echo "  -a          Abort the job and register as failed."
     echo "  -f          Force removal of lockfile and scancel of job."
     echo "  -h          Show this help message"
     exit 1
@@ -22,12 +23,14 @@ source "$here/lib/utils.sh"
 
 export IVLLM_JOB=""
 export IVLLM_FORCE=""
+export IVLLM_ABORT="cancel"
 
 OPTIND=1
-while getopts "j:fh" opt; do
+while getopts "j:fah" opt; do
     case $opt in
         j) IVLLM_JOB="$OPTARG" ;;
         f) IVLLM_FORCE=true ;;
+        a) IVLLM_ABORT="abort" ;;
         h) ivllm_cancel_usage ;;
         \?) echo "Error: Invalid option -$OPTARG" >&2; ivllm_cancel_usage ;;
         :)  echo "Error: Option -$OPTARG requires an argument" >&2; ivllm_cancel_usage ;;
@@ -69,19 +72,26 @@ if [[ -f $lockfile ]]; then
 
             echo "[shutdown] shutting down job $IVLLM_JOB with status: $status"
             echo "[shutdown] requesting automatic cancel for $IVLLM_JOB"
-            request_cancel "$IVLLM_JOB"
+            request_cancel "$IVLLM_JOB" "$IVLLM_ABORT"
 
         elif [[ $owner != $(whoami) ]]; then
 
             echo "[shutdown] not possible to force cancel job owned by $owner: $IVLLM_JOB with status $status" >&2
             echo "[shutdown] requesting automatic cancel for $IVLLM_JOB"
-            request_cancel "$IVLLM_JOB"
+            request_cancel "$IVLLM_JOB" "$IVLLM_ABORT"
 
         else
 
             echo "[shutdown] force cancel job: $IVLLM_JOB with status $status"
+            if [[ $type == "cancel" ]]; then
+            echo "[cancel] job $IVLLM_JOB force cancelled."
+                tidy_up "$IVLLM_JOB" 201
+            else
+                echo "[cancel] job $IVLLM_JOB force aborted."
+                tidy_up "$IVLLM_JOB" 254
+            fi
             if [[ -n "$slurmJobId" ]]; then
-                scancel "$slurmJobId" || echo "ERROR: failed to force cancel slurm job: $slurmJobId" >&2
+                scancel "$slurmJobId" || echo "WARNING: could not scancel slurm job: $slurmJobId it may be already dead" >&2
             fi
             rm -f "$lockfile"
 

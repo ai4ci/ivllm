@@ -3,6 +3,7 @@ import type {
     LockfileV3,
     Credentials,
     EnvVarEntry,
+    BenchmarkStatus,
 } from '../types';
 import { Backend } from './Backend';
 import { SshRemoteOps } from '../ops/SshRemoteOps';
@@ -140,11 +141,15 @@ export class IsambardBareMetalBackend extends Backend {
         return out.stdout;
     }
 
-    async requestCancel(job: string, force: boolean): Promise<void> {
+    async requestCancel(
+        job: string,
+        force: boolean,
+        abort: boolean,
+    ): Promise<void> {
         const remoteEngine = await this.getRemoteEngine();
         await this.bootstrap();
         const { stdout, exitCode } = await this.ops.runRemote(
-            `${remoteEngine}/ivllm-cancel.sh -j "${job}"${force ? ' -f' : ''}`,
+            `${remoteEngine}/ivllm-cancel.sh -j "${job}"${force ? ' -f' : ''}${abort ? ' -a' : ''}`,
             { env: this.envs, silent: false },
         );
 
@@ -274,4 +279,80 @@ export class IsambardBareMetalBackend extends Backend {
     //         { env: this.envs, silent: true },
     //     );
     // }
+
+    private remoteComparisonDir(comparison: string): string {
+        return `${this.getRemoteHome()}/ivllm/benchmark/${comparison}`;
+    }
+
+    override async requestBenchmark(
+        comparison: string,
+        configs: string[],
+        time?: string,
+    ): Promise<void> {
+        await this.bootstrap();
+        const remoteEngine = await this.getRemoteEngine();
+        const remoteDir = this.remoteComparisonDir(comparison);
+
+        // Upload every config — same copyFile call requestStart() already uses
+        // for a single config, just once per file here.
+        for (const config of configs) {
+            if (!fs.existsSync(config)) {
+                throw new Error(`no configuration file found at: ${config}`);
+            }
+            const remoteConfig = `${remoteDir}/${path.basename(config)}`;
+            await this.ops.copyFile(config, remoteConfig);
+        }
+
+        // Detached launch — see ivllm-bench.sh's own "Fire-and-forget client
+        // contract" comment block for why (no GPU work of its own, can run for
+        // hours, must survive this SSH command returning).
+        const timeEnv = time ? ` IVLLM_BENCH_TIME="${time}"` : '';
+        const launch =
+            `nohup${timeEnv} ${remoteEngine}/ivllm-bench.sh -c "${remoteDir}" ` +
+            `> "${remoteDir}/orchestrator.log" 2>&1 < /dev/null & disown; echo started`;
+
+        const { stdout, exitCode } = await this.ops.runRemote(launch, {
+            env: this.envs,
+            silent: false,
+        });
+
+        if (exitCode !== 0 || !stdout.includes('started')) {
+            throw new Error(
+                `benchmark submit failed for '${comparison}' (exit ${exitCode}): ${stdout}`,
+            );
+        }
+    }
+
+    override async getBenchmarkStatus(
+        comparison: string,
+    ): Promise<BenchmarkStatus> {
+        await this.bootstrap();
+        const remoteDir = this.remoteComparisonDir(comparison);
+        const { stdout, exitCode } = await this.ops.runRemote(
+            `cat "${remoteDir}/benchmarking_status.json"`,
+            { env: this.envs, silent: true },
+        );
+        if (exitCode !== 0) {
+            throw new Error(
+                `no status found for comparison '${comparison}' — check the name, or that submit succeeded`,
+            );
+        }
+        return JSON.parse(stdout) as BenchmarkStatus;
+    }
+
+    override async fetchBenchmarkResults(
+        comparison: string,
+        localDest: string,
+    ): Promise<
+        | { ready: true; path: string }
+        | { ready: false; status: BenchmarkStatus }
+    > {
+        const status = await this.getBenchmarkStatus(comparison);
+        if (!status.complete) {
+            return { ready: false, status };
+        }
+        const remoteDir = `${this.remoteComparisonDir(comparison)}/results`;
+        await this.ops.copyDirectory(localDest, remoteDir, 'down');
+        return { ready: true, path: localDest };
+    }
 }

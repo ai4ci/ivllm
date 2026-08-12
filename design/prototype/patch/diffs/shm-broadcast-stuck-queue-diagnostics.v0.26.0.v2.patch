@@ -1,0 +1,80 @@
+diff --git a/vllm/distributed/device_communicators/shm_broadcast.py b/vllm/distributed/device_communicators/shm_broadcast.py
+index 43e066c44..68d1ef67d 100644
+--- a/vllm/distributed/device_communicators/shm_broadcast.py
++++ b/vllm/distributed/device_communicators/shm_broadcast.py
+@@ -581,6 +581,17 @@ class MessageQueue:
+                         logger.info(
+                             LONG_WAIT_TIME_LOG_MSG, VLLM_RINGBUFFER_WARNING_INTERVAL
+                         )
++                        label = getattr(
++                            self, "_ivllm_debug_label", self.buffer.shared_memory.name
++                        )
++                        logger.info(
++                            "[ivllm-diag] writer stuck queue=%s written_flag=%d "
++                            "read_flags=%s (need all %d set to reuse this slot)",
++                            label,
++                            metadata_buffer[0],
++                            list(metadata_buffer[1:]),
++                            self.buffer.n_reader,
++                        )
+                         n_warning += 1
+
+                     continue
+@@ -705,6 +716,17 @@ class MessageQueue:
+                         logger.info(
+                             LONG_WAIT_TIME_LOG_MSG, VLLM_RINGBUFFER_WARNING_INTERVAL
+                         )
++                        label = getattr(
++                            self, "_ivllm_debug_label", self.buffer.shared_memory.name
++                        )
++                        logger.info(
++                            "[ivllm-diag] reader stuck queue=%s local_reader_rank=%d "
++                            "written_flag=%d own_read_flag=%d",
++                            label,
++                            self.local_reader_rank,
++                            metadata_buffer[0],
++                            metadata_buffer[self.local_reader_rank + 1],
++                        )
+
+                     continue
+                 # found a block that is not read by this reader
+diff --git a/vllm/v1/executor/multiproc_executor.py b/vllm/v1/executor/multiproc_executor.py
+index 7633ca89c..a85a0114c 100644
+--- a/vllm/v1/executor/multiproc_executor.py
++++ b/vllm/v1/executor/multiproc_executor.py
+@@ -154,6 +154,7 @@ class MultiprocExecutor(Executor):
+                 max_chunk_bytes=max_chunk_bytes,
+                 connect_ip=mq_connect_ip,
+             )
++            self.rpc_broadcast_mq._ivllm_debug_label = "request_broadcast"
+             scheduler_output_handle = self.rpc_broadcast_mq.export_handle()
+         # Create workers
+         context = get_mp_context()
+@@ -218,6 +219,7 @@ class MultiprocExecutor(Executor):
+                         ]
+                         assert remote_message_queue is not None
+                         self.response_mqs.append(remote_message_queue)
++                    self.response_mqs[-1]._ivllm_debug_label = f"response[rank={rank}]"
+
+             # Ensure message queues are ready. Will deadlock if re-ordered
+             # Must be kept consistent with the WorkerProc.
+diff --git a/vllm/v1/executor/ray_executor_v2.py b/vllm/v1/executor/ray_executor_v2.py
+index 33c386515..ddff60033 100644
+--- a/vllm/v1/executor/ray_executor_v2.py
++++ b/vllm/v1/executor/ray_executor_v2.py
+@@ -345,6 +345,7 @@ class RayExecutorV2(MultiprocExecutor):
+             max_chunk_bytes=max_chunk_bytes,
+             connect_ip=ray.util.get_node_ip_address(),
+         )
++        self.rpc_broadcast_mq._ivllm_debug_label = "request_broadcast"
+         scheduler_output_handle = self.rpc_broadcast_mq.export_handle()
+
+         # Step 5: Spawn RayWorkerProc actors into PG bundles (deferred init).
+@@ -459,6 +460,7 @@ class RayExecutorV2(MultiprocExecutor):
+             self.response_mqs.append(
+                 MessageQueue.create_from_handle(result["handle"], 0)
+             )
++            self.response_mqs[-1]._ivllm_debug_label = f"response[rank={i}]"
+
+         # Step 9: Start run() before wait_until_ready() to avoid
+         # deadlock — workers send subscriptions inside run().

@@ -45,7 +45,7 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
         --nodes=1 \
         --gpus="$IVLLM_GPUS_PER_NODE" \
         --mem="$IVLLM_MEM_PER_NODE" \
-        --cpus-per-gpu=64 \
+        --cpus-per-gpu=72 \
         --ntasks-per-node=1 \
         --export=ALL \
         "$SLURM_SUBMIT_DIR/lib/run-head-vllm.sh" \
@@ -64,6 +64,7 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
     IVLLM_WORKER_NODES=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | tail -n+2)
     for IVLLM_WORKER in $IVLLM_WORKER_NODES; do
 
+        sleep 2             # give slurm a moment to compose itself
         export IVLLM_WORKER_NODE_IP=$(dig +short "$IVLLM_WORKER")
 
         # Node 0's output already lands in the job's own --output/--error
@@ -80,7 +81,7 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
             --nodes=1 \
             --gpus="$IVLLM_GPUS_PER_NODE" \
             --mem="$IVLLM_MEM_PER_NODE" \
-            --cpus-per-gpu=64 \
+            --cpus-per-gpu=72 \
             --ntasks-per-node=1 \
             --export=ALL \
             "$SLURM_SUBMIT_DIR/lib/run-worker-vllm.sh" \
@@ -95,7 +96,7 @@ export IVLLM_HEAD_NODE_IP=$(dig +short "$IVLLM_HEAD_NODE")
         setup_traps "$IVLLM_JOB" "$IVLLM_MONITOR_PID" "${SRUN_PIDS[@]}"
 
         echo "[serve-$count] vllm worker srun process $IVLLM_WORKER_PID on $IVLLM_WORKER_NODE_IP"
-        count+=1          # Increment
+        count+=1            # Increment
 
     done
 

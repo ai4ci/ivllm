@@ -33,6 +33,9 @@ cleanup() {
     exit 0
 }
 
+echo "[startup] ray node setup: job running $IVLLM_JOB, rank $IVLLM_NODE_RANK"
+echo "[startup] ray node ip: $IVLLM_WORKER_NODE_IP, head node is $IVLLM_HEAD_NODE_IP"
+
 trap cleanup SIGINT SIGTERM
 
 restore_cache "$IVLLM_JOB"

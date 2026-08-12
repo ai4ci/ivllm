@@ -157,7 +157,8 @@ export type LockfileState =
     | 'running'
     | 'failed'
     | 'stopped'
-    | 'cancel';
+    | 'cancel'
+    | 'abort';
 
 /**
  * Full lockfile schema for the v3 `status.json` format.
@@ -218,4 +219,28 @@ export interface VllmConfigMetadata {
     targetVllmVersion?: string;
     /** Free-text description of what this config is for */
     description?: string;
+}
+
+// Benchmarking ------
+
+/** Per-job status inside a BenchmarkStatus snapshot. */
+export interface BenchmarkJobStatus {
+    status: string;           // LockfileV3.status values, or "unknown"
+    reason: string | null;
+}
+
+/** Parsed benchmarking_status.json — see ivllm-bench.sh's own doc comment
+ *  for the authoritative schema; this type must stay in sync with it. */
+export interface BenchmarkStatus {
+    pid: number;
+    updated: string;          // ISO8601 UTC
+    complete: boolean;        // true once EVERY job has a terminal status
+    counts: {
+        pending: number;
+        initialising: number;
+        running: number;
+        stopped: number;
+        failed: number;
+    };
+    jobs: Record<string, BenchmarkJobStatus>;
 }
