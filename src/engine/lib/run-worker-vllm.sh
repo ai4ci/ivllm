@@ -25,10 +25,6 @@ vllmVersion=$(select_closest_version "$minVllmVersion")
 vllmVersionDir=$(resolve_vllm_version_dir "$vllmVersion")
 
 envExports=$(get_job_config_exports "$IVLLM_JOB")
-strippedConfig=$(resolve_stripped_job_config "$IVLLM_JOB")
-
-model=$(get_job_config_setting "$IVLLM_JOB" ".model")
-serverPort=$(get_job_status_setting "$IVLLM_JOB" ".serverPort")
 dp=$(get_job_config_setting "$IVLLM_JOB" ".data-parallel-size")
 
 totalDp=${dp:-1}
@@ -44,26 +40,21 @@ startRank=$(( IVLLM_NODE_RANK * localDp ))
 
 # TODO: node binding...
 # Issue detecting nodes when running a 1 or 2 GPU job. In any other job the
-# nodes will be full GPU node.
+# nodes will be full GPU node. As far as I can see this is not a real issue as
+# the binding happens correctly at the slurm level.
 #numaBindNodes="[${CUDA_VISIBLE_DEVICES:?...}]"
 
-IVLLM_ARGS=(
-#    --numa-bind-nodes "$numaBindNodes"
-    --headless
-    --config "$strippedConfig"
-    --port "$serverPort"
-    --served-model-name "$model" "default" "$IVLLM_JOB"
-)
+# Sets model name, ports, profiling etc.
+IVLLM_ARGS=()
+baseline_vllm_args "$IVLLM_JOB" IVLLM_ARGS
 
-# Scenarios involving multiple physical machines
-# n.b. this maybe where --numa-bind lives?
-if [ "$nNodes" -gt 1 ]; then
-    IVLLM_ARGS+=(
-        --nnodes "$nNodes"
-        --node-rank "$IVLLM_NODE_RANK"
-        --master-addr "$IVLLM_HEAD_NODE_IP"
-    )
-fi
+# All worker scenarios involve multiple physical machines
+IVLLM_ARGS+=(
+    --headless
+    --nnodes "$nNodes"
+    --node-rank "$IVLLM_NODE_RANK"
+    --master-addr "$IVLLM_HEAD_NODE_IP"
+)
 
 # Scenarios deploying Data Parallelism (including EP)
 if [ "$totalDp" -gt 1 ]; then
@@ -82,6 +73,7 @@ source "$SLURM_SUBMIT_DIR/lib/vllm-env.sh"
 
 # Evaluate env blocks in yaml file last to override defaults.
 eval "$envExports"
+set_debugging_env "$IVLLM_JOB" "$IVLLM_NODE_RANK"
 
 # echo "=== Selected environment exports ==="
 # env | grep -E "VLLM_|RAY_|NCCL_|FI_|NVHPC|CUDA_|LD_CONFIG|CPATH|PATH|SLURM_|TRITON" | sort
@@ -105,5 +97,5 @@ stdbuf -oL -eL vllm serve "${IVLLM_ARGS[@]}" &
 
 echo "[serve-$IVLLM_NODE_RANK] initialised worker $IVLLM_NODE_RANK for $IVLLM_JOB"
 
-wait_report "$IVLLM_JOB" "$IVLLM_WORKER_NODE_PID" "$IVLLM_NODE_RANK"
+monitor_node "$IVLLM_JOB" "$IVLLM_WORKER_NODE_PID" "$IVLLM_NODE_RANK"
 

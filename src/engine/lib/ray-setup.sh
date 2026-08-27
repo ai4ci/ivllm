@@ -59,6 +59,7 @@ export RAY_RUNTIME_ENV_LOG_TO_DRIVER=1
 # export RAY_TMPDIR="${ss.paths.remoteJobDir}/ray-logs"
 
 eval "$envExports"
+set_debugging_env "$IVLLM_JOB" "$IVLLM_NODE_RANK"
 source "$vllmVersionDir/bin/activate"
 
 RAY_ARGS=(
@@ -95,4 +96,4 @@ echo "==================================="
 ray start "${RAY_ARGS[@]}" --block &
 RAY_NODE_PID=$!
 
-wait_report "$IVLLM_JOB" "$RAY_NODE_PID" "$IVLLM_NODE_RANK"
+monitor_node "$IVLLM_JOB" "$RAY_NODE_PID" "$IVLLM_NODE_RANK"

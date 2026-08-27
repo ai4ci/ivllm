@@ -1,3 +1,5 @@
+## vllm serve
+
 ## JSON CLI Arguments
 
 When passing JSON CLI arguments, the following sets of arguments are equivalent:
@@ -24,7 +26,13 @@ How many API server processes to run. Defaults to data\_parallel\_size if not sp
 
 #### \--config
 
-Read CLI options from a config file. Must be a YAML with the following options: https://docs.vllm.ai/en/latest/configuration/serve\_args.html
+Read CLI options from a config file. Must be a YAML with the following options: [configuration/serve\_args](https://docs.vllm.ai/en/stable/configuration/serve_args/)
+
+#### \--grpc
+
+Launch a gRPC server instead of the HTTP OpenAI-compatible server. Requires: pip install vllm\[grpc\].
+
+Default: `False`
 
 #### \--disable-log-stats
 
@@ -52,9 +60,15 @@ Default: `0`
 
 #### \--gdn-prefill-backend
 
-Possible choices: `flashinfer`, `triton`
+Possible choices: `flashinfer`, `triton`, `cutedsl`
 
 Select GDN prefill backend.
+
+#### \--kda-prefill-backend
+
+Possible choices: `auto`, `triton`, `flashkda`
+
+Select KDA prefill backend.
 
 #### \--enable-log-requests, --no-enable-log-requests
 
@@ -116,6 +130,10 @@ Default: `""`
 
 Default: `False`
 
+#### \--enable-per-request-metrics, --no-enable-per-request-metrics
+
+Default: `False`
+
 #### \--enable-server-load-tracking, --no-enable-server-load-tracking
 
 Default: `False`
@@ -136,6 +154,14 @@ Default: `False`
 
 Default: `True`
 
+#### \--cohere-is-reasoning-model, --no-cohere-is-reasoning-model
+
+Default: `True`
+
+#### \--cohere-format
+
+Default: `cmd4`
+
 #### \--log-error-stack, --no-log-error-stack
 
 Default: `False`
@@ -143,6 +169,14 @@ Default: `False`
 #### \--tokens-only, --no-tokens-only
 
 Default: `False`
+
+#### \--fingerprint-mode
+
+Possible choices: `custom`, `full`, `hash`, `none`
+
+Default: `full`
+
+#### \--fingerprint-value
 
 #### \--host
 
@@ -153,6 +187,30 @@ Host name.
 Port number.
 
 Default: `8000`
+
+#### \--data-parallel-supervisor-port
+
+HTTP port for aggregated health endpoints in multi-port external LB mode.
+
+Default: `9256`
+
+#### \--dp-supervisor-probe-interval-s
+
+Seconds between aggregated health probes in multi-port external LB mode.
+
+Default: `5.0`
+
+#### \--dp-supervisor-probe-timeout-s
+
+Seconds to wait between retries when a child health probe fails with a connection error in multi-port external LB mode.
+
+Default: `5.0`
+
+#### \--dp-supervisor-probe-failure-threshold
+
+Number of consecutive connection-error retries before a child health probe is declared failed in multi-port external LB mode.
+
+Default: `3`
 
 #### \--uds
 
@@ -272,6 +330,12 @@ Enable offline FastAPI documentation for air-gapped environments. Uses vendored 
 
 Default: `False`
 
+#### \--enable-flash-late-interaction, --no-enable-flash-late-interaction
+
+If set, run pooling score MaxSim on GPU in the API server process. Can significantly improve late-interaction scoring performance.
+
+Default: `True`
+
 ### ModelConfig
 
 Configuration for the model.
@@ -294,7 +358,7 @@ Default: `auto`
 
 Possible choices: `auto`, `classify`, `embed`, `none`
 
-Convert the model using adapters defined in [vllm.model\_executor.models.adapters](https://docs.vllm.ai/en/v0.19.1/api/vllm/model_executor/models/adapters/#vllm.model_executor.models.adapters "            vllm.model_executor.models.adapters"). The most common use case is to adapt a text generation model to be used for pooling tasks.
+Convert the model using adapters defined in [vllm.model\_executor.models.adapters](https://docs.vllm.ai/en/stable/api/vllm/model_executor/models/adapters/#vllm.model_executor.models.adapters "            vllm.model_executor.models.adapters"). The most common use case is to adapt a text generation model to be used for pooling tasks.
 
 Default: `auto`
 
@@ -304,7 +368,7 @@ Name or path of the Hugging Face tokenizer to use. If unspecified, model name or
 
 #### \--tokenizer-mode
 
-Possible choices: `auto`, `deepseek_v32`, `hf`, `mistral`, `slow`
+Possible choices: `auto`, `cohere`, `deepseek_v32`, `deepseek_v4`, `hf`, `inkling`, `kimi_k3`, `mistral`, `slow`
 
 Tokenizer mode:
 
@@ -313,8 +377,12 @@ Tokenizer mode:
 - "slow" will always use the slow tokenizer.
 - "mistral" will always use the tokenizer from `mistral_common`.
 - "deepseek\_v32" will always use the tokenizer from `deepseek_v32`.
-- "qwen\_vl" will always use the tokenizer from `qwen_vl`.
+- "deepseek\_v4" will always use the tokenizer from `deepseek_v4`.
+- "kimi\_k3" will always use the "hf" tokenizer but render chat prompts with Kimi K3's Python XTML encoding instead of a Jinja template.
+- "cohere" uses the standard HF tokenizer but renders the chat template via the `cohere_melody` library (cmd3 / cmd4 templates) instead of Jinja, and surfaces grounded-citation metadata on responses.
 - Other custom values can be supported via plugins.
+
+To swap the Rust BPE backend that powers HF fast tokenizers for the [fastokens](https://github.com/crusoecloud/fastokens) implementation, set `VLLM_USE_FASTOKENS=1` instead — that override applies to any mode that loads an HF fast tokenizer (`hf`, `deepseek_v32`, `deepseek_v4`, …).
 
 Default: `auto`
 
@@ -398,6 +466,12 @@ Examples:
 
 Method used to quantize the weights. If `None`, we first check the `quantization_config` attribute in the model config file. If that is `None`, we assume the model weights are not quantized and use `dtype` to determine the data type of the weights.
 
+#### \--quantization-config
+
+User-facing quantization configuration. Carries per-layer-kind specs (linear, moe) and ignore patterns; see:class:[`QuantizationConfigArgs`](https://docs.vllm.ai/en/stable/api/vllm/config/quantization/#vllm.config.quantization.QuantizationConfigArgs "            QuantizationConfigArgs"). Auto-populated from the matching online shorthand when `quantization` is one of the values in `ONLINE_QUANT_SHORTHAND_NAMES`.
+
+Should either be a valid JSON string or JSON keys passed individually.
+
 #### \--allow-deprecated-quantization, --no-allow-deprecated-quantization
 
 Whether to allow deprecated quantization methods.
@@ -418,7 +492,7 @@ Default: `False`
 
 #### \--max-logprobs
 
-Maximum number of log probabilities to return when `logprobs` is specified in `SamplingParams`. The default value comes the default for the OpenAI Chat Completions API. -1 means no cap, i.e. all (output\_length \* vocab\_size) logprobs are allowed to be returned and it may cause OOM.
+Maximum number of log probabilities to return when `logprobs` is specified in [`SamplingParams`](https://docs.vllm.ai/en/stable/api/vllm/sampling_params/#vllm.sampling_params.SamplingParams "            SamplingParams"). The default value comes the default for the OpenAI Chat Completions API. -1 means no cap, i.e. all (output\_length \* vocab\_size) logprobs are allowed to be returned and it may cause OOM.
 
 Default: `20`
 
@@ -426,9 +500,15 @@ Default: `20`
 
 Possible choices: `processed_logits`, `processed_logprobs`, `raw_logits`, `raw_logprobs`
 
-Indicates the content returned in the logprobs and prompt\_logprobs. Supported mode: 1) raw\_logprobs, 2) processed\_logprobs, 3) raw\_logits, 4) processed\_logits. Raw means the values before applying any logit processors, like bad words. Processed means the values after applying all processors, including temperature and top\_k/top\_p.
+Indicates the content returned in the logprobs and prompt\_logprobs. Supported mode: 1) raw\_logprobs, 2) processed\_logprobs, 3) raw\_logits, 4) processed\_logits. Raw means the values before applying any logit processors, like bad words. Processed means the values after applying all processors, including temperature and top\_k/top\_p. Note: for prompt\_logprobs, processed\_ *and raw\_* yield identical results because prompt tokens do not go through sampling processors.
 
 Default: `raw_logprobs`
+
+#### \--use-fp64-gumbel, --no-use-fp64-gumbel
+
+Whether to use FP64 (instead of FP32) random noise for Gumbel-max and equivalent exponential-race sampling. FP64 preserves lower-tail sampling events that fp32 uniform/exponential draws can truncate, at the cost of significantly lower throughput on most GPUs.
+
+Default: `False`
 
 #### \--disable-sliding-window, --no-disable-sliding-window
 
@@ -482,11 +562,19 @@ If a dictionary, contains arguments to be forwarded to the Hugging Face config. 
 
 Default: `{}`
 
+#### \--model-class-overrides
+
+Override the model class used for one or more architectures, mapping the architecture name to a `"module:class"` target (the same format accepted by `ModelRegistry.register_model`). This registers the target class at runtime, e.g. `{"GlmMoeDsaForCausalLM": "vllm.models.deepseek_v32.nvidia.model:DeepseekV32ForCausalLM"}`. This argument is for development and debugging purposes only.
+
+Should either be a valid JSON string or JSON keys passed individually.
+
+Default: `{}`
+
 #### \--pooler-config
 
 Pooler config which controls the behaviour of output pooling in pooling models.
 
-API docs: https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.PoolerConfig
+API docs: [`vllm.config.PoolerConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.PoolerConfig "            PoolerConfig")
 
 Should either be a valid JSON string or JSON keys passed individually.
 
@@ -507,6 +595,14 @@ Default: `{}`
 #### \--enable-sleep-mode, --no-enable-sleep-mode
 
 Enable sleep mode for the engine (only cuda and hip platforms are supported).
+
+Default: `False`
+
+#### \--enable-cumem-allocator, --no-enable-cumem-allocator
+
+Enable the custom cumem allocator to leverage advanced GPU memory allocation features such as multi-node NVLink support.
+
+Sleep mode automatically enables this allocator. Only cuda and hip platforms are supported.
 
 Default: `False`
 
@@ -537,7 +633,9 @@ IOProcessor plugin name to load at model startup
 
 #### \--renderer-num-workers
 
-Number of worker threads in the renderer thread pool. This pool handles async tokenization, chat template rendering, and multimodal preprocessing.
+Number of worker threads in the renderer thread pool. The pool is consumed by the async renderer path (e.g. the OpenAI-compatible API server started by `vllm serve`) to parallelize tokenization, chat template rendering, and multimodal preprocessing across concurrent requests.
+
+The offline [`LLM`](https://docs.vllm.ai/en/stable/api/vllm/entrypoints/llm/#vllm.entrypoints.llm.LLM "            LLM") entrypoint uses the synchronous renderer path and processes prompts (including multimodal preprocessing) serially, so this setting has no effect there.
 
 Default: `1`
 
@@ -560,8 +658,8 @@ The format of the model weights to load.
 - "runai\_streamer\_sharded" will load weights from pre-sharded checkpoint files using Run:ai Model Streamer.
 - "bitsandbytes" will load the weights using bitsandbytes quantization.
 - "sharded\_state" will load weights from pre-sharded checkpoint files, supporting efficient loading of tensor-parallel models.
-- "gguf" will load weights from GGUF format files (details specified in https://github.com/ggml-org/ggml/blob/master/docs/gguf.md).
 - "mistral" will load weights from consolidated safetensors files used by Mistral models.
+- "modelexpress" will load weights using ModelExpress.
 - Other custom values can be supported via plugins.
 
 Default: `auto`
@@ -572,6 +670,8 @@ Directory to download and load the weights, default to the default cache directo
 
 #### \--safetensors-load-strategy
 
+Possible choices: `eager`, [`lazy`](https://docs.vllm.ai/en/stable/api/vllm/logging_utils/lazy/#vllm.logging_utils.lazy.lazy "            lazy"), `prefetch`, `torchao`, `None`
+
 Specifies the loading strategy for safetensors weights.
 
 - None (default): Uses memory-mapped (lazy) loading. When an NFS filesystem is detected and the total checkpoint size fits within 90%%%% of available RAM, prefetching is enabled automatically.
@@ -579,6 +679,27 @@ Specifies the loading strategy for safetensors weights.
 - "eager": The entire file is read into CPU memory upfront before loading. This is recommended for models on network filesystems (e.g., Lustre, NFS) as it avoids inefficient random reads, significantly speeding up model initialization. However, it uses more CPU RAM.
 - "prefetch": Checkpoint files are read into the OS page cache before workers load them, speeding up the model loading phase. Useful on network or high-latency storage.
 - "torchao": Weights are loaded in upfront and then reconstructed into torchao tensor subclasses. This is used when the checkpoint was quantized using torchao and saved using safetensors. Needs `torchao >= 0.14.0`.
+
+#### \--safetensors-prefetch-num-threads
+
+Number of worker threads used to prefetch safetensors checkpoint files into the OS page cache when safetensors prefetching is enabled.
+
+Default: `8`
+
+#### \--safetensors-prefetch-block-size
+
+Read size in bytes for each safetensors checkpoint file prefetch.
+
+Parse human-readable integers like '1k', '2M', etc. Including decimal values with decimal multipliers.
+
+```js
+Examples:
+- '1k' -> 1,000
+- '1K' -> 1,024
+- '25.6k' -> 25,600
+```
+
+Default: `16777216`
 
 #### \--model-loader-extra-config
 
@@ -612,6 +733,34 @@ Configuration for attention mechanisms in vLLM.
 
 Attention backend to use. Use "auto" or None for automatic selection.
 
+### MambaConfig
+
+Configuration for Mamba SSM backends.
+
+#### \--mamba-backend
+
+Mamba SSU backend to use.
+
+Default: `MambaBackendEnum.TRITON`
+
+#### \--mamba-ssu-algorithm
+
+Possible choices: `auto`, `horizontal`, `simple`, `vertical`, `None`
+
+Selective state update algorithm to use with the FlashInfer backend. None defaults to FlashInfer's "auto" algorithm. Forced algorithms must be supported by FlashInfer for the active GPU, state dtype, and decoding mode.
+
+#### \--enable-mamba-cache-stochastic-rounding, --no-enable-mamba-cache-stochastic-rounding
+
+Enable stochastic rounding when writing SSM state to fp16 cache. Uses random bits to unbias the rounding error, which can improve numerical stability for long sequences.
+
+Default: `False`
+
+#### \--mamba-cache-philox-rounds
+
+Number of Philox PRNG rounds for stochastic rounding random number generation. 0 uses the Triton default. Higher values improve randomness quality at the cost of compute.
+
+Default: `0`
+
 ### StructuredOutputsConfig
 
 Dataclass which contains structured outputs config for the engine.
@@ -638,7 +787,7 @@ Possible choices: `external_launcher`, `mp`, `ray`, `uni`
 
 Backend to use for distributed model workers, either "ray" or "mp" (multiprocessing). If the product of pipeline\_parallel\_size and tensor\_parallel\_size is less than or equal to the number of GPUs available, "mp" will be used to keep processing on a single host. Otherwise, an error will be raised. To use "mp" you must also set nnodes, and to use "ray" you must manually set distributed\_executor\_backend to "ray".
 
-Note that tpu only support Ray for distributed inference.
+Note: [TPU](https://docs.vllm.ai/projects/tpu/en/latest/) platform only supports Ray for distributed inference.
 
 #### \--pipeline-parallel-size, -pp
 
@@ -674,6 +823,34 @@ Default: `0`
 
 Timeout in seconds for distributed operations (e.g., init\_process\_group). If set, this value is passed to torch.distributed.init\_process\_group as the timeout parameter. If None, PyTorch's default timeout is used (600s for NCCL). Increase this for multi-node setups where model downloads may be slow.
 
+#### \--cpu-distributed-timeout-seconds
+
+Timeout (in seconds) for cpu communication groups. If None, PyTorch's default timeout is used (1800s for gloo).
+
+#### \--numa-bind, --no-numa-bind
+
+Enable NUMA binding for GPU worker subprocesses.
+
+By default, workers are pinned to their GPU's NUMA-local CPUs and memory; on PCT-capable Xeons they also auto-bind to the SKU's PCT priority cores.
+
+Default: `False`
+
+#### \--numa-bind-nodes
+
+NUMA node to bind each GPU worker to.
+
+Specify one NUMA node per visible GPU, for example `[0, 0, 1, 1]` for a 4-GPU system with GPUs 0-1 on NUMA node 0 and GPUs 2-3 on NUMA node 1. If unset and `numa_bind=True`, vLLM auto-detects the GPU-to-NUMA topology. The values are passed to `numactl --membind` and `--cpunodebind`, so they must be valid `numactl` NUMA node indices.
+
+#### \--numa-bind-cpus
+
+Optional CPU lists to bind each GPU worker to.
+
+Specify one CPU list per visible GPU, for example `["0-3", "4-7", "8-11", "12-15"]`. When set, vLLM uses `numactl --physcpubind` instead of `--cpunodebind`. This is useful for custom policies such as binding to PCT or other high-frequency cores. Each entry must use `numactl --physcpubind` CPU-list syntax, for example `"0-3"` or `"0,2,4-7"`.
+
+#### \--device-ids
+
+Comma-separated physical GPU device IDs or UUIDs to use (e.g. --device-ids "2,3,5,7"). Avoids setting CUDA\_VISIBLE\_DEVICES, preserving full GPU topology visibility for GPU-NIC affinity and DeepGEMM. Note: has no effect with Ray executors; use Ray placement groups for GPU selection instead.
+
 #### \--tensor-parallel-size, -tp
 
 Number of tensor parallel groups.
@@ -682,7 +859,7 @@ Default: `1`
 
 #### \--decode-context-parallel-size, -dcp
 
-Number of decode context parallel groups, because the world size does not change by dcp, it simply reuse the GPUs of TP group, and tp\_size needs to be divisible by dcp\_size.
+Number of ranks that shard the decode KV cache. DCP does not expand the process world size. Without PCP, DCP reuses TP ranks. With PCP, DCP either spans the PCP axis or the full TP x PCP block.
 
 Default: `1`
 
@@ -702,25 +879,25 @@ Default: `1`
 
 #### \--cp-kv-cache-interleave-size
 
-Interleave size of kv\_cache storage while using DCP or PCP. For `total_cp_rank = pcp_rank * dcp_world_size + dcp_rank`, and `total_cp_world_size = pcp_world_size * dcp_world_size`. store interleave\_size tokens on total\_cp\_rank i, then store next interleave\_size tokens on total\_cp\_rank i+1. Interleave\_size=1: token-level alignment, where token `i` is stored on total\_cp\_rank `i %% total_cp_world_size`. Interleave\_size=block\_size: block-level alignment, where tokens are first populated to the preceding ranks. Tokens are then stored in (rank i+1, block j) only after (rank i, block j) is fully occupied. Block\_size should be greater than or equal to cp\_kv\_cache\_interleave\_size. Block\_size should be divisible by cp\_kv\_cache\_interleave\_size.
+Interleave size of kv\_cache storage while using DCP. Store interleave\_size tokens on dcp\_rank i, then store next interleave\_size tokens on dcp\_rank i+1. Interleave\_size=1: token-level alignment, where token `i` is stored on dcp\_rank `i %% dcp_world_size`. Interleave\_size=block\_size: block-level alignment, where tokens are first populated to the preceding ranks. Tokens are then stored in (rank i+1, block j) only after (rank i, block j) is fully occupied. Block\_size should be greater than or equal to cp\_kv\_cache\_interleave\_size. Block\_size should be divisible by cp\_kv\_cache\_interleave\_size.
 
 Default: `1`
 
 #### \--prefill-context-parallel-size, -pcp
 
-Number of prefill context parallel groups.
+Number of ranks that split prefill sequence computation. PCP expands the process world size but does not increase the KV-cache shard count.
 
 Default: `1`
 
 #### \--data-parallel-size, -dp
 
-Number of data parallel groups. MoE layers will be sharded according to the product of the tensor parallel size and data parallel size.
+Number of data parallel groups. MoE layers will be sharded according to the product of the tensor, prefill-context, and data parallel sizes.
 
 Default: `1`
 
 #### \--data-parallel-rank, -dpn
 
-Data parallel rank of this instance. When set, enables external load balancer mode.
+Data parallel rank of this instance. When set, enables external load balancer mode for MoE data-parallel deployments. Unsupported for non-MoE models; launch independent vLLM instances instead.
 
 #### \--data-parallel-start-rank, -dpr
 
@@ -752,7 +929,13 @@ Default: `False`
 
 #### \--data-parallel-external-lb, --no-data-parallel-external-lb, -dpe
 
-Whether to use "external" DP LB mode. Applies only to online serving and when data\_parallel\_size > 0. This is useful for a "one-pod-per-rank" wide-EP setup in Kubernetes. Set implicitly when --data-parallel-rank is provided explicitly to vllm serve.
+Whether to use "external" DP LB mode. Applies only to online serving and when data\_parallel\_size > 0. This is useful for a "one-pod-per-rank" wide-EP setup in Kubernetes. Supported only for MoE deployments; non-MoE models should use independent vLLM instances without --data-parallel-\* arguments. Set implicitly when --data-parallel-rank is provided explicitly to vllm serve.
+
+Default: `False`
+
+#### \--data-parallel-multi-port-external-lb, -dpm
+
+Run a node-local supervisor that launches one external-LB API server per local data parallel rank and exposes aggregated health on a supervisor port.
 
 Default: `False`
 
@@ -770,14 +953,15 @@ Default: `False`
 
 #### \--all2all-backend
 
-Possible choices: `allgather_reducescatter`, `deepep_high_throughput`, `deepep_low_latency`, `flashinfer_all2allv`, `flashinfer_nvlink_one_sided`, `flashinfer_nvlink_two_sided`, `mori`, `naive`, `nixl_ep`, `pplx`
+Possible choices: `allgather_reducescatter`, `deepep_high_throughput`, `deepep_low_latency`, `deepep_v2`, `flashinfer_all2allv`, `flashinfer_nvlink_one_sided`, `flashinfer_nvlink_two_sided`, `mori_high_throughput`, `mori_low_latency`, `naive`, `nixl_ep`, `pplx`
 
 All2All backend for MoE expert parallel communication. Available options:
 
 - "allgather\_reducescatter": All2all based on allgather and reducescatter
 - "deepep\_high\_throughput": Use deepep high-throughput kernels
 - "deepep\_low\_latency": Use deepep low-latency kernels
-- "mori": Use mori kernels
+- "mori\_high\_throughput": MoRI EP with InterNodeV1 for multi-node
+- "mori\_low\_latency": MoRI EP with InterNodeV1LL for multi-node
 - "nixl\_ep": Use nixl-ep kernels
 - "flashinfer\_nvlink\_two\_sided": Use flashinfer two-sided kernels for mnnvl
 - "flashinfer\_nvlink\_one\_sided": Use flashinfer high-throughput a2a kernels
@@ -830,11 +1014,11 @@ Default: `False`
 
 Expert parallelism configuration.
 
-API docs: https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.EPLBConfig
+API docs: [`vllm.config.EPLBConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.EPLBConfig "            EPLBConfig")
 
 Should either be a valid JSON string or JSON keys passed individually.
 
-Default: `EPLBConfig(window_size=1000, step_interval=3000, num_redundant_experts=0, log_balancedness=False, log_balancedness_interval=1, use_async=False, policy='default')`
+Default: `EPLBConfig(window_size=1000, step_interval=3000, num_redundant_experts=0, log_balancedness=False, log_balancedness_interval=1, use_async=True, policy='default', communicator=None)`
 
 #### \--expert-placement-strategy
 
@@ -875,6 +1059,22 @@ The full name of the worker extension class to use. The worker extension class i
 
 Default: `""`
 
+#### \--enable-fault-tolerance, --no-enable-fault-tolerance
+
+Enable fault tolerance for detailed error recovery, such as scaling down fault DPEngineCore.
+
+Default: `False`
+
+#### \--fault-tolerance-config
+
+The configurations for fault tolerance.
+
+API docs: [`vllm.config.FaultToleranceConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.FaultToleranceConfig "            FaultToleranceConfig")
+
+Should either be a valid JSON string or JSON keys passed individually.
+
+Default: `FaultToleranceConfig(engine_recovery_timeout_sec=120)`
+
 ### CacheConfig
 
 Configuration for the KV cache.
@@ -885,9 +1085,9 @@ Size of a contiguous cache block in number of tokens. Accepts None (meaning "use
 
 #### \--gpu-memory-utilization
 
-The fraction of GPU memory to be used for the model executor, which can range from 0 to 1. For example, a value of 0.5 would imply 50%% GPU memory utilization. If unspecified, will use the default value of 0.9. This is a per-instance limit, and only applies to the current vLLM instance. It does not matter if you have another vLLM instance running on the same GPU. For example, if you have two vLLM instances running on the same GPU, you can set the GPU memory utilization to 0.5 for each instance.
+The fraction of GPU memory to be used for the model executor, which can range from 0 to 1. For example, a value of 0.5 would imply 50%% GPU memory utilization. If unspecified, will use the default value of 0.92. This is a per-instance limit, and only applies to the current vLLM instance. It does not matter if you have another vLLM instance running on the same GPU. For example, if you have two vLLM instances running on the same GPU, you can set the GPU memory utilization to 0.5 for each instance.
 
-Default: `0.9`
+Default: `0.92`
 
 #### \--kv-cache-memory-bytes
 
@@ -904,7 +1104,7 @@ Examples:
 
 #### \--kv-cache-dtype
 
-Possible choices: `auto`, `bfloat16`, `float16`, `fp8`, `fp8_ds_mla`, `fp8_e4m3`, `fp8_e5m2`, `fp8_inc`
+Possible choices: `auto`, `bfloat16`, `float16`, `fp8`, `fp8_ds_mla`, `fp8_e4m3`, `fp8_e5m2`, `fp8_inc`, `fp8_per_token_head`, `int4_per_token_head`, `int8_per_token_head`, `nvfp4`, `turboquant_3bit_nc`, `turboquant_4bit_nc`, `turboquant_k3v4_nc`, `turboquant_k8v4`
 
 Data type for kv cache storage. If "auto", will use model data type. CUDA 11.8+ supports fp8 (=fp8\_e4m3) and fp8\_e5m2. ROCm (AMD GPU) supports fp8 (=fp8\_e4m3). Intel Gaudi (HPU) supports fp8 (using fp8\_inc). Some models (namely DeepSeekV3.2) default to fp8, set to bfloat16 to use bfloat16 instead, this is an invalid option for models that do not default to fp8.
 
@@ -945,15 +1145,13 @@ Default: `[]`
 
 #### \--kv-sharing-fast-prefill, --no-kv-sharing-fast-prefill
 
-This feature is work in progress and no prefill optimization takes place with this flag enabled currently.
-
-In some KV sharing setups, e.g. YOCO (https://arxiv.org/abs/2405.05254), some layers can skip tokens corresponding to prefill. This flag enables attention metadata for eligible layers to be overridden with metadata necessary for implementing this optimization in some models (e.g. Gemma3n)
+In some KV sharing setups, e.g. YOCO (https://arxiv.org/abs/2405.05254), some layers can skip tokens corresponding to prefill. This flag enables attention metadata for eligible layers to be overridden with metadata necessary for implementing this optimization in some models (e.g. Gemma3n) NOTE: KV cache sharing is not supported for MRv2 (v2 model runner).
 
 Default: `False`
 
 #### \--mamba-cache-dtype
 
-Possible choices: `auto`, `float16`, `float32`
+Possible choices: `auto`, `bfloat16`, `float16`, `float32`
 
 The data type to use for the Mamba cache (both the conv as well as the ssm state). If set to 'auto', the data type will be inferred from the model config.
 
@@ -961,7 +1159,7 @@ Default: `auto`
 
 #### \--mamba-ssm-cache-dtype
 
-Possible choices: `auto`, `float16`, `float32`
+Possible choices: `auto`, `bfloat16`, `float16`, `float32`
 
 The data type to use for the Mamba cache (ssm state only, conv state will still be controlled by mamba\_cache\_dtype). If set to 'auto', the data type for the ssm state will be determined by mamba\_cache\_dtype.
 
@@ -971,13 +1169,37 @@ Default: `auto`
 
 Size of a contiguous cache block in number of tokens for mamba cache. Can be set only when prefix caching is enabled. Value must be a multiple of 8 to align with causal\_conv1d kernel.
 
+#### \--prefix-match-unit
+
+The finest token boundary (in tokens) a prefix-cache hit can land on.
+
+Prefix-cache keys are computed every `prefix_match_unit` tokens. It can be set finer than the physical KV cache block sizes (e.g. 32 vs a 1024-token hybrid-model block) as long as every KV cache group's `block_size` is divisible by it, enabling cache hits at boundaries inside a physical block. It controls matching granularity only, not how often states are stored.
+
+This equals to the `hash_block_size` used throughout the KV cache code.
+
 #### \--mamba-cache-mode
 
 Possible choices: `align`, `all`, `none`
 
-The cache strategy for Mamba layers. - "none": set when prefix caching is disabled. - "all": cache the mamba state of all tokens at position i \* block\_size. This is the default behavior (for models that support it) when prefix caching is enabled. - "align": only cache the mamba state of the last token of each scheduler step and when the token is at position i \* block\_size.
+The cache strategy for Mamba layers:
+
+- "none": set when prefix caching is disabled.
+- "all": cache the mamba state of all tokens at position i \* block\_size. This is the default behavior (for models that support it) when prefix caching is enabled.
+- "align": only cache the mamba state of the last token of each scheduler step and when the token is at position i \* block\_size.
 
 Default: `none`
+
+#### \--replayssm-buffer-len
+
+ReplaySSM history buffer length B: with use\_replayssm, standard decode caches recent SSM inputs in a size-B ring buffer and flushes the checkpoint state to HBM every B steps. Default 16.
+
+Default: `16`
+
+#### \--use-replayssm, --no-use-replayssm
+
+Use the ReplaySSM Mamba2 decode kernel: cache recent SSM inputs and skip the per-step full-state store, writing the checkpoint back only on flush. Requires mamba\_cache\_mode 'none' or 'align' (prefix caching) and the Triton mamba backend; standard (non-speculative) decode only. In align mode flushes are most efficient when mamba\_block\_size is a multiple of replayssm\_buffer\_len, but this is not required.
+
+Default: `False`
 
 #### \--kv-offloading-size
 
@@ -1067,7 +1289,7 @@ Default: `{}`
 
 #### \--enable-mm-embeds, --no-enable-mm-embeds
 
-If `True`, enables passing multimodal embeddings: for `LLM` class, this refers to tensor inputs under `multi_modal_data`; for the OpenAI-compatible server, this refers to chat messages with content `"type": "*_embeds"`.
+If `True`, enables passing multimodal embeddings: for [`LLM`](https://docs.vllm.ai/en/stable/api/vllm/entrypoints/llm/#vllm.entrypoints.llm.LLM "            LLM") class, this refers to tensor inputs under `multi_modal_data`; for the OpenAI-compatible server, this refers to chat messages with content `"type": "*_embeds"`.
 
 When enabled with `--limit-mm-per-prompt` set to 0 for a modality, precomputed embeddings skip count validation for that modality, saving memory by not loading encoder modules while still enabling embeddings as an input. Limits greater than 0 still apply to embeddings.
 
@@ -1111,6 +1333,14 @@ Type of cache to use for the multi-modal preprocessor/mapper. If `shm`, use shar
 
 Default: `lru`
 
+#### \--mm-hasher-algorithm
+
+Possible choices: `blake3`, `sha256`, `sha512`
+
+Hash algorithm to use for multi-modal input caching. Use `"sha256"` or `"sha512"` for FIPS-compliant deployments.
+
+Default: `blake3`
+
 #### \--mm-shm-cache-max-object-size-mb
 
 Size limit (in MiB) for each object stored in the multi-modal processor shared memory cache. Only effective when `mm_processor_cache_type` is `"shm"`.
@@ -1140,6 +1370,26 @@ Default: `weights`
 
 Optional override for the multi-modal encoder attention backend when using vision transformers. Accepts any value from `vllm.v1.attention.backends.registry.AttentionBackendEnum` (e.g. `FLASH_ATTN`).
 
+#### \--mm-encoder-attn-dtype
+
+Possible choices: `fp8`, `None`
+
+Optional dtype override for ViT encoder attention. Set to `"fp8"` to enable FP8 quantization via the FlashInfer cuDNN backend. When set to `"fp8"` without a scale file, dynamic scaling is used automatically. See docs/features/quantization/fp8\_vit\_attn.md for details.
+
+#### \--mm-encoder-fp8-scale-path
+
+Path to a JSON file containing per-layer FP8 Q/K/V scales for ViT encoder attention. When provided (with `mm_encoder_attn_dtype="fp8"`), static scaling is used. When omitted, dynamic scaling is used.
+
+#### \--mm-encoder-fp8-scale-save-path
+
+When set with dynamic FP8 scaling (`mm_encoder_attn_dtype="fp8"` and no `mm_encoder_fp8_scale_path`), saves the calibrated scales to this file after the amax history buffer is full. The saved file can then be used as `mm_encoder_fp8_scale_path` in subsequent runs.
+
+#### \--mm-encoder-fp8-scale-save-margin
+
+Safety margin multiplied onto scales when auto-saving. A value > 1 leaves headroom so that inputs with larger activations than the calibration set do not overflow FP8 range. Default 1.5.
+
+Default: `1.5`
+
 #### \--interleave-mm-strings, --no-interleave-mm-strings
 
 Enable fully interleaved support for multimodal prompts, while using --chat-template-content-format=string.
@@ -1156,7 +1406,15 @@ Default: `False`
 
 #### \--video-pruning-rate
 
-Sets pruning rate for video pruning via Efficient Video Sampling. Value sits in range \[0;1) and determines fraction of media tokens from each video to be pruned.
+Fraction of video tokens to prune from each video. Value sits in range \[0;1); pruning is enabled when it is greater than 0. The pruning algorithm is selected by `video_pruning_method`.
+
+#### \--video-pruning-method
+
+Possible choices: `evs`, `vidcom2`
+
+Video token pruning algorithm applied when `video_pruning_rate` > 0: - "evs": Efficient Video Sampling. - "vidcom2": Video Compression Commander.
+
+Default: `evs`
 
 #### \--mm-tensor-ipc
 
@@ -1165,6 +1423,16 @@ Possible choices: `direct_rpc`, `torch_shm`
 IPC (inter-process communication) method for multimodal tensors. - "direct\_rpc": Use msgspec serialization via RPC - "torch\_shm": Use torch.multiprocessing shared memory for zero-copy IPC Defaults to "direct\_rpc".
 
 Default: `direct_rpc`
+
+#### \--mm-ipc-gpu-memory-gb
+
+Amount of GPU memory (in GiB) sequestered on the engine's device for GPU-side multimodal work in the API-server (frontend) process, such as hardware video decoding.
+
+This budget is carved out of the engine's KV-cache memory so the headroom physically exists, and frontend GPU decode paths acquire from a blocking byte-counting semaphore of this size before allocating on the device.
+
+Set to `0` (default) to disable frontend GPU multimodal memory gating.
+
+Default: `0`
 
 ### LoRAConfig
 
@@ -1226,6 +1494,18 @@ Whether to construct lora kernel grid by the number of active LoRA adapters. Whe
 
 Default: `False`
 
+#### \--enable-mixed-moe-lora-format, --no-enable-mixed-moe-lora-format
+
+If True, force the engine to use the universal 2D MoE LoRA wrapper (`FusedMoEWithLoRA`) regardless of the model's `is_3d_moe_weight` flag, so that 2D-format and 3D-format MoE LoRA adapters can be served in the same deployment. Only meaningful for MoE models; ignored otherwise. Default False keeps the existing model-driven behavior.
+
+Default: `False`
+
+#### \--enable-moe-shared-loras, --no-enable-moe-shared-loras
+
+If True, load MoE expert adapters in the "shared-outer" layout, where the gate/up (`w1` / `w3`) lora\_A and the down (`w2`) lora\_B are shared across all experts (stored once with expert-dim 1) instead of per-expert. The shared factors are broadcast to the expert count at kernel time. Only meaningful for MoE models whose adapters use this layout; ignored otherwise.
+
+Default: `False`
+
 ### ObservabilityConfig
 
 Configuration for observability - metrics and tracing.
@@ -1282,6 +1562,20 @@ Enable detailed logging of iteration details. If set, vllm EngineCore will log i
 
 Default: `False`
 
+#### \--jit-monitor-mode
+
+Possible choices: `error`, `warn`
+
+How to handle post-warmup JIT compilation events.
+
+Default: `warn`
+
+#### \--jit-monitor-verbose, --no-jit-monitor-verbose
+
+Log every monitored JIT compile with runtime details. This can emit many logs and add overhead, so it is intended for debugging.
+
+Default: `False`
+
 ### SchedulerConfig
 
 Scheduler configuration.
@@ -1301,27 +1595,30 @@ Examples:
 - '25.6k' -> 25,600
 ```
 
+#### \--max-num-scheduled-tokens
+
+Maximum number of tokens that the scheduler may issue in a single iteration.
+
+This is usually equal to max\_num\_batched\_tokens, but can be smaller in cases when the model might append tokens into the batch (such as speculative decoding). Defaults to max\_num\_batched\_tokens.
+
+Parse human-readable integers like '1k', '2M', etc. Including decimal values with decimal multipliers.
+
+```js
+Examples:
+- '1k' -> 1,000
+- '1K' -> 1,024
+- '25.6k' -> 25,600
+```
+
 #### \--max-num-seqs
 
 Maximum number of sequences to be processed in a single iteration.
 
 The default value here is mainly for convenience when testing. In real usage, this should be set in `EngineArgs.create_engine_config`.
 
-#### \--max-num-partial-prefills
-
-For chunked prefill, the maximum number of sequences that can be partially prefilled concurrently.
-
-Default: `1`
-
-#### \--max-long-partial-prefills
-
-For chunked prefill, the maximum number of prompts longer than long\_prefill\_token\_threshold that will be prefilled concurrently. Setting this less than max\_num\_partial\_prefills will allow shorter prompts to jump the queue in front of longer prompts in some cases, improving latency.
-
-Default: `1`
-
 #### \--long-prefill-token-threshold
 
-For chunked prefill, a request is considered long if the prompt is longer than this number of tokens.
+For chunked prefill, a request is considered long if the prompt is longer than this number of tokens. 0 disables the cap (default).
 
 Default: `0`
 
@@ -1358,6 +1655,18 @@ If True, the scheduler checks whether the full input sequence length fits in the
 
 Default: `True`
 
+#### \--watermark
+
+Fraction of total KV cache blocks to keep free (the watermark) when admitting waiting or preempted requests into the running queue. This headroom helps avoid frequent KV cache eviction and the resulting repeated preemption of requests when GPU memory is scarce. Must be in the range \[0.0, 1.0); 0.0 (the default) disables the watermark.
+
+Default: `0.0`
+
+#### \--prefill-schedule-interval
+
+For data-parallel deployments, only admit new prefill requests once every N engine steps, aligned across DP ranks, to better balance per-step forward-pass times.
+
+Default: `1`
+
 #### \--disable-hybrid-kv-cache-manager, --no-disable-hybrid-kv-cache-manager
 
 If set to True, KV cache manager will allocate the same size of KV cache for all attention layers even if there are multiple type of attention layers like full attention and sliding window attention. If set to None, the default value will be determined based on the environment and starting configuration.
@@ -1376,51 +1685,77 @@ Default: `1`
 
 Configuration for compilation.
 
-```js
-You must pass CompilationConfig to VLLMConfig constructor.
-VLLMConfig's post_init does further initialization. If used outside of the
-VLLMConfig, some fields will be left in an improper state.
+You must pass CompilationConfig to VLLMConfig constructor. VLLMConfig's post\_init does further initialization. If used outside of the VLLMConfig, some fields will be left in an improper state.
 
-It contains PassConfig, which controls the custom fusion/transformation passes.
-The rest has three parts:
+It contains PassConfig, which controls the custom fusion/transformation passes. The rest has three parts:
 
 - Top-level Compilation control:
-    - [\`mode\`][vllm.config.CompilationConfig.mode]
-    - [\`debug_dump_path\`][vllm.config.CompilationConfig.debug_dump_path]
-    - [\`cache_dir\`][vllm.config.CompilationConfig.cache_dir]
-    - [\`backend\`][vllm.config.CompilationConfig.backend]
-    - [\`custom_ops\`][vllm.config.CompilationConfig.custom_ops]
-    - [\`splitting_ops\`][vllm.config.CompilationConfig.splitting_ops]
-    - [\`compile_mm_encoder\`][vllm.config.CompilationConfig.compile_mm_encoder]
+	- [`mode`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.mode "            mode = None
+		class-attribute
+		instance-attribute
+		")
+		- [`debug_dump_path`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.debug_dump_path "            debug_dump_path = None
+		class-attribute
+		instance-attribute
+		")
+		- [`cache_dir`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.cache_dir "            cache_dir = ''
+		class-attribute
+		instance-attribute
+		")
+		- [`backend`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.backend "            backend = ''
+		class-attribute
+		instance-attribute
+		")
+		- [`custom_ops`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.custom_ops "            custom_ops = field(default_factory=list)
+		class-attribute
+		instance-attribute
+		")
+		- [`splitting_ops`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.splitting_ops "            splitting_ops = None
+		class-attribute
+		instance-attribute
+		")
+		- [`compile_mm_encoder`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.compile_mm_encoder "            compile_mm_encoder = False
+		class-attribute
+		instance-attribute
+		")
 - CudaGraph capture:
-    - [\`cudagraph_mode\`][vllm.config.CompilationConfig.cudagraph_mode]
-    - [\`cudagraph_capture_sizes\`]
-    [vllm.config.CompilationConfig.cudagraph_capture_sizes]
-    - [\`max_cudagraph_capture_size\`]
-    [vllm.config.CompilationConfig.max_cudagraph_capture_size]
-    - [\`cudagraph_num_of_warmups\`]
-    [vllm.config.CompilationConfig.cudagraph_num_of_warmups]
-    - [\`cudagraph_copy_inputs\`]
-    [vllm.config.CompilationConfig.cudagraph_copy_inputs]
+	- [`cudagraph_mode`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.cudagraph_mode "            cudagraph_mode = None
+		class-attribute
+		instance-attribute
+		")
+		- [`cudagraph_capture_sizes`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.cudagraph_capture_sizes "            cudagraph_capture_sizes = None
+		class-attribute
+		instance-attribute
+		")
+		- [`max_cudagraph_capture_size`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.max_cudagraph_capture_size "            max_cudagraph_capture_size = None
+		class-attribute
+		instance-attribute
+		")
+		- [`cudagraph_num_of_warmups`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.cudagraph_num_of_warmups "            cudagraph_num_of_warmups = 0
+		class-attribute
+		instance-attribute
+		")
+		- [`cudagraph_copy_inputs`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.cudagraph_copy_inputs "            cudagraph_copy_inputs = False
+		class-attribute
+		instance-attribute
+		")
 - Inductor compilation:
-    - [\`compile_sizes\`][vllm.config.CompilationConfig.compile_sizes]
-    - [\`compile_ranges_endpoints\`]
-        [vllm.config.CompilationConfig.compile_ranges_endpoints]
-    - [\`inductor_compile_config\`]
-    [vllm.config.CompilationConfig.inductor_compile_config]
-    - [\`inductor_passes\`][vllm.config.CompilationConfig.inductor_passes]
-    - custom inductor passes
+	- [`compile_sizes`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.compile_sizes "            compile_sizes = None
+		class-attribute
+		instance-attribute
+		")
+		- \[`compile_ranges_endpoints`\] \[vllm.config.CompilationConfig.compile\_ranges\_endpoints\]
+		- [`inductor_compile_config`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.inductor_compile_config "            inductor_compile_config = field(default_factory=dict)
+		class-attribute
+		instance-attribute
+		")
+		- [`inductor_passes`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig.inductor_passes "            inductor_passes = field(default_factory=dict)
+		class-attribute
+		instance-attribute
+		")
+		- custom inductor passes
 
-Why we have different sizes for cudagraph and inductor:
-- cudagraph: a cudagraph captured for a specific size can only be used
-    for the same size. We need to capture all the sizes we want to use.
-- inductor: a graph compiled by inductor for a general shape can be used
-    for different sizes. Inductor can also compile for specific sizes,
-    where it can have more information to optimize the graph with fully
-    static shapes. However, we find the general shape compilation is
-    sufficient for most cases. It might be beneficial to compile for
-    certain small batchsizes, where inductor is good at optimizing.
-```
+Why we have different sizes for cudagraph and inductor: - cudagraph: a cudagraph captured for a specific size can only be used for the same size. We need to capture all the sizes we want to use. - inductor: a graph compiled by inductor for a general shape can be used for different sizes. Inductor can also compile for specific sizes, where it can have more information to optimize the graph with fully static shapes. However, we find the general shape compilation is sufficient for most cases. It might be beneficial to compile for certain small batchsizes, where inductor is good at optimizing.
 
 #### \--cudagraph-capture-sizes
 
@@ -1443,25 +1778,75 @@ If not specified, max\_cudagraph\_capture\_size is set to min(max\_num\_seqs\*2,
 
 Configuration for kernel selection and warmup behavior.
 
+#### \--ir-op-priority
+
+vLLM IR op priority for dispatching/lowering during the forward pass. Platform defaults appended automatically during VllmConfig.**post\_init**.
+
+Should either be a valid JSON string or JSON keys passed individually.
+
+Default: `IrOpPriorityConfig(rms_norm=[], fused_add_rms_norm=[])`
+
 #### \--enable-flashinfer-autotune, --no-enable-flashinfer-autotune
 
 If True, run FlashInfer autotuning during kernel warmup.
 
+#### \--enable-bf16x3-router-gemm, --no-enable-bf16x3-router-gemm
+
+If True, use the experimental SM100 BF16x3 CuteDSL router GEMM.
+
+Default: `False`
+
 #### \--moe-backend
 
-Possible choices: `aiter`, `auto`, `cutlass`, `deep_gemm`, `flashinfer_cutedsl`, `flashinfer_cutlass`, `flashinfer_trtllm`, `marlin`, `triton`
+Possible choices: `aiter`, `auto`, `batched_triton`, `cutlass`, `deep_gemm`, `deep_gemm_mega_moe`, `emulation`, `flashinfer_b12x`, `flashinfer_cutedsl`, `flashinfer_cutlass`, `flashinfer_trtllm`, `flydsl`, `hpc`, `humming`, `marlin`, `triton`, `triton_unfused`
 
 Backend for MoE expert computation kernels. Available options:
 
 - "auto": Automatically select the best backend based on model and hardware
 - "triton": Use Triton-based fused MoE kernels
+- "batched\_triton": Use batched Triton experts (moe\_mmk) on the batched activation format (\[E\_local, max\_num\_tokens, K\])
 - "deep\_gemm": Use DeepGEMM kernels (FP8 block-quantized only)
+- "deep\_gemm\_mega\_moe": Use DeepGEMM mega MoE kernels
 - "cutlass": Use vLLM CUTLASS kernels
 - "flashinfer\_trtllm": Use FlashInfer with TRTLLM-GEN kernels
 - "flashinfer\_cutlass": Use FlashInfer with CUTLASS kernels
 - "flashinfer\_cutedsl": Use FlashInfer with CuteDSL kernels (FP4 only)
+- "flashinfer\_b12x": Use FlashInfer CuteDSL fused MoE for SM12x (RTX Pro 6000 / DGX Spark)
 - "marlin": Use Marlin kernels (weight-only quantization)
+- "humming": Use Humming Mixed Precision kernels
+- "triton\_unfused": Use Triton unfused MoE kernels
 - "aiter": Use AMD AITer kernels (ROCm only)
+- "flydsl": Use AMD FlyDSL kernels (ROCm only)
+- "hpc": Use HPC kernels (FP8 and Hopper only)
+- "emulation": use BF16/FP16 GEMM, dequantizing weights and running QDQ on activations.
+
+Default: `auto`
+
+#### \--linear-backend
+
+Possible choices: `aiter`, `auto`, `conch`, `cutlass`, `deep_gemm`, `emulation`, `exllama`, `fbgemm`, `flashinfer_b12x`, `flashinfer_cudnn`, `flashinfer_cutedsl`, `flashinfer_cutlass`, `flashinfer_trtllm`, `humming`, `machete`, `marlin`, `torch`, `triton`, `xpu`, `xpu_woq`
+
+Backend for quantized linear layer GEMM kernels. Available options:
+
+- "auto": Automatically select the best backend based on model and hardware
+- "cutlass": Use CUTLASS-based kernels
+- "flashinfer\_cutlass": Use FlashInfer with CUTLASS kernels
+- "flashinfer\_cutedsl": Use FlashInfer with CuTe-DSL kernels (NVFP4, MXFP8)
+- "flashinfer\_trtllm": Use FlashInfer with TensorRT-LLM kernels
+- "flashinfer\_cudnn": Use FlashInfer with cuDNN kernels
+- "flashinfer\_b12x": Use FlashInfer b12x CuteDSL NVFP4 GEMM (SM120+)
+- "marlin": Use Marlin kernels
+- "triton": Use Triton-based kernels
+- "deep\_gemm": Use DeepGEMM kernels
+- "torch": Use PyTorch native scaled\_mm kernels
+- "aiter": Use AMD AITer kernels (ROCm only)
+- "machete": Use Machete kernels (mixed-precision)
+- "fbgemm": Use FBGEMM kernels
+- "conch": Use Conch mixed-precision kernels
+- "exllama": Use Exllama mixed-precision kernels
+- "emulation": Use slow dequant-to-BF16 emulation (for testing only)
+- "xpu": Use XPU kernels
+- "xpu\_woq": Use XPU kernels for weight-only quantization (e.g. W8A16)
 
 Default: `auto`
 
@@ -1473,7 +1858,31 @@ Dataclass which contains all vllm-related configuration. This simplifies passing
 
 Speculative decoding configuration.
 
-API docs: https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.SpeculativeConfig
+API docs: [`vllm.config.SpeculativeConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.SpeculativeConfig "            SpeculativeConfig")
+
+Should either be a valid JSON string or JSON keys passed individually.
+
+#### \--spec-method
+
+Possible choices: `bailing_hybrid_mtp`, `custom_class`, `deepseek_mtp`, `dflash`, `draft_model`, `dspark`, `eagle`, `eagle3`, `ernie_mtp`, `exaone4_5_mtp`, `exaone_moe_mtp`, `extract_hidden_states`, `gemma4_mtp`, `glm4_moe_lite_mtp`, `glm4_moe_mtp`, `glm_ocr_mtp`, `hy_v3_mtp`, `inkling_mtp`, `kimi_k3_mtp`, `longcat_flash_mtp`, `medusa`, `mimo_mtp`, `mimo_v2_mtp`, `minimax_m3_mtp`, `mlp_speculator`, `mtp`, `nemotron_h_mtp`, `ngram`, `ngram_gpu`, `pangu_ultra_moe_mtp`, `qwen3_5_mtp`, `qwen3_next_mtp`, `step3p5_mtp`, `suffix`, `None`
+
+The name of the speculative method to use. If users provide and set the `model` param, the speculative method type will be detected automatically if possible, if `model` param is not provided, the method name must be provided.
+
+If using `ngram` method, the related configuration `prompt_lookup_max` and `prompt_lookup_min` should be considered.
+
+#### \--spec-model
+
+The name of the draft model, eagle head, or additional weights, if provided.
+
+#### \--spec-tokens
+
+The number of speculative tokens, if provided. It will default to the number in the draft model config if present, otherwise, it is required.
+
+#### \--diffusion-config, -dc
+
+Diffusion LLM (dLLM) configuration.
+
+API docs: [`vllm.config.DiffusionConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.DiffusionConfig "            DiffusionConfig")
 
 Should either be a valid JSON string or JSON keys passed individually.
 
@@ -1481,7 +1890,7 @@ Should either be a valid JSON string or JSON keys passed individually.
 
 The configurations for distributed KV cache transfer.
 
-API docs: https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.KVTransferConfig
+API docs: [`vllm.config.KVTransferConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.KVTransferConfig "            KVTransferConfig")
 
 Should either be a valid JSON string or JSON keys passed individually.
 
@@ -1489,7 +1898,7 @@ Should either be a valid JSON string or JSON keys passed individually.
 
 The configurations for event publishing.
 
-API docs: https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.KVEventsConfig
+API docs: [`vllm.config.KVEventsConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.KVEventsConfig "            KVEventsConfig")
 
 Should either be a valid JSON string or JSON keys passed individually.
 
@@ -1497,7 +1906,7 @@ Should either be a valid JSON string or JSON keys passed individually.
 
 The configurations for distributed EC cache transfer.
 
-API docs: https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.ECTransferConfig
+API docs: [`vllm.config.ECTransferConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.ECTransferConfig "            ECTransferConfig")
 
 Should either be a valid JSON string or JSON keys passed individually.
 
@@ -1509,27 +1918,27 @@ As a shorthand, one can append compilation arguments via -cc.parameter=argument 
 
 You can specify the full compilation config like so: `{"mode": 3, "cudagraph_capture_sizes": [1, 2, 4, 8]}`
 
-API docs: https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.CompilationConfig
+API docs: [`vllm.config.CompilationConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.CompilationConfig "            CompilationConfig")
 
 Should either be a valid JSON string or JSON keys passed individually.
 
-Default: `{'mode': None, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': [], 'splitting_ops': None, 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_images_per_batch': 0, 'compile_sizes': None, 'compile_ranges_endpoints': None, 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': None, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': None, 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': None, 'pass_config': {}, 'max_cudagraph_capture_size': None, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': None, 'static_all_moe_layers': []}`
+Default: `{'mode': None, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': [], 'ir_enable_torch_wrap': None, 'splitting_ops': None, 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': None, 'compile_ranges_endpoints': None, 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': None, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': None, 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': None, 'pass_config': {}, 'max_cudagraph_capture_size': None, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': None, 'static_all_moe_layers': []}`
 
 #### \--attention-config, -ac
 
 Attention configuration.
 
-API docs: https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.AttentionConfig
+API docs: [`vllm.config.AttentionConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.AttentionConfig "            AttentionConfig")
 
 Should either be a valid JSON string or JSON keys passed individually.
 
-Default: `AttentionConfig(backend=None, flash_attn_version=None, use_prefill_decode_attention=False, flash_attn_max_num_splits_for_cuda_graph=32, use_cudnn_prefill=False, use_trtllm_ragged_deepseek_prefill=False, use_trtllm_attention=None, disable_flashinfer_prefill=True, disable_flashinfer_q_quantization=False, use_prefill_query_quantization=False)`
+Default: `AttentionConfig(backend=None, minimax_m3_msa_decode_backend='triton', backend_per_kind={}, flash_attn_version=None, use_prefill_decode_attention=False, flash_attn_max_num_splits_for_cuda_graph=32, tq_max_kv_splits_for_cuda_graph=32, use_trtllm_attention=None, disable_flashinfer_q_quantization=False, mla_prefill_backend=None, use_prefill_query_quantization=False, use_fp4_indexer_cache=False, indexer_kv_dtype='bf16', use_non_causal=False, sparse_mla_force_mqa=False, flex_attn_block_m=None, flex_attn_block_n=None, flex_attn_q_block_size=None, flex_attn_kv_block_size=None)`
 
 #### \--reasoning-config
 
 The configurations for reasoning model.
 
-API docs: https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.ReasoningConfig
+API docs: [`vllm.config.ReasoningConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.ReasoningConfig "            ReasoningConfig")
 
 Should either be a valid JSON string or JSON keys passed individually.
 
@@ -1537,11 +1946,11 @@ Should either be a valid JSON string or JSON keys passed individually.
 
 Kernel configuration.
 
-API docs: https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.KernelConfig
+API docs: [`vllm.config.KernelConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.KernelConfig "            KernelConfig")
 
 Should either be a valid JSON string or JSON keys passed individually.
 
-Default: `KernelConfig(enable_flashinfer_autotune=None, moe_backend='auto')`
+Default: `KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=[], fused_add_rms_norm=[]), enable_flashinfer_autotune=None, enable_cutedsl_warmup=True, enable_jit_warmup=True, enable_bf16x3_router_gemm=False, moe_backend='auto', linear_backend='auto')`
 
 #### \--additional-config
 
@@ -1553,7 +1962,7 @@ Default: `{}`
 
 Structured outputs configuration.
 
-API docs: https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.StructuredOutputsConfig
+API docs: [`vllm.config.StructuredOutputsConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.StructuredOutputsConfig "            StructuredOutputsConfig")
 
 Should either be a valid JSON string or JSON keys passed individually.
 
@@ -1563,11 +1972,11 @@ Default: `StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, 
 
 Profiling configuration.
 
-API docs: https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.ProfilerConfig
+API docs: [`vllm.config.ProfilerConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.ProfilerConfig "            ProfilerConfig")
 
 Should either be a valid JSON string or JSON keys passed individually.
 
-Default: `ProfilerConfig(profiler=None, torch_profiler_dir='', torch_profiler_with_stack=True, torch_profiler_with_flops=False, torch_profiler_use_gzip=True, torch_profiler_dump_cuda_time_total=True, torch_profiler_record_shapes=False, torch_profiler_with_memory=False, ignore_frontend=False, delay_iterations=0, max_iterations=0, warmup_iterations=0, active_iterations=5, wait_iterations=0)`
+Default: `ProfilerConfig(profiler=None, torch_profiler_dir='', torch_profiler_with_stack=True, torch_profiler_with_flops=False, torch_profiler_use_gzip=True, torch_profiler_dump_cuda_time_total=True, torch_profiler_record_shapes=False, torch_profiler_with_memory=False, capture_torch_profiler=False, detailed_trace_annotation=False, ignore_frontend=False, delay_iterations=0, max_iterations=0, warmup_iterations=0, active_iterations=5, wait_iterations=0)`
 
 #### \--optimization-level
 
@@ -1587,6 +1996,6 @@ Default: `balanced`
 
 The configurations for weight transfer during RL training.
 
-API docs: https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.WeightTransferConfig
+API docs: [`vllm.config.WeightTransferConfig`](https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.WeightTransferConfig "            WeightTransferConfig")
 
 Should either be a valid JSON string or JSON keys passed individually.

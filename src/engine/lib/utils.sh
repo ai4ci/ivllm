@@ -74,6 +74,18 @@ export IVLLM_CRASH_INDICATORS=(
     "CUDA error"
 )
 
+
+# ── New: stall indicators (alongside the existing IVLLM_CRASH_INDICATORS) ──
+# export IVLLM_STALL_INDICATORS=(
+#     "No available shared memory broadcast block found"
+# )
+
+# How long to wait before re-arming the stall trigger after firing once.
+# Chosen to comfortably exceed one hang "episode" at the ~60s message
+# repeat rate seen in logs/glm52q/20260812_213446/, without re-triggering
+# on every single repeat of the same still-ongoing hang.
+# export IVLLM_STALL_COOLDOWN_SECS="${IVLLM_STALL_COOLDOWN_SECS:-300}"
+
 # ── Path helpers ───────────────────────────────────────────────────────────
 
 # Resolve the per-node local working directory (RAM-backed tmpfs).
@@ -280,7 +292,26 @@ resolve_job_log() {
     # Resolve the path to a per-node vLLM log file (vllm.<nodeid>.log).
     # Returns: path to the log file via stdout.
     local node="${SLURM_NODEID:-0}"
-    resolve_job_dir "$1" "vllm.$node.log"
+    local log=$(resolve_job_dir "$1" "vllm.$node.log")
+    if [[ ! -f $log ]]; then
+        touch "$log"
+    fi
+    echo "$log"
+}
+
+# Resolve the path to a job specific diagnostics trigger.
+# touching this file will result in a set of nodes local actions happening
+# as a result through "monitor_node"
+# Args: $1 — job name.
+# $2 - the node id - if given will use a node local file instead of a shared
+# location - this will only be visible within the node itself
+resolve_job_diagnostics_trigger() {
+    if [[ -z ${2-} ]]; then
+        resolve_job_dir "$1" ".trigger-diagnostics"
+    else
+        local node_local=$(resolve_localdir "$1")
+        echo "$node_local/.trigger-diagnostics.rank-"
+    fi
 }
 
 # Resolve the path to a job's vllm.yaml config file.
@@ -322,7 +353,9 @@ resolve_stripped_job_config() {
         | yq d - config \
         | yq d - served-model-name \
         | yq d - distributed-backend-executor \
+        | yq d - ivllm-debug-level \
         | yq d - metadata > "$output_file"
+
     echo "$output_file"
 }
 
@@ -455,6 +488,147 @@ set_jit_caches() {
     export VLLM_XLA_CACHE_PATH="$localdir/xla"
 }
 
+# Configure vLLM/NCCL/libfabric debugging verbosity from a single master
+# flag from config file, per design/ivllm-environment.md's "Debugging
+# flags" section. Levels 0-2 remain report_memory()'s own concern (RAM/GPU/
+# pyspy) and are untouched here. Levels 3-4 export third-party env vars
+# across three layers, routing file-based artifacts into the job's shared
+# debug/ directory.
+# Args: $1 — job name (for resolving the debug output directory).
+#       $2 — node rank (default 0). Pass $IVLLM_NODE_RANK at call sites that
+#       have it (ray-setup.sh, run-worker-vllm.sh) — do NOT read
+#       $SLURM_NODEID directly here, v1 did and both physical nodes ended up
+#       resolving to the same value on a real run (see v2 UPDATE at top of
+#       file). Matches wait_report()'s own explicit-parameter convention.
+# No-op if ivllm-debug-level < 3 (i.e. does nothing beyond what
+# report_memory() already handles for levels 0-2).
+# Usage: set_debugging_env "$job"
+set_debugging_env() {
+    local job=${1:?must set job name}
+    local node="${2:-0}"
+
+    local debug_level=$(get_job_config_setting "$job" ".ivllm-debug-level")
+    debug_level=${debug_level:-0}
+
+    (( debug_level < 1 )) && return 0
+
+    echo "[debug] ivllm-debug-level=$debug_level — runtime memory profiling enabled"
+
+    (( debug_level < 2 )) && return 0
+
+    local dumpdir
+    dumpdir=$(resolve_job_dir "$job" "debug")
+    mkdir -p "$dumpdir"
+    local torch_trigger=$(resolve_job_diagnostics_trigger "$job" "$node")
+
+    # These allow the use of torch flight profiling but only if the
+    # trigger is activated. the triggers are controlled in monitor_head and
+    # monitor_node
+
+    echo "[debug] ivllm-debug-level=$debug_level — torch triggered flight profile enabled"
+
+    export TORCH_NCCL_DESYNC_DEBUG=1
+    export TORCH_NCCL_DUMP_ON_TIMEOUT=1
+    export TORCH_FR_BUFFER_SIZE=2000
+    export TORCH_NCCL_TRACE_BUFFER_SIZE=2000
+    export TORCH_FR_CPP_STACK=1
+    export TORCH_NCCL_TRACE_CPP_STACK=1
+    export TORCH_FR_DUMP_TEMP_FILE="$dumpdir/torch-nccl-node-${node}-rank-"
+    export TORCH_NCCL_DEBUG_INFO_TEMP_FILE="$dumpdir/torch-nccl-node-${node}-rank-"
+
+    export TORCH_NCCL_DEBUG_INFO_PIPE_FILE="$torch_trigger"
+
+
+    (( debug_level < 3 )) && return 0
+
+    echo "[debug] ivllm-debug-level=$debug_level — verbose third-party diagnostics enabled"
+
+    # ── Layer 1: vLLM's own logger ──────────────────────────────────────
+    export VLLM_LOGGING_LEVEL=DEBUG
+
+    # ── Layer 2: NCCL / torch.distributed ────────────────────────────────
+    export NCCL_DEBUG=WARN
+    export TORCH_CPP_LOG_LEVEL=ERROR
+
+    # ── Layer 3: libfabric / CXI ──────────────────────────────────────────
+    # Deliberately NOT trace here — confirmed on this platform that `info`
+    # is more informative than `trace` at level 3 (see active-issues.md /
+    # ivllm-environment.md — non-monotonic verbosity, don't "fix" this).
+    export FI_LOG_LEVEL=warn
+    export FI_LOG_PROV=cxi
+    export FI_LOG_SUBSYS=core,cq,ep_data,mr
+
+    (( debug_level < 4 )) && return 0
+
+    # ── Level 4: targeted trace, for actively chasing a live hang ────────
+    # High log volume — only reached at the top debug level.
+
+    echo "[debug] ivllm-debug-level=$debug_level — enabling torch proiling & trace stats"
+
+    export NCCL_DEBUG=INFO
+    export NCCL_DEBUG_SUBSYS=INIT,BOOTSTRAP,ENV,GRAPH
+    export FI_LOG_LEVEL=trace # libfabric levels are mixed up. do not fix
+    export TORCH_CPP_LOG_LEVEL=WARN
+    export TORCH_DISTRIBUTED_DEBUG=INFO
+
+    # see https://docs.pytorch.org/docs/2.13/logging.html
+
+    (( debug_level < 5 )) && return 0
+
+    echo "[debug] ivllm-debug-level=$debug_level — enabling vllm function tracing"
+
+    export NCCL_DEBUG=TRACE
+    export NCCL_DEBUG_SUBSYS=$NCCL_DEBUG_SUBSYS,COLL,PROXY
+    export FI_LOG_LEVEL=info # libfabric levels are mixed up. do not fix
+    export VLLM_TRACE_FUNCTION=1
+    export VLLM_LOG_STATS_INTERVAL=1
+    export CUDA_LAUNCH_BLOCKING=1
+    export TORCH_CPP_LOG_LEVEL=INFO
+    export TORCH_DISTRIBUTED_DEBUG=DETAIL
+    export TORCH_LOGS=+distributed
+    export TORCH_SHOW_CPP_STACKTRACES=1
+
+}
+
+
+# Populates an array of vllm args based on a job configuration file, that are
+# applicable to every vllm process startup regardless of whether it is ray or
+# other
+# Args: $1 - job name; $2 - ivllm options array reference
+baseline_vllm_args() {
+    local job="$1"
+    declare -n ref_args=$2
+
+    local strippedConfig=$(resolve_stripped_job_config "$job")
+    local model=$(get_job_config_setting "$job" ".model")
+    local serverPort=$(get_job_status_setting "$job" ".serverPort")
+
+    # TODO: debug / profiling options with:
+    local debug_level=$(get_job_config_setting "$job" ".ivllm-debug-level")
+    debug_level=${debug_level:-0}
+
+    # numaBindNodes="[${CUDA_VISIBLE_DEVICES:?...}]"
+    ref_args+=(
+    #   --numa-bind-nodes "$numaBindNodes"
+        --config "$strippedConfig"
+        --port "${serverPort:-8000}"
+        --served-model-name "$model" "default" "$IVLLM_JOB"
+    )
+
+    # The --profiler-config option is set here based on debug level.
+    # https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.ProfilerConfig
+    if (( debug_level > 3 )); then
+        local dumpdir
+        dumpdir=$(resolve_job_dir "$job" "torch-profile")
+        mkdir -p "$dumpdir"
+        local json_config
+        printf -v json_config '{"profiler": "torch", "torch_profiler_dir": "%s"}' "$dumpdir"
+        ref_args+=(
+            --profiler-config "$json_config"
+        )
+    fi
+}
+
 # ── Lockfile state machine ─────────────────────────────────────────────────
 
 # Create a lockfile with pending status on the login node before sbatch.
@@ -496,9 +670,8 @@ create_status_pending() {
         fi
     fi
 
-    # clear out old logs etc
-
-    rm -r "${jobdir:?must be not empty}/*"
+    # clear out old logs etc, everything apart from config.
+    find "${jobdir:?must be not empty}" -mindepth 1 ! -name "vllm.yaml" ! -name "vllm.*.log" ! -name "vllm.yaml.clean.yaml" -delete
 
     # Atomic create with noclobber
     (
@@ -810,51 +983,6 @@ process_died() {
     return 1
 }
 
-# waits for a process to finish whilst reporting on its memory usage whilst in
-# the initialising state. This is designed to be run on a compute node and will
-# give the processes on that node (for the current user) and the local node
-# specific storage. can run on both head and worker nodes.
-# Args: $1 — job; $2 - pid for the process to monitor (usually the pid of the
-# actual vllm serve process); Must run in same shell as vllm process.
-# Usage: wait_report "$job" "$pid" "$node"
-wait_report() {
-    local job=${1:?must provide job}
-    local pid=${2:?must provide pid}
-    local node=${3:-0}
-    local elapsed=0
-    local tick_ms=100
-    local target_ms
-    (( target_ms = IVLLM_CHECK_INTERVAL_SECS * 1000 ))
-
-    while ! process_died "$pid"; do
-        if [ "$elapsed" -ge "$target_ms" ]; then
-            if is_status "$job" "initialising" || [[ "${IVLLM_RUNTIME_DEBUG:-0}" == "1" ]]; then
-                report_memory "$job" "$node"
-            fi
-            elapsed=0
-        fi
-        sleep 0.1
-        ((elapsed += tick_ms))
-    done
-
-    wait "$pid" 2>/dev/null
-    local code=$?
-
-    if [[ $code != 0 ]]; then
-        echo "[serve-$node] vllm crashed with exit code $code"
-        return $code
-    else
-        echo "[serve-$node] vllm exited normally"
-        # give a crashed node some time to win the signalling race.
-        sleep 1
-    fi
-
-    # In normal operation wait_report should not exit. Its only if vllm fails
-    # that it exists. This is always an error and must be signalled as such.
-    return 1
-}
-
-
 # Graceful shutdown exit trap. Handles all exit codes:
 #   200 = SIGUSR1 (SLURM timeout)
 #   201 = SIGUSR2 (user cancel or idle timeout)
@@ -967,9 +1095,12 @@ tidy_up() {
     # The srun is guaranteed to be on the same node as the monitors and manages the
     # possiblity that the vllm head node is not on the same machine as the
     # slurm step host. This is highly unlikely but this is belt and braces.
-    for pid in "$@"; do
-        kill_pid "$pid" "srun vLLM process $pid"
-    done
+    if [[ -n $monitor_pid ]]; then
+        # If the monitor pid if not given then neither are the vllm process pids
+        for pid in "$@"; do
+            kill_pid "$pid" "srun vLLM process $pid"
+        done
+    fi
 
     clear_localdir "$job"
 
@@ -1044,6 +1175,13 @@ monitor_head() {
     server_port=$(get_job_status_setting "$job" ".serverPort")
     model=$(get_job_status_setting "$job" ".model")
 
+    local debug_level=$(get_job_config_setting "$job" ".ivllm-debug-level")
+    debug_level=${debug_level:-0}
+
+
+
+    local trigger=$(resolve_job_diagnostics_trigger "$job")
+
     if [ ! -f "$lockfile" ]; then
         echo "[head] FATAL: lockfile $lockfile missing on startup"
         return 250
@@ -1092,6 +1230,8 @@ monitor_head() {
         # User requested abort
         if [[ $status ==  "abort" ]]; then
             echo "[head] user abort request detected"
+            echo "user abort" > "$trigger"
+            sleep 10
             return 254
         fi
 
@@ -1101,10 +1241,13 @@ monitor_head() {
             crash_patterns+=("-e" "$crash")
         done
 
+        local recent_log
+        recent_log=$(tail -n 5000 "$log" 2>/dev/null)
+
         # Check for recent crash related messages
-        if tail -n 5000 "$log" 2>/dev/null | grep -q -F "${crash_patterns[@]}"; then
-            # a log message showed a crash. give it a chance to close itself.
+        if grep -q -F "${crash_patterns[@]}" <<< "$recent_log"; then
             echo "[head] monitor detected a crash in head log file."
+            echo "monitor detected crash" > "$trigger"
             sleep 60
             echo "[head] monitor shutting down."
             return 253
@@ -1115,6 +1258,11 @@ monitor_head() {
         # Still initialising — skip idle checks
         if [[ $status ==  "initialising" ]]; then
             if curl -sf "http://localhost:$server_port/health" > /dev/null 2>&1; then
+
+                if (( debug_level > 3 )); then
+                    # start the torch profiling
+                    curl -sf -X POST "http://localhost:$server_port/start_profile" > /dev/null 2>&1
+                fi
 
                 # Could save cache before warmup which may help in certain
                 # circumstances if the model starts but fails warm up.
@@ -1130,21 +1278,34 @@ monitor_head() {
                 echo "[startup] sending warmup request..."
                 while (( attempt <= max_retries )); do
 
-                    local tmp_status=$(get_job_status_setting "$job" ".status")
-                    # User requested cancel
-                    if [[ ! $tmp_status == "initialising" ]]; then
-                        warmup_ok=1
-                        echo "[head] status $tmp_status during warmup"
-                        break;
+                    # 1. Run the warmup routine in the background
+                    # this includes a 10 second delay
+                    run_vllm_warmup "$model" "$server_port" &
+                    local warmup_pid=$!  # Capture the background PID of the warmup function
+
+                    while kill -0 "$warmup_pid" 2>/dev/null; do
+                        # Check for external cancellation inside the running attempt
+                        tmp_status=$(get_job_status_setting "$job" ".status")
+                        if [[ ! "$tmp_status" == "initialising" ]]; then
+                            kill "$warmup_pid" 2>/dev/null
+                            wait "$warmup_pid" 2>/dev/null # Clean up zombie process
+                            warmup_ok=111
+                            break 2 # Break out of BOTH the sub-loop and the outer retry loop
+                        fi
+
+                        sleep 1
+                    done
+
+                    wait "$warmup_pid"
+                    warmup_ok=$?
+
+                    if (( warmup_ok == 0 )); then
+                        break
                     fi
 
-                    if run_vllm_warmup "$model" "$server_port"; then
-                        warmup_ok=0
-                        break;
-                    fi
                     echo "[startup] WARNING: warmup attempt $attempt/$max_retries failed, retrying..."
                     (( attempt++ ))
-                    sleep 10
+
                 done
 
                 if (( warmup_ok == 0 )); then
@@ -1155,10 +1316,19 @@ monitor_head() {
                     update_status_running "$job"
                     echo "[startup] startup complete: vLLM is running."
                     continue
+                elif (( warmup_ok == 111 )); then
+                    echo "[startup] warmup interrupted"
+                    echo "[startup] signalling for vllm to abort."
+                    echo "[startup] startup complete: vLLM warmup interrupted."
+                    echo "warmup interrupted" > "$trigger"
+                    sleep 10
+                    return 254
                 else
                     echo "[startup] ERROR: warmup failed after $max_retries attempts"
                     echo "[startup] signalling for vllm to shut down."
                     echo "[startup] startup complete: vLLM failed warmup."
+                    echo "warmup failure" > "$trigger"
+                    sleep 10
                     return 252
                 fi
             else
@@ -1183,20 +1353,148 @@ monitor_head() {
             done
 
             # Check for recent API requests (not /health)
-            if tail -n 5000 "$log" 2>/dev/null | grep -F "${time_patterns[@]}" | grep -q -F "${endpoint_patterns[@]}"; then
-                # recent api request found
+            if grep -F "${time_patterns[@]}" <<< "$recent_log" | grep -q -F "${endpoint_patterns[@]}"; then
                 sleep "$IVLLM_CHECK_INTERVAL_SECS"
                 continue
             else
                 echo "[head] no API requests for $idle_timeout minutes — shutting down"
                 return 202
             fi
+
+            # TODO: stall detection
+            # The head monitor count look at /v1/metrics endpoint and captured
+            # data from https://docs.vllm.ai/en/stable/usage/metrics/
+            # to determine if the server has become unacceptably slow and
+            # possibly start the profiling with a
+            # curl -X POST http://localhost:8000/start_profile
+            # or stop it again with
+            # curl -X POST http://localhost:8000/stop_profile
+            # or trigger a dump via monitor_node with
+            # echo "reason" > "$trigger"
+
         fi
 
     done
 
     echo "[head] monitor shutting down for job $job."
     return 0
+}
+
+
+# This is the node local monitor. It is deliberately lightweight and
+# is responsible for reporting node local memory usage.
+# Waits for a process to finish whilst reporting on its memory usage.
+# also watches the trigger sentinel file on sahred project storage (written by
+# monitor_head() and — if the timestamp has changed propagages to the torch
+# flight recorder pipes (which are on node local storage)
+# TODO: although the trigger is detected by torch and the logs suggest the flight
+# recorder is written there is always the same content in them: 118 bytes of nonsense.
+# When a trigger is run the node will always make a copy of existing memory, network,
+# pyspy and
+# Args: $1 — job; $2 - pid for the process to monitor; $3 - node id.
+# Usage: monitor_node "$job" "$pid" "$node"
+monitor_node() {
+    local job=${1:?must provide job}
+    local pid=${2:?must provide pid}
+    local node=${3:-0}
+    local elapsed=0
+    local tick_ms=100
+    local target_ms
+    (( target_ms = IVLLM_CHECK_INTERVAL_SECS * 1000 ))
+    local last_mod=0
+    local trigger=$(resolve_job_diagnostics_trigger "$job")
+    local torch_trigger=$(resolve_job_diagnostics_trigger "$job" "$node")
+
+    local debug_level=$(get_job_config_setting "$job" ".ivllm-debug-level")
+    debug_level=${debug_level:-0}
+
+    echo "[serve-$node] node monitor started with debug level: $debug_level"
+
+    while ! process_died "$pid"; do
+
+        local current_mod
+        if [[ -f "$trigger" ]]; then
+            current_mod=$(stat -c %Y "$trigger")
+        else
+            current_mod=0
+        fi
+
+        if (( current_mod > last_mod )); then
+            # bring forward the next capture if the trigger file was modified
+            local reason=$(cat "$trigger")
+            echo "[serve-$node] diagnostics capture trigger detected: $reason"
+
+            # trigger files will be xxx1.pipe, xxx2.pipe, xxx3.pipe indexed by
+            # GPU rank in whole collective (not node)
+            shopt -s nullglob
+            for file in "${torch_trigger}"*.pipe; do
+                echo "[serve-$node] propagating per rank trigger: $file"
+                echo "$reason" >> "$file"
+            done
+
+            # Always capture full details in the event of a triggered shutdown
+            report_memory "$job" "$node"
+            report_gpu "$job" "$node"
+            report_processes "$job" "$node" "$reason"
+            report_gpu_net_stats "$job" "$node" "$reason"
+            report_cuda "$job" "$node" "$reason"
+            last_mod=$current_mod
+            elapsed=0
+        else
+            sleep 0.1
+            (( elapsed += tick_ms ))
+
+            if (( elapsed >= target_ms )); then
+                if is_status "$job" "initialising" || (( debug_level > 0 )); then
+
+                    report_memory "$job" "$node"
+
+                    if (( debug_level > 1 )); then
+                        report_gpu "$job" "$node"
+                    fi
+
+                    if (( debug_level > 2 )); then
+                        report_processes "$job" "$node" "monitoring"
+                    fi
+
+                    if (( debug_level > 3 )); then
+                        shopt -s nullglob
+                        for file in "${torch_trigger}"*.pipe; do
+                            echo "[serve-$node] per rank monitoring: $file"
+                            echo "monitoring" >> "$file"
+                        done
+                        # This is very unstable and leads to crashes:
+                        # report_cuda "$job" "$node" "monitoring"
+                    fi
+
+                    if (( debug_level > 4 )); then
+                        report_gpu_net_stats "$job" "$node" "monitoring"
+                    fi
+
+                fi
+                elapsed=0
+            fi
+        fi
+    done
+
+    echo "[serve-$node] vllm (or ray) process $pid exited"
+    wait "$pid" 2>/dev/null
+    local code=$?
+
+    if [[ $code != 0 ]]; then
+        echo "[serve-$node] vllm crashed with exit code $code"
+        report_memory "$job" "$node"
+        report_gpu "$job" "$node"
+        report_processes "$job" "$node" "vllm crash $code"
+        report_gpu_net_stats "$job" "$node" "vllm crash $code"
+        report_cuda "$job" "$node" "vllm crash $code"
+        return $code
+    else
+        echo "[serve-$node] vllm exited normally"
+        sleep 1
+    fi
+
+    return 1
 }
 
 # ── Resource monitoring ───────────────────────────────────────────────────
@@ -1237,84 +1535,202 @@ env | grep -E "^(VLLM_|RAY_|NCCL_|FI_|NVHPC|CUDA_|LD_CONFIG|CPATH|PATH|SLURM_|TR
 echo "============================================"
 }
 
-
 # Report memory and JIT cache usage for the current node.
 # Args: $1 — job name (used to resolve localdir via resolve_localdir()).
-# Reads SLURM_NODEID from env (defaults to 0). Prints formatted line:
-#   [HH:MM:SS-node N] Cache: XK | RAM: YM | Top: proc1=ZM proc2=WK ...
-# Usage: report_memory "$job"
+# $2 - the node id
+# Usage: report_memory "$job" "$SLURM_NODEID"
 report_memory() {
-      local job="${1:?must provide job}"
-      local localdir
-      local node
+    local job="${1:?must provide job}"
+    local localdir=$(resolve_localdir "$job")
+    local node=${2:-0}
 
-      localdir=$(resolve_localdir "$job")
-      node=${2:-0}
+    local raw_ps
+    raw_ps=$(ps -u "$USER" -o pid=,rss=,comm= 2>/dev/null || true)
 
-      local raw_ps
-      raw_ps=$(ps -u "$USER" -o pid=,rss=,comm= 2>/dev/null || true)
+    local total_ram
+    total_ram=$(echo "$raw_ps" | awk '{sum+=$2} END{if(sum>1024) printf "%dM", sum/1024; else printf "%dK", sum}')
 
-      local total_ram
-      total_ram=$(echo "$raw_ps" | awk '{sum+=$2} END{if(sum>1024) printf "%dM", sum/1024; else printf "%dK", sum}')
+    local top_6
+    top_6=$(echo "$raw_ps" | awk '{m[$3]+=$2} END{for(c in m) printf "%d %s\n", m[c], c}' | sort -rn | head -n 6 | awk '{if($1>1024) printf "%s=%dM ",$2,$1/1024; else printf "%s=%dK ",$2,$1}')
 
-      local top_6
-      top_6=$(echo "$raw_ps" | awk '{m[$3]+=$2} END{for(c in m) printf "%d %s\n", m[c], c}' | sort -rn | head -n 6 | awk '{if($1>1024) printf "%s=%dM ",$2,$1/1024; else printf "%s=%dK ",$2,$1}')
+    printf "[%s-node %s] Cache: %sK | RAM: %s | Top: %s\n" \
+        "$(date +%H:%M:%S)" "$node" \
+        "$(du -sk "$localdir" 2>/dev/null | cut -f1)" "$total_ram" "$top_6"
 
-      printf "[%s-node %s] Cache: %sK | RAM: %s | Top: %s\n" \
-          "$(date +%H:%M:%S)" "$node" \
-          "$(du -sk "$localdir" 2>/dev/null | cut -f1)" "$total_ram" "$top_6"
+}
 
-      local debug_level="${IVLLM_DEBUG_LEVEL:-0}"
-      (( debug_level < 1 )) && return 0
+# Report GPU usage for the current node.
+# Args: $1 — job name for consistency.
+# $2 - the node id
+# Usage: report_gpu "$job" "$SLURM_NODEID"
+report_gpu() {
 
-      # Level 1+: per-GPU utilisation/memory, cheap, no process attach.
-      if command -v nvidia-smi &>/dev/null; then
-          local gpu_line
-          gpu_line=$(nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total \
-              --format=csv,noheader,nounits 2>/dev/null | \
-              awk -F', ' '{printf "gpu%s=%s%%/%sM ", $1, $2, $3}')
-          printf "[%s-node %s] GPU: %s\n" "$(date +%H:%M:%S)" "$node" "$gpu_line"
-      fi
+    local job="${1:?must provide job}"
+    local node=${2:-0}
 
-      (( debug_level < 2 )) && return 0
+     # Level 1+: per-GPU utilisation/memory, cheap, no process attach.
+    if command -v nvidia-smi &>/dev/null; then
+        local gpu_line
+        gpu_line=$(nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total \
+            --format=csv,noheader,nounits 2>/dev/null | \
+            awk -F', ' '{printf "gpu%s=%s%%/%sM ", $1, $2, $3}')
+        printf "[%s-node %s] GPU: %s\n" "$(date +%H:%M:%S)" "$node" "$gpu_line"
+    fi
+}
 
-      # Level 2+: py-spy stack dumps of vLLM/Ray worker processes, appended to a
-      # persistent per-node file under the shared job dir (NOT $localdir — that's
-      # node-local tmpfs, invisible to other nodes and wiped by clear_localdir()
-      # on shutdown, i.e. gone exactly when we'd want it post-mortem).
-      if command -v py-spy &>/dev/null; then
-          local dumpdir
-          dumpdir=$(resolve_job_dir "$job" "debug")
-          mkdir -p "$dumpdir"
-          local dumpfile="$dumpdir/pyspy-node${node}.log"
-          local dumped=0
-          local pid
-          local rss
-          local comm
+# Report process information for the current node, by dumping pyspy traces.
+# Args: $1 — job name (used to determine dump output file).
+# $2 - the node id
+# $3 - a marker or reason
+# Usage: report_processes "$job" "$SLURM_NODEID"
+report_processes() {
 
-          {
-              echo "### $(date +%Y-%m-%dT%H:%M:%S) ###"
-              while read -r pid rss comm; do
-                  case "$comm" in
-                      *RayWorkerP*|*EngineCor*|vllm|*VLLM*)
-                          echo "=== pid $pid rss=${rss}K comm=$comm ==="
-                          py-spy dump --pid "$pid" --nonblocking 2>&1
-                          echo
-                          (( dumped++ ))
-                          ;;
-                  esac
-              done <<< "$raw_ps"
-          } >> "$dumpfile"
+    local job="${1:?must provide job}"
+    local node=${2:-0}
+    local reason=${3:-monitoring}
 
-          (( dumped > 0 )) && printf "[%s-node %s] [debug] appended %d py-spy dump(s) to %s\n" \
-              "$(date +%H:%M:%S)" "$node" "$dumped" "$dumpfile"
-      else
-          printf "[%s-node %s] [debug] IVLLM_DEBUG_LEVEL=%s requested py-spy but it is not installed\n" \
-              "$(date +%H:%M:%S)" "$node" "$debug_level"
-      fi
+    # Level 2+: py-spy stack dumps of vLLM/Ray worker processes, appended to a
+    # persistent per-node file under the shared job dir (NOT $localdir — that's
+    # node-local tmpfs, invisible to other nodes and wiped by clear_localdir()
+    # on shutdown, i.e. gone exactly when we'd want it post-mortem).
 
-  }
+    if ! command -v py-spy &>/dev/null; then
+        printf "[%s-node %s] [debug] ivllm-debug-level=%s requested py-spy but it is not installed\n" \
+            "$(date +%H:%M:%S)" "$node" "$debug_level"
+        return 0
+    fi
 
+    local dumpdir
+    dumpdir=$(resolve_job_dir "$job" "debug")
+    mkdir -p "$dumpdir"
+    local dumpfile="$dumpdir/pyspy-node${node}.log"
+
+    local dumped=0
+    local pid
+    local rss
+    local comm
+
+    local raw_ps
+    raw_ps=$(ps -u "$USER" -o pid=,rss=,comm= 2>/dev/null || true)
+
+    {
+        echo "### $(date +%Y-%m-%dT%H:%M:%S) $reason ###"
+        echo "=== PYSPY ======="
+    } >> "$dumpfile"
+
+    while read -r pid rss comm; do
+        case "$comm" in
+            *RayWorkerP*|*EngineCor*|vllm|*VLLM*)
+
+                {
+                    echo "=== pid $pid rss=${rss}K comm=$comm ==="
+
+                    # PY-SPY dump
+                    py-spy dump --pid "$pid" --nonblocking 2>&1 || echo "[pyspy failed to extract trace]"
+                    echo
+
+                } >> "$dumpfile"
+
+                (( dumped++ ))
+                ;;
+        esac
+    done <<< "$raw_ps"
+
+    printf "[%s-node %s] [debug] appended %d py-spy dump(s) to %s\n" \
+        "$(date +%H:%M:%S)" "$node" "$dumped" "$dumpfile"
+
+}
+
+# NB: This looked like a good idea on paper but cuda-gdb is quite slow and
+# unstable with lots of dumps failing
+# # Report process information for the current node, by dumping cuda-gdb traces.
+# # Args: $1 — job name (used to determine dump output file).
+# # $2 - the node id
+# # $3 - a marker or reason
+# # Usage: report_processes "$job" "$SLURM_NODEID"
+report_cuda() {
+
+    local job="${1:?must provide job}"
+    local node=${2:-0}
+    local reason=${3:-monitoring}
+
+    local dumpdir
+    dumpdir=$(resolve_job_dir "$job" "debug")
+    mkdir -p "$dumpdir"
+    local dumpfile="$dumpdir/cuda-gdb-node${node}.log"
+
+    local dumped=0
+    local pid
+    local rss
+    local comm
+
+    local raw_ps
+    raw_ps=$(ps -u "$USER" -o pid=,rss=,comm= 2>/dev/null || true)
+
+    {
+        echo "### $(date +%Y-%m-%dT%H:%M:%S) $reason ###"
+        echo "=== CUDA-GDB ==="
+    } >> "$dumpfile"
+
+    while read -r pid rss comm; do
+        case "$comm" in
+            *RayWorkerP*|*EngineCor*|vllm|*VLLM*)
+
+                {
+                    echo "=== pid $pid rss=${rss}K comm=$comm ==="
+                    timeout -s 9 10s cuda-gdb -q -p "$pid" \
+                        -ex "set confirm off" \
+                        -ex "set pagination off" \
+                        -ex "interrupt" \
+                        -ex "set scheduler-locking on" \
+                        -ex "thread apply all backtrace" \
+                        -ex "cuda thread apply all backtrace" \
+                        -ex "quit" 2>&1 || echo "[cuda-gdb failed to extract trace]"
+                    echo
+
+                } >> "$dumpfile"
+
+                (( dumped++ ))
+                ;;
+        esac
+    done <<< "$raw_ps"
+
+    printf "[%s-node %s] [debug] appended %d cuda-dbg dump(s) to %s\n" \
+        "$(date +%H:%M:%S)" "$node" "$dumped" "$dumpfile"
+
+}
+
+# Report process information for the current node, by dumping gou and network stats.
+# Args: $1 — job name (used to determine dump output file).
+# $2 - the node id
+# $3 - a marker or reason
+# Usage: report_processes "$job" "$SLURM_NODEID"
+report_gpu_net_stats() {
+
+    local job="${1:?must provide job}"
+    local node=${2:-0}
+    local reason=${3:-monitoring}
+
+    local dumpdir
+    dumpdir=$(resolve_job_dir "$job" "debug")
+    mkdir -p "$dumpdir"
+    local dumpfile="$dumpdir/gpu-net-node${node}.log"
+    {
+        echo "### $(date +%Y-%m-%dT%H:%M:%S) $reason ###"
+        echo "=== GPU STATE: ======="
+        # Snapshot detailed GPU states including memory, utilization, and power draw
+
+        nvidia-smi --query-gpu=timestamp,index,name,utilization.gpu,utilization.memory,memory.used,memory.free,power.draw,temperature.gpu --format=csv 2>&1
+
+        # Snapshot which exact PIDs are registered to which GPU hardware contexts
+        nvidia-smi pmon -c 1 2>&1
+
+        echo "=== NETWORK STATE: ==="
+        ss -t -i -p 2>&1
+        echo "======================"
+        echo
+    } >> "$dumpfile"
+}
 
 # ── JIT cache operations ──────────────────────────────────────────────────
 
@@ -1334,6 +1750,9 @@ run_vllm_warmup() {
       \"max_tokens\": 5,
       \"n\": 1
     }"
+
+  # Give a delay for the model to settle, or throttle requests.
+  sleep 10
 
   # 1. Warm up batch_memcpy_kernel via multiple parallel streams/messages
   echo "[startup] warming up multi-sequence memory kernels..."

@@ -4,6 +4,7 @@ metadata:
     version: 0.4.1
     lifecycle: experimental
 min-vllm-version: "0.26.0"
+ivllm-debug-level: 4
 idle-timeout: 60
 
 # vLLM config for zai-org/GLM-5.2-FP8 on Isambard AI
@@ -57,8 +58,6 @@ speculative-config: '{"method": "mtp", "num_speculative_tokens": 5}'
 env:
     VLLM_DEEP_GEMM_WARMUP: skip
     IVLLM_DISABLE_FLASHINFER: 1
-    IVLLM_DEBUG_LEVEL: 3
-    IVLLM_RUNTIME_DEBUG: 1
     VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 1800
     # from glm-int4 experiments
     NCCL_NET_GDR_LEVEL: PHB

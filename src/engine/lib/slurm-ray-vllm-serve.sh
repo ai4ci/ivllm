@@ -52,6 +52,8 @@ source "$vllmVersionDir/bin/activate"
 
     # TODO: https://docs.ray.io/en/latest/cluster/vms/user-guides/community/slurm.html
     # ray symmetric-run
+    # symmetric run looks to be a simpler solution that this but is untested
+    # and we would not have the same visibitity into the processes spawned.
 
     # setup the ray head and workers
     # The ray-setup.sh script is responsible for setting all environment variables.

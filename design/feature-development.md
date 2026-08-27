@@ -6,59 +6,60 @@ and the Architecture Decision Records (`adr.md`).
 
 When features are complete move to `./scope.md`
 
-### Model performance benchmarking — `ivllm compare`
+### Model performance benchmarking — `ivllm bench`
 
-TODO: Is this still consistent with the implementation?
-TODO: What is best way to E2E test this?
-
-**ADR-118** (revised 2026-08-05 — persistent-path reuse against a shadow
-project directory; supersedes the original ephemeral-job design in place)
-
-Let an agent submit several candidate vLLM configs, get throughput/latency
-numbers for each, and compare them. **Revised decision**: reuse the real,
-unmodified `ivllm-serve.sh`/lockfile/monitor-triad path exactly as production
-uses it — pointed at a separate `$BENCH_PROJECTDIR` whose expensive
-subdirectories (`engine/vllm`, `engine/nvhpc`, `engine/rdma`, `model`) are
-symlinked back to the real project directory, so nothing is re-downloaded or
-recompiled, but `engine/jobs`/`engine/diagnostics` stay independent so
-benchmark runs never collide with real job state. This replaces the original
-"ephemeral, lockfile-free job" design — see `design/adr.md` ADR-118 for the
-full rationale (numbers should describe what actually gets deployed, not a
-parallel launch path that can silently drift from it).
-
-| Step | Description | Dependencies |
-|------|-------------|--------------|
-| 1. | One-time admin setup: create `$BENCH_PROJECTDIR` with `engine/vllm`, `engine/nvhpc`, `engine/rdma`, `model` symlinked to the real project dir's equivalents; `engine/jobs`/`engine/diagnostics` left as real, independent directories | — |
-| 2. | `run_vllm_bench()` (new, small function in `utils.sh`): activate the vLLM venv (`resolve_vllm_version_dir` + `source bin/activate` — `monitor_head`'s shell doesn't have this on `PATH` by default, unlike `run_head_vllm.sh`), then run `vllm bench serve --host localhost --port "$server_port" --dataset-name random`, save `bench.json` | — |
-| 3. | Add an `IVLLM_BENCH_MODE` env-var-gated branch in `monitor_head()`, right after `update_status_running "$job"` (`utils.sh:1061` — the same point that already confirms healthy *and* warmed-up): call `run_vllm_bench()` then `request_cancel "$job"`, driving the *existing* graceful-shutdown path — no new shutdown logic needed | Step 2 |
-| 4. | CLI: new `benchmarkProjectDir` config field (`ivllm config --benchmark-project-dir <path>`) so `compare` never risks reusing/clobbering the regular `projectDir` setting | — |
-| 5. | CLI: `ivllm compare <comparisonName> --submit <config1.yaml> <config2.yaml> ...` — for each config, a real `Backend.requestStart()` call (`ivllm-serve.sh -b`, non-interactive batch partition — already skips the interactive reservation, no new code needed for this) with `IVLLM_BENCH_MODE=1` injected into that job's env exports; writes `comparison.json` manifest (configName → slurmJobId, submittedAt, status) | Steps 3-4 |
-| 6. | CLI: `ivllm compare <comparisonName> --analyse` — one-shot status check against the manifest, rsyncs down newly-completed configs' diagnostics, prints a status table with metrics inline; no verdict-picking | Step 5 |
-| 7. | Diagnostics stored at `$BENCH_PROJECTDIR/engine/diagnostics/<comparisonName>/<configName>/{vllm.yaml,slurm.sh,vllm.log,bench.json}` — reuses the existing `capture_job_diagnostics`/`tidy_up` machinery automatically, since these are ordinary jobs on the real path | — |
-| 8. | Default `--time` of 2 hours (large/multi-node model load + warmup can itself take 45–60+ min), overridable per comparison run | — |
-
-**No longer needed, removed from scope by the revision:** extracting
-`IVLLM_ARGS`-building logic out of `run_head_vllm.sh`/`run_worker_vllm.sh`
-into a lockfile-free shared function, and a separate ephemeral-job
-multi-node coordination design — both were needed only to support a
-lockfile-free launch path. Since Option 3 reuses the real, lockfile-backed
-path unmodified, multi-node benchmarking works automatically with zero new
-coordination code.
-
-**Rationale:** the thing being benchmarked is now *exactly* the thing that
-gets deployed (same scripts, same lockfile/monitor triad, same JIT-cache
-handling, same multi-node coordination) rather than a parallel
-implementation that has to be kept in sync by hand — more honest numbers,
-and less new code to maintain than the original design, despite reusing
-more. Still sits outside any new `Backend` lifecycle method — benchmark jobs
-are ordinary `Backend.requestStart()` calls with `IVLLM_BENCH_MODE=1` set
-and a different project dir, not a new state machine.
+**Done — moved to `design/scope.md` §1.** Implemented as
+`ivllm bench submit|status|results`, backed by a standalone login-node
+orchestrator (`ivllm-bench.sh`) rather than the `IVLLM_BENCH_MODE`
+compute-side hook this section originally proposed — see `design/adr.md`
+ADR-118's "Implementation update" for exactly what changed and why during
+build, and `scope.md` for the current, implemented behaviour. E2E test
+coverage: `tests/bash/sandboxed/test-ivllm-bench.sh` sources `ivllm-bench.sh`
+directly (no SLURM) to unit-test `write_status_summary()`/the model-prefetch
+loop against real fixtures — a genuine end-to-end run (real `sbatch`
+submission, `srun --overlap` against a live job) hasn't been exercised yet
+and would need real cluster time, not just the sandboxed harness.
 
 ### Improved diagnostics
 
-TODO: elaborate we have IVLLM_DEBUG and associated level.
-Be useful if this was a one stop integrated flag to manage all other flags in
-e.g. NCCL, libfabric, ?Torch, ?Others.
+**What exists today** (`report_memory()`/`wait_report()`, `utils.sh`):
+`IVLLM_DEBUG_LEVEL` is a numeric knob checked once per `wait_report()` tick
+(every `IVLLM_CHECK_INTERVAL_SECS`, while `initialising`, or always if
+`IVLLM_RUNTIME_DEBUG=1`):
+
+| Level | Adds |
+|-------|------|
+| 0 (default) | Per-node cache size / RAM / top-6-process summary line |
+| 1 | + per-GPU utilisation/memory (`nvidia-smi`, cheap, no process attach) |
+| 2 | + `py-spy dump --nonblocking` stack traces of every vLLM/Ray worker process, appended to `debug/pyspy-node<N>.log` under the job directory (persistent — survives `clear_localdir()`, unlike `$localdir` itself) |
+
+Levels above 2 (e.g. `IVLLM_DEBUG_LEVEL: 3`, used in some example configs —
+see `examples/glm-5.2-743b-int4.yaml`) currently have **no additional
+effect** — there's no `debug_level < 3` branch in `report_memory()`, so `3`
+behaves identically to `2` today. Worth either documenting that explicitly
+where the flag is set, or actually using `3` for something (the GLM-5.2
+investigation's pyspy traces were the single most decisive diagnostic tool
+across this whole project — see `design/active-issues.md` — so a genuine
+level 3, e.g. NCCL/libfabric trace-level logging turned on automatically
+rather than needing separate manual env vars, would have real value).
+
+**The one-stop idea** (a single `IVLLM_DEBUG_LEVEL` that also manages
+`NCCL_DEBUG`/`NCCL_DEBUG_SUBSYS`, `FI_LOG_LEVEL`/`FI_LOG_SUBSYS`, and
+Triton/torch verbosity together) is not built — every job that has needed
+this level of visibility so far (GLM-5.2-INT4, most recently) has set these
+env vars individually and by hand in its `vllm.yaml` `env:` block (see
+`knowledge-base.md`, in progress, for exactly which ones and what they
+showed). Two real lessons from that investigation worth folding into any
+future one-stop design: (1) libfabric's own log-level ordering is
+non-monotonic on this platform — `FI_LOG_LEVEL=info` produced *more* output
+than `trace`, and neither showed anything during an actual live hang, only
+at connection setup — so a naive "debug=more verbose=better" mapping would
+be actively misleading here; (2) at least two env vars set by hand in that
+same config turned out to be silently-wrong due to typos
+(`VLMM_LOGGING_LEVEL`, `NCCL_DEBUF_SUBSYS` — see `knowledge-base.md`) with
+no error or warning from anything in the stack — a real, motivating example
+for why a single validated flag (that fails loudly on a typo) would be
+worth building, rather than free-form `env:` blocks.
 
 ### Advanced scheduling
 

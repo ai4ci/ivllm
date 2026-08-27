@@ -100,8 +100,6 @@ limits of slurm permissions.
 
 ## Lockfile Protocol
 
-TODO: update to include abort state
-
 The lockfile (`status.json`) is the single source of truth for a job's state.
 It lives on the parallel filesystem, visible to all nodes. All parties
 (LOCAL, LOGIN, COMPUTE) communicate through it.
@@ -129,20 +127,34 @@ It lives on the parallel filesystem, visible to all nodes. All parties
   └───────────┘      └──────────┘
        ▲                   ▲
        │                   │
-  ┌────────┐               │
-  │ CANCEL │  ← user writes this to request graceful shutdown
-  └────────┘               │
-                           
+  ┌────────┐          ┌─────────┐
+  │ CANCEL │          │  ABORT  │
+  └────────┘          └─────────┘
+  (either request state can be written from any non-terminal status)
+
   STOPPED = clean shutdown (user cancel, idle timeout, SLURM timeout)
-  FAILED  = unclean shutdown (vLLM crash, startup failure)
-  CANCEL  = request state (not terminal — the monitor reads it and acts)
+  FAILED  = unclean shutdown (vLLM crash, startup failure, user abort)
+  CANCEL  = request state (not terminal — the monitor reads it, exit code 201 → STOPPED)
+  ABORT   = request state (not terminal — the monitor reads it, exit code 254 → FAILED,
+            capture_job_diagnostics() runs unconditionally — see below)
 ```
+
+`ABORT` exists for debugging hangs where the job would otherwise sit there
+consuming an allocation indefinitely (see `design/active-issues.md`'s GLM-5.2
+investigation) — it's mechanically identical to `CANCEL` (a status string
+written to the lockfile, detected by `monitor_head`/`ivllm-cancel.sh`) except
+for two things: it always resolves to `FAILED`/`"user abort"` rather than
+`STOPPED`/`"user cancel"`, and it unconditionally runs
+`capture_job_diagnostics()` (`tidy_up()`'s exit code 254 vs 201 — `utils.sh`)
+so a deliberately-killed hung job still gets its logs/pyspy dumps archived,
+which a normal cancel does not bother with. `ivllm cancel --force --abort`
+takes the same distinction down the force-cancel path.
 
 ### Lockfile schema
 
 ```json
 {
-  "status": "pending | initialising | running | failed | stopped | cancel",
+  "status": "pending | initialising | running | failed | stopped | cancel | abort",
   "jobName": "qwen36",
   "model": "Qwen/Qwen3.6-35B-A3B-FP8",
   "user": "testuser",
@@ -174,11 +186,13 @@ directly rather than publishing one through the lockfile.
 | SLURM allocated | `pending` → `initialising` | COMPUTE (head node) | `jq '.status = "initialising" | .slurmJobId = ... | .computeHostname = ...'` |
 | vLLM healthy | `initialising` → `running` | COMPUTE (head node) | `jq '.status = "running"'` after warmup |
 | User cancels | (any) → `cancel` | CLI or any user | `jq '.status = "cancel"'` (request, not terminal) |
-| Clean shutdown | `cancel` → `stopped` | COMPUTE (monitor) | `tidy_up` exit trap |
+| User aborts | (any) → `abort` | CLI (`ivllm cancel --abort`) | `jq '.status = "abort"'` (request, not terminal) |
+| Clean shutdown | `cancel` → `stopped` | COMPUTE (monitor) | `tidy_up "$job" 201` exit trap, reason `"user cancel"` |
+| Unclean shutdown | `abort` → `failed` | COMPUTE (monitor) | `tidy_up "$job" 254` exit trap, reason `"user abort"`, `capture_job_diagnostics()` runs |
 | Idle timeout | `running` → `stopped` | COMPUTE (monitor_head) | Log monitoring + SIGUSR2 → `tidy_up` |
 | SLURM timeout | (any) → `stopped` | COMPUTE (SIGUSR1 trap) | SLURM sends SIGUSR1 → `tidy_up` |
 | vLLM crash | `initialising`/`running` → `failed` | COMPUTE (exit trap) | `tidy_up` detects non-zero exit |
-| Force cancel | (any) → `stopped` | CLI | `scancel <id>` + `jq '.status = "stopped"'` |
+| Force cancel | (any) → `stopped`/`failed` | CLI (`ivllm cancel --force[--abort]`) | `scancel <id>` + `tidy_up "$job" 201` or `254` depending on `--abort` |
 
 ---
 
@@ -298,17 +312,27 @@ To add a new backend (e.g. local Ollama, a different HPC, containers):
   ```typescript
   abstract class Backend {
     abstract bootstrap(): Promise<void>;
-    abstract setup(version: string): Promise<void>;
-    abstract connect(job: string, port: number): Promise<CloseableEventEmitter>;
-    abstract requestCancel(job: string, force: boolean): Promise<void>;
-    abstract requestStart(job: string, maxTime: string, monitor: boolean, batch: boolean, config?: string): Promise<void>;
+    abstract setup(version: string, force?: boolean): Promise<void>;
+    abstract connect(job: string, localPort: number): Promise<CloseableEventEmitter>;
+    abstract requestCancel(job: string, force: boolean, abort: boolean): Promise<void>;
+    abstract requestStart(job: string, maxTime: string, batch: boolean, config?: string): Promise<void>;
     abstract getAllJobStatus(): Promise<LockfileV3[]>;
-    abstract watchLog(job: string, node?: string, until?: string): Promise<CloseableEventEmitter>;
+    abstract watchLog(job: string, node?: string, start?: boolean): Promise<CloseableEventEmitter>;
+    abstract fetchDiagnostics(job: string, localDest?: string): Promise<string>;
     getJobStatus(job: string): Promise<LockfileV3>;
+    isCancelling(job: string): Promise<boolean>;
     isRunning(job: string): Promise<boolean>;
     isStopped(job: string): Promise<boolean>;
     isStartable(job: string): Promise<boolean>;
     isStarting(job: string): Promise<boolean>;
+    // Non-abstract, default-throws — only implemented by backends that
+    // enable benchmarking (see `ivllm bench`, scope.md):
+    requestBenchmark(comparison: string, configs: string[], time?: string): Promise<void>;
+    getBenchmarkStatus(comparison: string): Promise<BenchmarkStatus>;
+    fetchBenchmarkResults(comparison: string, localDest: string): Promise<
+      | { ready: true; path: string }
+      | { ready: false; status: BenchmarkStatus }
+    >;
   }
   ```
 - **Each backend owns its runtime** — the compute-side management is
@@ -562,28 +586,43 @@ See ADR-114 (dual installation path) and ADR-115 (model recipe database).
 
 ### 2. Multiprocessing (MP) vs Ray for multi-node
 
-TODO: review as this is implemented now
-
-The `isambard_containers` project uses `--distributed-executor-backend mp`
-for multi-node vLLM — the vLLM-native multiprocessing backend. This is
-what `--nnodes` defaults to when no backend is explicitly specified.
-
-Ray is an alternative backend for mulitprocessing. Both approaches have trade-offs:
+**Status: both are implemented and actively used, selected per-job via
+`distributed-backend-executor: ray` in `vllm.yaml`** (default when unset is
+`mp`) — `ivllm-serve.sh` reads this key and dispatches to
+`slurm-vllm-serve.sh` (mp) or `slurm-ray-vllm-serve.sh` (ray) accordingly.
+This is no longer a design question, but the empirical picture from real
+multi-node debugging (Nemotron-3-Ultra, GLM-5.2-INT4 — see
+`design/active-issues.md`) is worth recording:
 
 | Concern | MP | Ray |
 |---------|----|-----|
 | Complexity | Simple (no extra service) | Complex (GCS, object store, ray start/stop) |
 | Failure handling | Process dies → job fails | Ray can restart workers, detect failures |
 | Startup time | Faster (no Ray bootstrap) | Slower (Ray cluster init) |
-| Slingshot performance | Unknown — NCCL is same either way | Proven with `brics/nccl` |
 | Log noise | Minimal | Ray creates 900+ log files per node |
 | Node churn | Harder (no node discovery) | Ray handles node add/remove |
+| GH200/Slingshot hangs | Confirmed reproducible (see below) | Confirmed reproducible (same signature) |
+| `numa-bind` support | Works — `vllm/utils/numa_utils.py`'s `configure_subprocess()` wraps worker launches in `numactl` | **Does not work** — `RayExecutorV2` builds its worker actors independently of `MultiprocExecutor`'s init path, which is the only one wired to `configure_subprocess()`. Confirmed structurally in vLLM 0.26.0 source, not just by absent log output. `numa-bind: true` is a no-op for any Ray-executor job on this vLLM version. |
 
-**Performance on Slingshot**: Both MP and Ray use NCCL for GPU communication
-under the hood. Ray adds an extra layer for process management but does not
-change the NCCL data path. However, MP may have different timing, connection
-setup, or collective algorithm selection that interacts differently with
-Slingshot's CXI fabric. This is an empirical question that needs benchmarking.
+**Performance on Slingshot**: still not benchmarked head-to-head — both use
+NCCL for GPU communication under the hood, so the data path itself is
+identical; whether MP's different process-management/connection-setup
+timing interacts any differently with Slingshot's CXI fabric than Ray's does
+remains an open, empirical question (`ivllm bench` — see `scope.md` — is the
+tool that could now actually answer this, unlike when this section was
+first written).
+
+**The multi-node hang investigated at length in `design/active-issues.md`
+reproduces under both executors, with the identical `shm_broadcast`
+signature** (`EngineCore` waiting forever for a worker response that never
+arrives) — this rules out either executor's process-management layer as the
+root cause; the leading theory implicates `vllm/distributed/device_communicators/shm_broadcast.py`
+itself, a mechanism both `MultiprocExecutor` and `RayExecutorV2` share
+(`RayExecutorV2` extends `MultiprocExecutor` and reuses its response-queue
+plumbing). Separately, the "4-node SLURM job only gets 2 nodes to come up"
+issue (also in `active-issues.md`) was confirmed present on the mp path
+before the CPU-allocation fix that was found via the ray path — i.e. neither
+issue is executor-specific.
 
 ### 3. Model recipe database
 

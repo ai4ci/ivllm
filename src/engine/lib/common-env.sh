@@ -100,6 +100,12 @@ export RDMA_ROOT=$(resolve_rdma_dir)
 export USE_LIBFABRIC_CXI=1
 export USE_DMABUF=1
 export UCCL_SOCKET_IFNAME=hsn0
+export EP_NIC_NAME="cxi0"
+
+# TODO:
+# NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+# NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so
+
 
 # To avoid possible hangs, we suggest setting env variables explicitly including NCCL_IB_GID_INDEX, UCCL_IB_GID_INDEX, NCCL_SOCKET_IFNAME, and UCCL_SOCKET_IFNAME:
 # UCCL_IB_GID_INDEX should be the same as NCCL_IB_GID_INDEX like if you were using NCCL.

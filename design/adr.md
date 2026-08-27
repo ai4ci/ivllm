@@ -686,12 +686,15 @@ To ensure files created inside the shared folder natively inherit group ownershi
 
 ## ADR-118: Model benchmarking — persistent-path reuse against a shadow project directory
 
-**Status**: Revised 2026-08-05, before any implementation began (no code
-exists for either version of this design yet — the original decision below
-was never built). Superseded in place rather than as a separate ADR number,
-since the original's CLI surface and manifest concept mostly survive; only
-*how a config actually gets run* changes. Original text and rationale kept
-below for the historical record.
+**Status**: Implemented (2026-08-12), as `ivllm bench submit|status|results` +
+`design/prototype/ivllm-bench.sh`/`src/engine/ivllm-bench.sh` — but the
+implementation is a **further revision beyond Option 3 below**, decided
+during implementation once the `monitor_head()`-hook approach was actually
+attempted. See "Implementation update" at the end of this entry for what
+actually shipped and why it diverges. Original "Option 3" text and rationale
+kept below for the historical record — it's still the right context for
+*why* a shadow project directory exists at all, just not for the exact
+mechanism that triggers a benchmark run.
 
 **Context**: We need a way to benchmark vLLM configurations (throughput,
 TTFT, ITL) on Isambard, primarily so an AI agent can automate "try N
@@ -879,6 +882,58 @@ underneath:
   path persistent jobs already use, rather than something the ephemeral path
   would have had to opt into separately.
 - No `Backend.benchmark()` method is added, as before.
+
+**Implementation update (2026-08-12)**: what actually shipped diverges from
+Option 3 above in four concrete ways, discovered while building it:
+
+1. **No `IVLLM_BENCH_MODE` hook in `monitor_head()`, and no `run_vllm_bench()`
+   inside `utils.sh`.** Triggering the benchmark from *inside* the
+   compute-side monitor loop turned out to be unnecessary complexity: the
+   login node can reach an already-running job's compute node via
+   `srun --overlap --jobid=<slurmJobId> --nodelist=<computeHostname>` —
+   exactly the same `--overlap` pattern `slurm-vllm-serve.sh`/
+   `slurm-ray-vllm-serve.sh` already use internally for their own head/worker
+   steps, just invoked from *outside* the job, against a job ID read back
+   out of the lockfile after the fact. This meant the entire benchmark
+   orchestration — submit, poll for `running`, run the bench client,
+   request cancel, wait for terminal, archive diagnostics — could live in
+   one standalone login-node script (`ivllm-bench.sh`) that drives the
+   existing external CLI surface (`ivllm-serve.sh`, `ivllm-cancel.sh`,
+   `utils.sh`'s status helpers, sourced not reimplemented) with **zero
+   changes to `monitor_head()` or any other production compute-side code**.
+   `capture_job_diagnostics()` did still need one small change — sweeping
+   the whole job directory (`cp -rf "$job_dir"/* "$diag_dir/"`) instead of a
+   hardcoded file list, so `bench.json` and debug/pyspy dumps get archived
+   automatically too.
+2. **No `benchmarkProjectDir` config field.** Instead, the shadow project
+   directory is created *per comparison*, as a `benchmark/` subfolder of the
+   comparison directory itself (`<comparison_dir>/benchmark/`) rather than
+   one global admin-configured path. This avoids Option 3's own
+   noted footgun (a forgotten swap-back pointing a real `ivllm connect` at
+   the wrong tree) by construction — there's no shared/global setting to
+   forget to swap, since every comparison gets its own independent shadow
+   tree, symlinked back to the real `$PROJECTDIR` the same way Option 3
+   described.
+3. **CLI is `ivllm bench submit|status|results`, not `ivllm compare
+   --submit|--analyse`.** Naming settled on `bench` during implementation;
+   the manifest file is `benchmarking_status.json` (schema: `pid`, `updated`,
+   `complete`, per-status `counts`, per-job `{status, reason}` — see
+   `src/types.ts`'s `BenchmarkStatus`), not `comparison.json`.
+4. **Fire-and-forget via `nohup ... & disown` over SSH**, not a
+   `Backend.requestStart()`-per-config CLI flow with a separate `--analyse`
+   step. `ivllm bench submit` launches the whole comparison (all configs) as
+   one detached orchestrator process; `ivllm bench status`/`results` just
+   read `benchmarking_status.json` back (`getBenchmarkStatus()`) — cheap,
+   safe to poll often, no SLURM calls of their own.
+
+The core rationale for Option 3 — reuse the real, unmodified persistent-job
+path so the numbers describe what actually gets deployed — is unchanged and,
+if anything, more fully realized: *no* production compute-side file needed
+to change at all, whereas Option 3 still called for one new env-var-gated
+branch in `monitor_head()`. See `design/scope.md` §1 for the current,
+implemented behaviour in full, and `design/prototype/patch/README.md`-style
+per-file documentation isn't needed here since `ivllm-bench.sh`'s own header
+comment carries the equivalent detail.
 
 ---
 

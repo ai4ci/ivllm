@@ -4,6 +4,7 @@ metadata:
     version: 0.4.1
     lifecycle: experimental
 min-vllm-version: "0.26.0"
+ivllm-debug-level: 4
 idle-timeout: 60
 
 # vLLM config for MiniMax-M3 on Isambard AI
@@ -70,8 +71,6 @@ safetensors-load-strategy: lazy
 
 # debugging flags for crash
 env:
-    IVLLM_DEBUG_LEVEL: 3
-    IVLLM_RUNTIME_DEBUG: 1
     IVLLM_DISABLE_FLASHINFER: 1
     VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 1800
 

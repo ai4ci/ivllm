@@ -83,7 +83,7 @@ if [[ -f $lockfile ]]; then
         else
 
             echo "[shutdown] force cancel job: $IVLLM_JOB with status $status"
-            if [[ $type == "cancel" ]]; then
+            if [[ $IVLLM_ABORT == "cancel" ]]; then
             echo "[cancel] job $IVLLM_JOB force cancelled."
                 tidy_up "$IVLLM_JOB" 201
             else

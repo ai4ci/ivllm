@@ -13,7 +13,6 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=03:00:00
 #SBATCH --export=ALL
-#SBATCH --reservation=interactive
 
 set -euo pipefail
 umask 0002

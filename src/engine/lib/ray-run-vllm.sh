@@ -40,25 +40,26 @@ export RAY_RUNTIME_ENV_LOG_TO_DRIVER=1
 eval "$envExports"
 source "$vllmVersionDir/bin/activate"
 
-
-model=$(get_job_config_setting "$IVLLM_JOB" ".model")
-# modelPath=$(resolve_model_dir "$model")
-serverPort=$(get_job_status_setting "$IVLLM_JOB" ".serverPort")
-strippedConfig=$(resolve_stripped_job_config "$IVLLM_JOB")
-
 # make sure signals sent to this script via srun are propagated to vllm:
 trap 'kill_pid "$IVLLM_RAY_HEAD_PID" "vllm head"' SIGUSR2 SIGUSR1 SIGTERM
 
-echo "[vllm-serve] model home directory: $HF_HOME"
-vllm serve \
-    --config "$strippedConfig" \
-    --port "${serverPort:-8000}" \
-    --served-model-name "$model" "default" "$IVLLM_JOB" \
-    --distributed-executor-backend ray \
-    &
+# Sets model name, ports, profiling etc.
+IVLLM_ARGS=()
+baseline_vllm_args "$IVLLM_JOB" IVLLM_ARGS
+
+IVLLM_ARGS+=(
+    --distributed-executor-backend ray
+)
+
+echo "==================================="
+echo "[serve] model home directory: $HF_HOME"
+echo "[serve] executing: vllm serve $(printf '%q ' "${IVLLM_ARGS[@]}")"
+echo "==================================="
+
+vllm serve "${IVLLM_ARGS[@]}" &
     IVLLM_RAY_HEAD_PID=$!
 
 sleep 1
-echo "[serve-0] initialised ray vllm pid: $IVLLM_RAY_HEAD_PID; jobid: $SLURM_JOB_ID"
+echo "[serve] initialised ray vllm pid: $IVLLM_RAY_HEAD_PID; jobid: $SLURM_JOB_ID"
 
 wait $IVLLM_RAY_HEAD_PID

@@ -511,8 +511,7 @@ If you think it has crashed or you want to stop it you should run:
 
 or log in to Isambard and:
 
-  squeue --reservation=interactive --me
-  squeue --me
+  squeue --all --me
   scancel ${slurm || '<slurm-id>'}
 
 `);

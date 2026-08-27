@@ -72,6 +72,7 @@ else
     # --partition=interactive \
 
     srun \
+        --partition=interactive \
         --reservation=interactive \
         --job-name=vllm-setup \
         --nodes=1 \

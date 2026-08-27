@@ -75,7 +75,6 @@ export VLLM_ALLREDUCE_USE_SYMM_MEM=0             # Disable broken experimental s
 # See: https://github.com/deepseek-ai/DeepEP:
 # /opt/cray/libfabric/1.22.0/bin/fi_info -p cxi on login.
 export EP_DISABLE_GIN=1
-export EP_NIC_NAME="cxi0"
 
 # ── DeepGEMM flags:
 # ─────────────────────────────────

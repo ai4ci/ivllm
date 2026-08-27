@@ -103,6 +103,7 @@ else
     # --partition=interactive \ seems unnecessary?
 
     srun \
+        --partition=interactive \
         --reservation=interactive \
         --cpus-per-task=4 \
         --ntasks=1 \

@@ -24,11 +24,6 @@ vllmVersion=$(select_closest_version "$minVllmVersion")
 vllmVersionDir=$(resolve_vllm_version_dir "$vllmVersion")
 
 envExports=$(get_job_config_exports "$IVLLM_JOB")
-strippedConfig=$(resolve_stripped_job_config "$IVLLM_JOB")
-
-model=$(get_job_config_setting "$IVLLM_JOB" ".model")
-serverPort=$(get_job_status_setting "$IVLLM_JOB" ".serverPort")
-
 dp=$(get_job_config_setting "$IVLLM_JOB" ".data-parallel-size")
 
 totalDp=${dp:-1}
@@ -39,14 +34,9 @@ nNodes=${SLURM_JOB_NUM_NODES:-1}
 localDp=$(( totalDp / nNodes ))
 if [ "$localDp" -eq 0 ]; then localDp=1; fi
 
-# numaBindNodes="[${CUDA_VISIBLE_DEVICES:?...}]"
-
-IVLLM_ARGS=(
-#   --numa-bind-nodes "$numaBindNodes"
-    --config "$strippedConfig"
-    --port "${serverPort:-8000}"
-    --served-model-name "$model" "default" "$IVLLM_JOB"
-)
+# Sets model name, ports, profiling etc.
+IVLLM_ARGS=()
+baseline_vllm_args "$IVLLM_JOB" IVLLM_ARGS
 
 # Scenarios involving multiple physical machines
 if [ "$nNodes" -gt 1 ]; then
@@ -74,10 +64,12 @@ source "$SLURM_SUBMIT_DIR/lib/vllm-env.sh"
 
 # Evaluate env blocks in yaml file last to override defaults.
 eval "$envExports"
+set_debugging_env "$IVLLM_JOB" 0
 
 echo "=== Selected environment exports ==="
 env | grep -E "VLLM_|RAY_|NCCL_|FI_|NVHPC|CUDA_|LD_CONFIG|CPATH|PATH|SLURM_|TRITON" | sort
 echo "==================================="
+echo "[serve-0] model home directory: $HF_HOME"
 echo "[serve-0] executing: vllm serve $(printf '%q ' "${IVLLM_ARGS[@]}")"
 echo "==================================="
 
@@ -91,4 +83,4 @@ stdbuf -oL -eL vllm serve "${IVLLM_ARGS[@]}" &
 sleep 1
 echo "[serve-0] initialised head node $IVLLM_HEAD_NODE_IP - vllm pid: $IVLLM_HEAD_NODE_PID; jobid: $SLURM_JOB_ID"
 
-wait_report "$IVLLM_JOB" "$IVLLM_HEAD_NODE_PID"
+monitor_node "$IVLLM_JOB" "$IVLLM_HEAD_NODE_PID"

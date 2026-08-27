@@ -24,8 +24,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$here/lib/utils.sh"
 
 IVLLM_JOB=""
-# IVLLM_PARTITION="--partition=interactive --reservation=interactive "
-IVLLM_PARTITION="--reservation=interactive"
+IVLLM_PARTITION="--partition=interactive --reservation=interactive "
+# IVLLM_PARTITION="--reservation=interactive"
 IVLLM_MAXTIME="08:00:00"
 IVLLM_USE_RAY=0
 
@@ -189,6 +189,7 @@ if [[ $IVLLM_USE_RAY == 0 ]]; then
         --time="$maxTime" \
         --output="$IVLLM_LOG" \
         --error="$IVLLM_LOG" \
+        --open-mode=append \
         $@ \
         "$here/lib/slurm-vllm-serve.sh" "$IVLLM_JOB" "$nGpusPerNode" "$memValue")
 
@@ -209,6 +210,7 @@ else
         --time="$maxTime" \
         --output="$IVLLM_LOG" \
         --error="$IVLLM_LOG" \
+        --open-mode=append \
         $@ \
         "$here/lib/slurm-ray-vllm-serve.sh" "$IVLLM_JOB" "$nGpusPerNode" "$memValue")
 

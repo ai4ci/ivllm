@@ -2,13 +2,13 @@
 
 This document captures the current scope of the v3 rewrite.
 
-TODO: possibly missing:
-abort flag on cancel
-benchmarking
-ray support
-diagnostics and logging running using
-IVLLM_PROJECTDIR and locating project dir
-others?
+Note: `abort` flag on cancel is documented below (§1, `ivllm cancel`).
+Benchmarking (`ivllm bench`) is documented below (§1). Ray support
+(`distributed-backend-executor: ray`) is documented in `architecture.md`'s
+"Multiprocessing (MP) vs Ray" section. `IVLLM_PROJECTDIR`/project-dir
+resolution and `IVLLM_DEBUG`/diagnostics logging levels are documented in
+`ivllm-environment.md` and `knowledge-base.md` respectively (in progress —
+see `design/priorities.md`).
 
 ## Current Scope
 
@@ -18,7 +18,9 @@ implemented and tested.
 
 ### 1. CLI Commands
 
-Five commands, all registered via Commander.js in `src/index.ts`.
+Seven command groups (`connect`, `cancel`, `status`, `config`, `setup`,
+`diagnostics`, `bench` with its `submit`/`status`/`results` subcommands),
+all registered via Commander.js in `src/index.ts`.
 
 #### `ivllm connect <job>`
 
@@ -72,26 +74,79 @@ are need to be copied to /engine/diagnostics/<job>/<date-time> directory
 * This command syncs job diagnostics to a user local directory so that logs
 can be analysed by an agent on local.
 
-#### 'ivllm bench`
-TODO: needs writeup
+#### `ivllm bench submit|status|results` — [experimental]
+
+Submits a set of vLLM configs as a benchmark comparison, run for real on the
+production `ivllm-serve.sh` path (not a parallel/synthetic launch path — see
+ADR-118 in `adr.md` for the design history and why this matters). Fully
+fire-and-forget: the CLI submits and returns; a detached login-node
+orchestrator (`ivllm-bench.sh`) does everything else and can keep running for
+hours after the SSH session that launched it closes.
+
+| Command | Behaviour |
+|---------|-----------|
+| `ivllm bench submit <comparison> [configs...]` | Uploads one or more vLLM YAML configs (job name = filename stem) to `<comparison>/`; if no configs are given, uses every `*.yaml` already in that directory. Launches `ivllm-bench.sh` detached (`nohup ... & disown`) on the login node. `--time <hh:mm:ss>` sets the per-job SLURM time limit (default `02:00:00`). |
+| `ivllm bench status <comparison>` | Reads `<comparison>/benchmarking_status.json` and prints per-job counts/status. `complete: true` is the only authoritative "safe to fetch" signal. |
+| `ivllm bench results <comparison> [outDir]` | If complete, rsyncs `<comparison>/results/` (default `<comparison>/result` locally) — otherwise prints the current status and exits non-zero. |
+
+**What `ivllm-bench.sh` actually does** (standalone, sourced by tests, only
+runs `main()` when executed directly):
+1. Creates a **per-comparison shadow project directory** at
+   `<comparison>/benchmark/`, with `engine/{vllm,nvhpc,rdma}` and `model`
+   symlinked back to the real `$PROJECTDIR` (nothing re-downloaded or
+   recompiled) and `engine/{jobs,diagnostics}` kept real/independent, so
+   benchmark runs never collide with production jobs or each other across
+   separate comparisons.
+2. Prefetches every *unique* `.model` across all configs once, sequentially,
+   before submitting anything (avoids N concurrent jobs racing to download
+   the same model).
+3. Submits every config via the real `ivllm-serve.sh -j <job> -b` (batch
+   partition), in parallel, one background subshell per config.
+4. Once each job reaches `running`: runs a health check, then
+   `vllm bench serve` via `srun --overlap --jobid=<slurmJobId>` targeting
+   the job's own `computeHostname` — this executes the bench client *on the
+   compute node*, genuinely co-located with the API server (the login node
+   cannot reach a compute node's port directly), which is also a more
+   honest latency measurement than a login-node network hop would have
+   been.
+5. Requests a graceful cancel, waits for the job to reach a terminal state,
+   then explicitly calls `capture_job_diagnostics()` (the cancel/idle-timeout
+   exit paths don't call this themselves — only crash paths do — so a
+   *successful* benchmark run needs it called explicitly to archive its
+   `bench.json`/logs).
+6. Writes `benchmarking_status.json` on a poll loop throughout, and a final
+   `results/summary.txt` table (job, run timestamp, status, reason,
+   req/s, output tok/s, mean TTFT) once every job is terminal. Deliberately
+   prints no verdict — comparing the numbers is left to the caller.
+
+Reruns of the same comparison directory *add* a new timestamped diagnostics
+entry per job rather than overwriting history, so comparing a rerun against
+a previous attempt after tweaking a config is directly supported.
+
+See `design/adr.md` ADR-118 for the design history — the implementation
+above is a further revision beyond what ADR-118's text currently describes
+(no `IVLLM_BENCH_MODE` hook in `monitor_head()`, no `benchmarkProjectDir`
+config field — both superseded by the standalone-orchestrator approach).
 
 ### 2. Backend Abstraction
 
-An abstract `Backend` class in `src/backends/Backend.ts` (227 lines) defines the
+An abstract `Backend` class in `src/backends/Backend.ts` defines the
 lifecycle contract. A single concrete implementation — `IsambardBareMetalBackend` —
 implements it for the Isambard AI HPC.
 
 | Abstract method | Purpose |
 |-----------------|---------|
 | `bootstrap()` | Verify SSH, deploy engine scripts to HPC |
-| `setup(version, force)` | Install vLLM on the HPC |
-| `connect(job, port)` | Establish SSH tunnel to a running job |
-| `requestCancel(job, force)` | Graceful or forced cancellation |
-| `requestStart(job, maxTime, monitor, batch, config)` | Submit a new SLURM job |
+| `setup(version, force?)` | Install vLLM on the HPC |
+| `connect(job, localPort)` | Establish SSH tunnel to a running job |
+| `requestCancel(job, force, abort)` | Graceful, forced, or abort-with-diagnostics cancellation |
+| `requestStart(job, maxTime, batch, config?)` | Submit a new SLURM job |
 | `getAllJobStatus()` | List all jobs as lockfile objects |
-| `watchLog(job, node, until)` | Tail log output |
+| `watchLog(job, node?, start?)` | Tail log output |
+| `fetchDiagnostics(job, localDest?)` | Download a job's archived diagnostics tree |
 | `getJobStatus(job)` | Get status of a single job |
-| `isRunning / isStopped / isStartable / isStarting` | Lifecycle state helpers |
+| `isCancelling / isRunning / isStopped / isStartable / isStarting` | Lifecycle state helpers |
+| `requestBenchmark / getBenchmarkStatus / fetchBenchmarkResults` | Non-abstract, default-throws — implemented only by backends supporting `ivllm bench` (§1 above) |
 
 The `getBackend()` factory selects the implementation from a compile-time
 `backendRegistry`. Currently only `isambard` is registered.

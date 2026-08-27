@@ -1,7 +1,5 @@
 # Coding Standards — isambard-vllm
 
-TODO: These are out of date and need updating to match current code:
-
 This document defines coding conventions and patterns for the isambard-vllm
 codebase, covering both TypeScript (CLI layer) and Bash (HPC runtime layer).
 
@@ -29,9 +27,17 @@ program
 
 program
   .command('cancel <jobName>')
-  .option('--force', 'Use slurm scancel directly instead of graceful cancel', false)
+  .option('--force', 'use slurm scancel directly instead of graceful cancel', false)
+  .option('--abort', 'abort the job capturing diagnostics', false)
   .action(cmdCancel);
 ```
+
+Command groups follow the same `.command().option().action()` shape whether
+they're a flat command (`connect`, `cancel`, `status`) or have subcommands —
+`bench` is defined as `program.command('bench')` once, then
+`bench.command('submit')`/`.command('status')`/`.command('results')` are
+chained off that returned `Command` object, each with their own
+`.argument()`/`.option()`/`.action()`.
 
 See `src/index.ts` for the full command layout.
 
@@ -91,19 +97,30 @@ first (and only current) implementation.
 // src/backends/Backend.ts — abstract base class
 export abstract class Backend {
   abstract bootstrap(): Promise<void>;
-  abstract setup(version: string): Promise<void>;
-  abstract connect(job: string, port: number): Promise<CloseableEventEmitter>;
-  abstract requestCancel(job: string, force: boolean): Promise<void>;
-  abstract requestStart(job: string, maxTime: string, monitor: boolean, batch: boolean, config?: string): Promise<void>;
+  abstract setup(version: string, force?: boolean): Promise<void>;
+  abstract connect(job: string, localPort: number): Promise<CloseableEventEmitter>;
+  abstract requestCancel(job: string, force: boolean, abort: boolean): Promise<void>;
+  abstract requestStart(job: string, maxTime: string, batch: boolean, config?: string): Promise<void>;
   abstract getAllJobStatus(): Promise<LockfileV3[]>;
-  abstract watchLog(job: string, node?: string, until?: string): Promise<CloseableEventEmitter>;
-  
+  abstract watchLog(job: string, node?: string, start?: boolean): Promise<CloseableEventEmitter>;
+  abstract fetchDiagnostics(job: string, localDest?: string): Promise<string>;
+
   // Convenience methods
   getJobStatus(job: string): Promise<LockfileV3>;
+  isCancelling(job: string): Promise<boolean>;
   isRunning(job: string): Promise<boolean>;
   isStopped(job: string): Promise<boolean>;
   isStartable(job: string): Promise<boolean>;
   isStarting(job: string): Promise<boolean>;
+
+  // Non-abstract, default-throws — only overridden by backends that support
+  // `ivllm bench` (scope.md §1):
+  requestBenchmark(comparison: string, configs: string[], time?: string): Promise<void>;
+  getBenchmarkStatus(comparison: string): Promise<BenchmarkStatus>;
+  fetchBenchmarkResults(comparison: string, localDest: string): Promise<
+    | { ready: true; path: string }
+    | { ready: false; status: BenchmarkStatus }
+  >;
 }
 
 // src/backends/IsambardBareMetalBackend.ts — concrete implementation
@@ -114,7 +131,12 @@ export class IsambardBareMetalBackend extends Backend {
 
 The `Backend` class extends beyond the original interface design (ADR-111)
 with `bootstrap()`, `requestStart()`, state helpers, and a unified
-`requestCancel(job, force)` instead of separate cancel/forceCancel methods.
+`requestCancel(job, force, abort)` instead of separate cancel/forceCancel/
+abort methods. The benchmark methods are deliberately non-abstract
+(default-throws) rather than abstract, since not every backend needs to
+support `ivllm bench` — this is the pattern to follow for any future
+optional/backend-specific capability, rather than forcing every backend to
+implement a method it can't meaningfully support.
 
 **When to use an interface**:
 - Simple data transfer objects with no behaviour
