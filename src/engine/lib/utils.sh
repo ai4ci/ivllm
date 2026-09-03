@@ -108,7 +108,13 @@ resolve_localdir() {
     chmod 700 "$LOCALDIR"
 
     local node_local
-    node_local="$LOCALDIR/$(hostname -s)/$job"
+    # node_local="$LOCALDIR/$(hostname -s)/$job"
+    # Main purpose of node_local is to create a per job cache. Unformtuntely
+    # the absolute paths are baked into torch_compile_cache which means that
+    # caches are not portable unless esact same path used on both machines.
+    # Caches are saved per user so the fact that $LOCALDIR has a user portion is
+    # OK. Caches are already not being shared between users for this very reason.
+    node_local="$LOCALDIR/$job"
     mkdir -p "$node_local"
     chmod 700 "$node_local"
     echo "$node_local"
@@ -287,7 +293,7 @@ resolve_job_status() {
 # Resolve the path to a per-node vLLM log file (vllm.<nodeid>.log).
 # Args: $1 — job name.
 # Uses $SLURM_NODEID (default 0) for the log filename; does not take a node parameter.
-# Returns: path to the log file via stdout. Does not check if the file exists.
+# Returns: path to the log file via stdout. Creates it if it does not exist.
 # Usage: local log=$(resolve_job_log "$job")
 resolve_job_log() {
     # Resolve the path to a per-node vLLM log file (vllm.<nodeid>.log).
@@ -1657,14 +1663,16 @@ monitor_node() {
             report_gpu "$job" "$node"
             report_processes "$job" "$node" "$reason"
 
-            if (( current_mod > last_mod+IVLLM_CHECK_INTERVAL_SECS )); then
-                report_cuda "$job" "$node" "$reason"
-                report_torch "$job" "$node" "$reason"
-                report_gpu_net_stats "$job" "$node" "$reason"
-            else
-                echo "[serve-$node] throttled cuda / torch / net diagnostics capture"
+            # Skip GPU capture unless we are debugging. Can cause stability issues in itself
+            if (( debug_level > 0 )); then
+                if (( current_mod > last_mod+IVLLM_CHECK_INTERVAL_SECS )); then
+                    report_cuda "$job" "$node" "$reason"
+                    report_torch "$job" "$node" "$reason"
+                    report_gpu_net_stats "$job" "$node" "$reason"
+                else
+                    echo "[serve-$node] throttled cuda / torch / net diagnostics capture"
+                fi
             fi
-
             last_mod=$current_mod
             elapsed=0
         else
@@ -1742,6 +1750,7 @@ node_hang_detector() {
     while kill -0 "$pid" 2>/dev/null; do
         sleep "$IVLLM_CHECK_INTERVAL_SECS"
         sleep "$IVLLM_CHECK_INTERVAL_SECS"
+        # TODO: resolve this workaround for accidental triggering by checking
 
         local current_ps=$(ps -p "$pid" -o rss,time --no-headers 2>/dev/null)
         [[ -z "$current_ps" ]] && break
@@ -1880,7 +1889,7 @@ report_memory() {
     local node=${2:-0}
 
     local raw_ps
-    raw_ps=$(ps -u "$USER" -o pid=,rss=,comm= 2>/dev/null || true)
+    raw_ps=$(ps -u "$(whoami)" -o pid=,rss=,comm= 2>/dev/null || true)
 
     local total_ram
     total_ram=$(echo "$raw_ps" | awk '{sum+=$2} END{if(sum>1024) printf "%dM", sum/1024; else printf "%dK", sum}')
@@ -1939,8 +1948,8 @@ report_processes() {
     # on shutdown, i.e. gone exactly when we'd want it post-mortem).
 
     if ! command -v py-spy &>/dev/null; then
-        printf "[%s-node %s] [debug] ivllm-debug-level=%s requested py-spy but it is not installed\n" \
-            "$(date +%H:%M:%S)" "$node" "$debug_level"
+        printf "[%s-node %s] [debug] WARNING: py-spy is not installed\n" \
+            "$(date +%H:%M:%S)" "$node"
         return 0
     fi
 
@@ -1955,7 +1964,7 @@ report_processes() {
     local comm
 
     local raw_ps
-    raw_ps=$(ps -u "$USER" -o pid=,rss=,comm= 2>/dev/null || true)
+    raw_ps=$(ps -u "$(whoami)" -o pid=,rss=,comm= 2>/dev/null || true)
 
     {
         echo "### $(date +%Y-%m-%dT%H:%M:%S) $reason ###"
@@ -2023,7 +2032,7 @@ report_cuda() {
     local comm
 
     local raw_ps
-    raw_ps=$(ps -u "$USER" -o pid=,rss=,comm= 2>/dev/null || true)
+    raw_ps=$(ps -u "$(whoami)" -o pid=,rss=,comm= 2>/dev/null || true)
 
     {
         echo "### $(date +%Y-%m-%dT%H:%M:%S) $reason ###"

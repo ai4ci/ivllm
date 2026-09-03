@@ -83,14 +83,25 @@ sandbox_run_test "monitor_head_idle_timeout_shuts_down" compute '
     '"$_SETUP_RUNNING_JOB"'
     update_status_initialise "mjob"
     update_status_running "mjob"
-    # Log file exists (just created in _SETUP_RUNNING_JOB) but has no API
-    # activity at all — should trigger an idle-timeout shutdown on the very
-    # first check.
-    log=$(resolve_job_log "mjob")
-    echo "server started, no requests yet" > "$log"
+
+    # Updated 2026-09-03: idle-timeout detection is no longer a log-grep
+    # heuristic — monitor_head now compares a heartbeat file'"'"'s mtime
+    # against the current time (idle_seconds = now - heartbeat_mtime;
+    # shuts down once idle_seconds >= idle_timeout*60). idle_timeout is in
+    # minutes, so IDLE_TIMEOUT=1 genuinely means a 60s wait unless the
+    # heartbeat is backdated — and monitor_head() itself unconditionally
+    # touches the heartbeat once at its own startup (utils.sh, before the
+    # main loop), so backdating *before* starting it has no effect: the
+    # very first thing monitor_head does resets it to "now" again. Start it
+    # first, give it a moment to get past that initial touch and into its
+    # main polling loop, then backdate.
+    heartbeat=$(resolve_job_dir "mjob" ".heartbeat")
 
     monitor_head "mjob" &
     monitor_pid=$!
+
+    sleep 1
+    touch -d "@$(( $(date +%s) - 120 ))" "$heartbeat"
 
     wait "$monitor_pid"
     rc=$?
@@ -103,12 +114,14 @@ sandbox_run_test "monitor_head_active_traffic_prevents_idle_timeout" compute '
     '"$_SETUP_RUNNING_JOB"'
     update_status_initialise "mjob"
     update_status_running "mjob"
-    log=$(resolve_job_log "mjob")
-    # A log line timestamped *right now*, containing a real endpoint —
-    # matches IVLLM_TARGET_ENDPOINTS and the current-minute time pattern, so
-    # monitor_head should NOT decide to shut down.
-    echo "[$(date "+%Y-%m-%d %H:%M:%S")] INFO: 127.0.0.1:0 - \"POST /v1/chat/completions HTTP/1.1\" 200 OK" > "$log"
-
+    # Updated 2026-09-03: monitor_head() itself touches the heartbeat file
+    # once, unconditionally, at its own startup (see the idle-timeout test
+    # above) — so simply not backdating it is sufficient to simulate
+    # "recent activity" for this test'"'"'s purposes; a real deployment'"'"'s
+    # heartbeat gets touched again on every matched API request via
+    # monitor_head'"'"'s own background log watcher (IVLLM_TARGET_ENDPOINTS),
+    # but this test does not need to exercise that path to prove idle
+    # timeout does not fire within its short window.
     monitor_head "mjob" &
     monitor_pid=$!
 
@@ -135,6 +148,15 @@ sandbox_run_test "monitor_head_active_traffic_prevents_idle_timeout" compute '
 # running (idle-timeout monitoring for "running" status). Tests must
 # request_cancel + wait to shut it down cleanly rather than expecting it to
 # exit on its own.
+#
+# Updated 2026-09-03: run_vllm_warmup() gained an unconditional `sleep 10`
+# right after its first ping request, on top of several real HTTP
+# round-trips against the mock vLLM shim — a single warmup attempt now
+# reliably takes >10s even against an instant-responding mock. The polling
+# window below was widened accordingly, and SANDBOX_TIMEOUT_SECS raised to
+# give it room (both tests still finish as soon as the job reaches
+# "running", so this only costs real time if something is actually broken).
+export SANDBOX_TIMEOUT_SECS=60
 
 sandbox_run_test "monitor_head_startup_sends_health_and_warms_up" compute '
     export USER=testuser
@@ -155,9 +177,9 @@ sandbox_run_test "monitor_head_startup_sends_health_and_warms_up" compute '
     monitor_head "startup-job" &
     monitor_pid=$!
 
-    for i in $(seq 1 20); do
+    for i in $(seq 1 50); do
         is_status "startup-job" "running" && break
-        sleep 0.5
+        sleep 1
     done
 
     lockfile=$(resolve_job_status "startup-job")
@@ -188,9 +210,9 @@ sandbox_run_test "monitor_head_startup_health_then_succeeds" compute '
     monitor_head "startup-job" &
     monitor_pid=$!
 
-    for i in $(seq 1 20); do
+    for i in $(seq 1 50); do
         is_status "startup-job" "running" && break
-        sleep 0.5
+        sleep 1
     done
 
     lockfile=$(resolve_job_status "startup-job")

@@ -32,21 +32,26 @@ export VLLM_LOGGING_CONFIG_PATH="$(dirname "${BASH_SOURCE[0]}")/vllm_logs.json"
 export NCCL_NET_GDR_LEVEL=PHB
 export FI_PROVIDER="cxi"             # Enforce Cray Cassini fabric provider
 
+# See:
+# https://github.com/HewlettPackard/shs-nccl-env/blob/main/src/shs_nccl_env.cc
+# for slingshot vendor defaults
+
 # Libfabric CXI Buffer Optimisations
 export FI_CXI_DEFAULT_CQ_SIZE=131072 # Expand Completion Queue size to prevent dropped frames
 # export FI_CXI_DEFAULT_TX_SIZE=1024
 export FI_CXI_DEFAULT_TX_SIZE=2048
-export FI_CXI_DEFAULT_RX_SIZE=2048
+export FI_CXI_RDZV_EAGER_SIZE=0
 export FI_CXI_DISABLE_HOST_REGISTER=1
 # export FI_CXI_RX_MATCH_MODE=software
 export FI_CXI_RX_MATCH_MODE=hybrid
 # This is a specific override of isambard defaults - large language models processing complex multi-node requests can overflow the hardware queue instantly, leading to an application crash or throwing errors like LE resources not recovered during flow control.
 
-# As recommended in UKGovernmentBEIS/isambard_containers
+
 # GDRCopy is not needed with vLLM - vllm bypasses NCCL for intranode comms and between nodes is using RDMA over slingshot.
 # export NCCL_GDRCOPY_ENABLE=0
 # export FI_HMEM_CUDA_USE_GDRCOPY=0
 
+# As now recommended in updated UKGovernmentBEIS/isambard_containers
 export NCCL_GDRCOPY_ENABLE=1
 export FI_HMEM_CUDA_USE_GDRCOPY=1
 

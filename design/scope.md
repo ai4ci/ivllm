@@ -234,9 +234,11 @@ A single orchestrator process (a background subshell within
 `slurm-vllm-serve.sh`, running on the SLURM step host) `srun`-launches vLLM
 on the head node and each worker node, holding every node's `srun` client PID
 directly. Two monitors run alongside it, both on the step host — there is no
-separate per-worker monitor; worker nodes just run vLLM and report memory
-usage (`wait_report`) while the orchestrator centrally decides when to shut
-down and kills each node's `srun` PID to do so.
+separate per-worker monitor; worker nodes run the same `monitor_node()`
+trigger-watching monitor the head node uses (renamed from the older, purely
+passive `wait_report()` — worker nodes now independently fire diagnostics
+captures too, not just report memory) while the orchestrator centrally
+decides when to shut down and kills each node's `srun` PID to do so.
 
 | Monitor | Location | Role |
 |---------|----------|------|

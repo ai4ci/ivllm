@@ -57,7 +57,8 @@ limits of slurm permissions.
 │  Bash Framework ($PROJECTDIR/engine/ivllm-*.sh                   │
 │  • Handles lifecycle of running jobs and sbatch submission       │
 │  • Wrapper scripts: ivllm-{serve,status,setup,cancel,...}.sh       │
-│  • Model downloads via srun on interactive partition             │
+│  • Model downloads (ivllm-get-model.sh) via srun, login-node-    │
+│    side — not a compute-node lib/ script                        │
 │  • Status.json files visible on parallel filesystem              │
 │  • No long-lived processes (scripts forward to COMPUTE)          │
 └──────────────────────────────────────────────────────────────────┘
@@ -75,9 +76,12 @@ limits of slurm permissions.
 │  │ common-env.sh   - NVHPC/NCCL/Slingshot environment (tuning) │ │
 │  │ vllm-env.sh     - vllm specific variables                   │ │
 │  ├─────────────────────────────────────────────────────────────┤ │
-│  │ slurm-hf-download.sh  - Model download (shared HF cache)    │ │
 │  │ slurm-vllm-setup.sh   - Setup vllm version including plugins| │
-│  │ slurm-vllm-serve.sh   - Run a model on one or more nodes    │ │
+│  │ slurm-vllm-serve.sh   - Run a model, mp executor path        │ │
+│  │ slurm-ray-vllm-serve.sh - Run a model, ray executor path     │ │
+│  │   (+ ray-setup.sh, ray-run-vllm.sh, run-head-vllm.sh,        │ │
+│  │      run-worker-vllm.sh — per-node launch scripts)           │ │
+│  │ cuda-postprocess.sh   - Decodes a piped GPU coredump on-node │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 │                                                                  │
 │  Job Directory ($PROJECTDIR/engine/jobs/<job>/):                 │
@@ -154,7 +158,7 @@ takes the same distinction down the force-cancel path.
 
 ```json
 {
-  "status": "pending | initialising | running | failed | stopped | cancel | abort",
+  "status": "pending | initialising | warmup | running | failed | stopped | cancel | abort",
   "jobName": "qwen36",
   "model": "Qwen/Qwen3.6-35B-A3B-FP8",
   "user": "testuser",
@@ -184,7 +188,8 @@ directly rather than publishing one through the lockfile.
 |--------|--------------|-----|-----|
 | Start job | (none) → `pending` | CLI | `jq -n '{status: "pending", ...}' > status.json` with `set -C` (atomic create) |
 | SLURM allocated | `pending` → `initialising` | COMPUTE (head node) | `jq '.status = "initialising" | .slurmJobId = ... | .computeHostname = ...'` |
-| vLLM healthy | `initialising` → `running` | COMPUTE (head node) | `jq '.status = "running"'` after warmup |
+| vLLM healthy | `initialising` → `warmup` (2026-09-03) | COMPUTE (head node) | `/health` responds; `jq '.status = "warmup"'`, then warmup requests are sent |
+| Warmup completes | `warmup` → `running` | COMPUTE (head node) | `jq '.status = "running"'` after warmup requests succeed |
 | User cancels | (any) → `cancel` | CLI or any user | `jq '.status = "cancel"'` (request, not terminal) |
 | User aborts | (any) → `abort` | CLI (`ivllm cancel --abort`) | `jq '.status = "abort"'` (request, not terminal) |
 | Clean shutdown | `cancel` → `stopped` | COMPUTE (monitor) | `tidy_up "$job" 201` exit trap, reason `"user cancel"` |
@@ -207,22 +212,20 @@ no separate per-worker monitor process, and no PID published through the
 lockfile. Two monitors run alongside the orchestrator, both on the step
 host:
 
-### 1. `monitor_startup` (foreground, step host)
+> **Update, 2026-09-03**: `monitor_startup` no longer exists as a separate
+> function — it was merged into `monitor_head` (confirmed via
+> `tests/bash/sandboxed/test-monitor-head.sh`'s own comment: "`monitor_startup()`
+> was merged into `monitor_head()`"). The step-by-step breakdown below (health
+> poll → JIT save → warmup → JIT save → transition to `running`) is still
+> materially accurate as a description of what happens, and now happens
+> inside `monitor_head` itself (via `run_vllm_warmup()`) rather than as a
+> separate detached process — but there is no longer a `monitor_startup`
+> function to point to in the source. `monitor_head` also now transitions the
+> lockfile through an intermediate `warmup` status (between `initialising`
+> and `running`) that this document doesn't mention anywhere yet — see
+> `design/backend-contract.md`.
 
-Blocks until vLLM becomes healthy. Then:
-
-1. Polls `/health` every 10s
-2. Once healthy: saves JIT cache
-3. Sends a warmup request to `/v1/chat/completions` (triggers JIT compilation)
-4. Saves cache again after warmup
-5. Transitions status to `running`
-6. Detaches (returns)
-
-Its only process-liveness check is on the orchestrator's own PID — if the
-orchestrator has already exited (e.g. it crashed or was torn down), it stops
-polling and returns rather than waiting forever.
-
-### 2. `monitor_head` (background, step host)
+### `monitor_head` (background, step host)
 
 Runs for the entire job lifetime. Checks every 10s:
 
@@ -232,19 +235,36 @@ Runs for the entire job lifetime. Checks every 10s:
    down its `srun` step and, transitively, the orchestrator's `wait`) →
    stop monitoring
 4. **Idle timeout** (backend-specific — see ADR-105):
-   - For the Isambard backend: incrementally scan the vLLM access log for
-     "real" API requests (not `/health` probes). If none within the idle
-     window → shutdown with reason "idle timeout".
+   - For the Isambard backend: **update, 2026-09-03** — no longer a log
+     scan. `monitor_head` now maintains a heartbeat file, touched whenever a
+     real API request is seen, and compares its mtime against the current
+     time (`utils.sh`, "Running — check idle timeout using heartbeat file"):
+     `idle_seconds = now - heartbeat_mtime`; shuts down once
+     `idle_seconds >= idle_timeout * 60`. `idle_timeout` is in minutes
+     (confirmed against `design/backend-contract.md:92`). This is a real
+     behavior change from the old log-grep heuristic, not just a rewrite —
+     the old approach could trigger near-instantly against an empty/rotated
+     log regardless of the configured timeout; the new one requires the full
+     real elapsed time every time, which is more correct but means any test
+     or tooling assuming near-instant idle-shutdown on a short configured
+     timeout needs updating (see `active-issues.md`'s 2026-09-03 test-suite
+     findings).
    - Other backends implement their own idle detection.
 
 On any shutdown condition, `monitor_head` signals the orchestrator
 (`SIGUSR2`), which runs the exit-trap logic (`tidy_up`) that kills every
 tracked `srun` PID — head and workers alike — and updates the lockfile.
-Worker nodes have no monitor of their own: `run_worker_vllm.sh` just runs
-vLLM and reports memory usage (`wait_report`) while it waits; shutdown is
-always initiated centrally by the orchestrator, which reaches workers by
-killing their local `srun` client PID (killing the client tears down the
-corresponding remote step).
+**Update, 2026-09-03**: this used to be accurate but no longer is —
+`run_worker_vllm.sh` now calls `monitor_node()` (`utils.sh`), the same
+trigger-watching monitor `run_head_vllm.sh` uses (`wait_report()`, the
+passive memory-reporter this paragraph originally described, was fully
+replaced project-wide). Worker nodes now watch the same diagnostics-trigger
+pipe files as the head node and independently fire `report_memory`/
+`report_gpu`/`report_processes`/`report_cuda`/`report_torch` captures when
+one is written — they're not just idle memory-reporters waiting to be killed
+any more. Shutdown is still initiated centrally by the orchestrator, which
+still reaches workers by killing their local `srun` client PID (killing the
+client tears down the corresponding remote step) — that part is unchanged.
 
 The orchestrator itself is a background subshell within `slurm-vllm-serve.sh`
 (the top-level SLURM batch script); the exit-trap logic (`tidy_up`) and its

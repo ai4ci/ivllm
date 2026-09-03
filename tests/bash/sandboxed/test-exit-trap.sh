@@ -28,7 +28,7 @@ sandbox_run_test "tidy_up_200_triggers_slurm_timeout" compute '
     tidy_up "tidy-job" 200 "$_VLLM_PID"
     lockfile=$(resolve_job_status "tidy-job")
     assert_status "$lockfile" "stopped" || exit 1
-    assert_json_eq "$lockfile" ".reason" "SLURM timeout" || exit 1
+    assert_json_eq "$lockfile" ".reason" "SLURM job cancelled" || exit 1
     kill -0 "$_VLLM_PID" 2>/dev/null && { echo "FAIL: vLLM should have been killed"; exit 1; }
     exit 0
 '

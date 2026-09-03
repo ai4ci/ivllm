@@ -1,8 +1,10 @@
 #!/bin/bash
 # shellcheck disable=SC2016
 # tests/bash/sandboxed/test-ivllm-bench.sh — unit tests for the pure/testable
-# logic inside design/prototype/ivllm-bench.sh (still a prototype, not yet
-# promoted to src/engine/ — see design/bench-implementation-plan.md).
+# logic inside src/engine/ivllm-bench.sh (promoted from
+# design/prototype/ivllm-bench.sh in commit df67993, 2026-09-03 lifecycle:
+# experimental — end-to-end testing still outstanding, see
+# design/complete/bench-implementation-plan.md).
 #
 # ivllm-bench.sh is structured so its function DEFINITIONS (process_job,
 # write_status_summary, status_writer_loop, prefetch_unique_models) have no
@@ -20,7 +22,7 @@
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/sandbox.sh"
 
-_SOURCE_PROTOTYPE='source /work/prototype/ivllm-bench.sh'
+_SOURCE_PROTOTYPE='source /work/project/engine/ivllm-bench.sh'
 
 # ── write_status_summary() ─────────────────────────────────────────────────
 # Uses "compute" profile purely so SLURM_NODEID is defined for the

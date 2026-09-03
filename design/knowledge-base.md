@@ -84,7 +84,7 @@ is `always`/`never`, not in the tuning tables below.
 | `VLLM_ALLOW_LONG_MAX_MODEL_LEN` | `1` | always | | |
 | `VLLM_ENGINE_ITERATION_TIMEOUT_S` | `1800` | always | multi-node | |
 | `VLLM_ALLREDUCE_USE_SYMM_MEM` | `0` | always | | disables broken experimental allocator |
-| `VLLM_COMPILE_CACHE_SAVE_FORMAT` | `unpacked` | always | | |
+| `VLLM_COMPILE_CACHE_SAVE_FORMAT` | `binary` | always | | changed from `unpacked` 2026-09-03; per vLLM's own docs, `binary` is multiprocess-safe, `unpacked` is not (race conditions with concurrent `vllm serve` processes sharing a cache) |
 | `DG_JIT_USE_RUNTIME_API` | `1` | always | DeepGEMM | |
 | `VLLM_USE_DEEP_GEMM_E8M0` | `0` | always | Hopper/GH200 | E8M0 unsupported |
 | `EP_DISABLE_GIN` | `1` | always | DeepEP/UCCL-EP | |
@@ -93,8 +93,10 @@ is `always`/`never`, not in the tuning tables below.
 | `FI_CXI_RDZV_EAGER_SIZE` | `0` | never (expecting "always rendezvous") | | see `FI_CXI_RDZV_THRESHOLD` |
 | `FI_CXI_REQ_BUF_SIZE` | `12MB` (default) | sometimes | software/hybrid RX match mode | untested — see note |
 | `FI_CXI_REQ_BUF_MIN_POSTED` | `6` (default) | sometimes | software/hybrid RX match mode | untested — see note |
-| `NCCL_GDRCOPY_ENABLE` | `1` | never (leave `0`/unset) | GDRCopy investigation, closed | wrong tree — see note |
-| `FI_HMEM_CUDA_USE_GDRCOPY` | `1` | never (leave `0`/unset) | GDRCopy investigation, closed | wrong tree — see note |
+| `NCCL_GDRCOPY_ENABLE` | `1` | **genuinely unresolved, currently `1`** | see note | conflicting evidence, needs a network benchmark to settle — see note |
+| `FI_HMEM_CUDA_USE_GDRCOPY` | `1` | **genuinely unresolved, currently `1`** | see note | same as `NCCL_GDRCOPY_ENABLE` above |
+
+**Update, 2026-09-03 (Rob)**: the "closed, wrong tree" verdict above was this project's own conclusion from reading libfabric/NCCL reference docs — it was never settled by an actual network measurement, and there's real, conflicting evidence on the other side that this earlier pass didn't have. Isambard's own container definition ([UKGovernmentBEIS/isambard_containers](https://raw.githubusercontent.com/UKGovernmentBEIS/isambard_containers/refs/heads/main/definitions/vllm/vllm.def)) changed to enabling GDRCopy, which is what prompted re-enabling it here; separately, HPE's own [`shs-nccl-env`](https://github.com/HewlettPackard/shs-nccl-env) (the vendor-authored Slingshot NCCL tuning tool) validates using GDRCopy rather than treating it as unnecessary. The "GDRCopy is not needed with vLLM — vllm bypasses NCCL for intranode comms and between nodes is using RDMA over slingshot" comment that used to justify leaving it off is left in `vllm-env.sh` (commented out) precisely because its own provenance is unclear and it's now at odds with both of the sources above. **This can only be settled empirically** — with GDRCopy enabled vs disabled, run the same collective workload and compare, ideally with the standalone network benchmark harness described in `design/priorities.md` (an evolution of `design/prototype/slingshot-tp-reprex.sh`) rather than a full vLLM job. Until that test exists and is run, treat this flag's value as "currently enabled, unverified either way" rather than either a proven-good or proven-bad setting.
 | `CUDA_MANAGED_FORCE_DEVICE_ALLOC` | `1` | never (leave `0`) | conflicts with `offload-backend: uva` | would force device-only storage, defeating CPU offload — see note |
 | `NCCL_COMM_BLOCKING` | `0` | never | Ray executor | crashes Ray outright |
 
@@ -352,7 +354,7 @@ Notes:
 
 | Variable | Value | Use | Context | Note |
 |---|---|---|---|---|
-| `NCCL_NET_GDR_LEVEL` | `PHB` | sometimes | multi-node | current defaul is `SYS` |
+| `NCCL_NET_GDR_LEVEL` | `PHB` | always (as of 2026-09-03) | multi-node | promoted to `vllm-env.sh`'s shared default; NCCL's own library default is `SYS` |
 | `FI_OPT_CUDA_API_PERMITTED` | n/a | never (not settable via env var) | alternative deadlock avoidance to GDRCopy | `fi_setopt()` API, not an env var — see note |
 | `NCCL_CUMEM_ENABLE` | `0` | sometimes | possibly-stale NCCL-version workaround | **re-test candidate** — see note |
 | `NCCL_IB_PCI_RELAXED_ORDERING` | `1` | sometimes | | unproven value |
@@ -849,6 +851,15 @@ Notes:
   MiniMax-M3/GLM-5.2 that call the fused op directly, bypassing the compile
   pass entirely. Which one applies is model-dependent (proven,
   `active-issues.md` MiniMax-M3 entry).
+- **Decision (Rob), 2026-09-03**: by this entry's own analysis, GLM-5.2
+  belongs to the `IVLLM_DISABLE_FLASHINFER` group, not the compile-pass
+  group — `glm-5.2-743b-int4.yaml` sets `fuse_allreduce_rms: false` anyway
+  (labelled "Multi-node compilation fix" in the yaml, added 2026-08-12
+  during the NCCL hang investigation, not tied to a specific proven need in
+  this doc). Genuinely uncertain whether it does anything for GLM-5.2 —
+  leaving it in place per "if it isn't broken, don't fix it" rather than
+  testing removal right now. Documented as an open question, not a
+  recommendation either way.
 
 ### Scheduling
 
@@ -863,6 +874,18 @@ Notes:
   different signature when off) — does not fix the underlying hang. Worth
   trying on any similarly-affected multi-node job (proven, `active-issues.md`
   GLM-5.2 entry).
+- **Update, 2026-09-03**: the GLM-5.2 hang itself is now resolved (was a
+  silently-reverted NCCL pin — `nvidia-nccl-cu12` was actually 2.28.9, not
+  the 2.30.4 fix already proven for the near-identical Nemotron-3-Ultra hang;
+  see `active-issues.md`'s resolved GLM-5.2 entry). This flag was only ever
+  shown to change the hang's *symptom*, never proven necessary for GLM-5.2
+  once the real cause is fixed.
+- **Decision (Rob), 2026-09-03**: leaving this set as-is in
+  `glm-5.2-743b-int4.yaml` for now — "if it isn't broken, don't fix it."
+  Genuinely uncertain whether it's still needed, not verified either way;
+  documented here so a future reader knows this is a live open question, not
+  a settled recommendation, should GLM-5.2 need retuning for throughput
+  later.
 
 ### Backends
 
@@ -872,8 +895,15 @@ Notes:
 | `enable-expert-parallel` | model-dependent | sometimes | MoE models | ruled out as MiniMax-M3 crash cause |
 | `moe-backend` | model/quant-dependent | sometimes | | see note below for observed values |
 | `all2all-backend` | model-dependent | sometimes | | `deepep_v2` confirmed broken, see note |
+| `disable-custom-all-reduce` | `true` | sometimes | GLM-5.2, added chasing the NCCL hang | tested and ruled out as the hang's cause — see note |
 
 Notes:
+- `disable-custom-all-reduce`: explicitly tested against the GLM-5.2 hang
+  (2026-08-12, `active-issues.md`) and shown to have zero effect — the hang's
+  actual cause (NCCL version, see the resolved GLM-5.2 entry) was unrelated.
+  **Decision (Rob), 2026-09-03**: leaving it set in
+  `glm-5.2-743b-int4.yaml` anyway, per "if it isn't broken, don't fix it" —
+  not proven necessary, not proven harmful, just not being touched right now.
 - `distributed-backend-executor`: full comparison lives in `architecture.md`'s
   dedicated "MP vs Ray" section, not duplicated here — short version, both
   hit the same `shm_broadcast` multi-node hang, and `ray` additionally loses

@@ -1,10 +1,12 @@
 # `ivllm bench` — Implementation Plan
 
-**Status**: Draft, unimplemented. Extends ADR-118 (revised, `design/adr.md`) with
-concrete TypeScript/CLI wiring, now that the underlying orchestration has been
-validated as a prototype at `design/prototype/ivllm-bench.sh`. Nothing in this
-document has been built yet — it's the plan for turning the prototype into a
-real `ivllm bench` command.
+**Status, updated 2026-09-03**: Implemented, lifecycle `experimental`, end-to-end
+testing still outstanding (confirmed with Rob). The plan below has been carried
+out — `design/prototype/ivllm-bench.sh` was promoted to `src/engine/ivllm-bench.sh`,
+and `requestBenchmark`/`getBenchmarkStatus`/`fetchBenchmarkResults` are wired
+into `IsambardBareMetalBackend.ts` and the real CLI (`bench submit|status|results`
+in `src/index.ts`). Kept for historical context on the design intent rather
+than rewritten — the remaining real work is E2E testing, not more design.
 
 ## 1. What the prototype already proves
 

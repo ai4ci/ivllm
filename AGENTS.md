@@ -6,7 +6,7 @@
 * Design artefacts are in the `design` folder.
 * Assume any scripts in the `design` folder are instructional examples and must be completely rewritten for production.
 * Anything in the `design/old` folder is superceded and likely will confuse you. Only refer to it if directly asked.
-* Document architecture decisions and a phased roadmap (as a checklist) before implementation (`design/adr.md`, `design/roadmap.md`).
+* Document architecture decisions and a phased roadmap (as a checklist) before implementation (`design/adr.md`, `design/scope.md`).
 * **MAKE SURE YOU HAVE A CLEAN REVERT POINT BEFORE MAKING EVEN SEEMING MINOR CHANGES**
 * All tests must be implemented and proven to fail before starting development of a feature.
 * All tests must be proven to pass before development of a feature is complete.

@@ -65,7 +65,7 @@ metadata goes in the optional `backendConfig` field.
 
 ```json
 {
-  "status": "pending | initialising | running | failed | stopped | cancel",
+  "status": "pending | initialising | warmup | running | failed | stopped | cancel",
   "jobName": "qwen36",
   "model": "Qwen/Qwen3.6-35B-A3B-FP8",
   "serverPort": 49153,
@@ -116,7 +116,8 @@ metadata goes in the optional `backendConfig` field.
 |--------|--------------|-----|-----|
 | Start job | (none) → `pending` | CLI | Create lockfile via backend `requestStart()` |
 | Runtime initialises | `pending` → `initialising` | Runtime | Head node writes runtime metadata |
-| Runtime healthy | `initialising` → `running` | Runtime | After health check, writes serverPort, hostname |
+| Health check passes | `initialising` → `warmup` (2026-09-03, previously went straight to `running`) | Runtime | vLLM `/health` responds; runtime now sends warmup requests before declaring itself ready |
+| Warmup completes | `warmup` → `running` | Runtime | Warmup requests succeed; writes serverPort, hostname |
 | User cancels | (any) → `cancel` | CLI or any user | Write cancel to lockfile (request, not terminal) |
 | User cancels a `pending` job | `pending` → `stopped` | Runtime helper (`request_cancel`) | No monitor is running yet to notice a `cancel` flag, so the pending job is torn down immediately via the exit-trap logic instead of going through the `cancel` state |
 | Clean shutdown | `cancel` → `stopped` | Runtime | Exit trap writes stopped + reason |
@@ -241,9 +242,15 @@ forward after the registering process exits). `isAlive()` polls the local
 port directly; `close()` issues `ssh -O cancel` to remove just that
 forwarding without touching the shared master connection.
 
-### 2.5 `requestCancel(job: string, force: boolean): Promise<void>`
+### 2.5 `requestCancel(job: string, force: boolean, abort: boolean): Promise<void>`
 
-**Purpose:** Request graceful or forced shutdown of a running job.
+**Purpose:** Request graceful or forced shutdown of a running job, optionally
+capturing failure diagnostics on the way down.
+
+**Updated, 2026-09-03**: this signature was missing the `abort` parameter —
+confirmed with Rob it should be added here to match `architecture.md`'s
+`Backend` interface and the real `ivllm-cancel.sh -a` behavior, not treated
+as a frozen/legacy doc.
 
 **Parameters:**
 
@@ -251,28 +258,34 @@ forwarding without touching the shared master connection.
 |-------|-------------|
 | `job` | Job name |
 | `force` | If `true`, kill immediately via scheduler; if `false`, request graceful shutdown |
+| `abort` | If `true`, treat the shutdown as a failure — transitions to `failed` (exit 254) and runs `capture_job_diagnostics()` — instead of a clean `stopped` (exit 201) |
 
 **Requirements for graceful cancel (`force: false`):**
 1. MUST read the lockfile and verify the job is in a cancellable state
-   (`pending`, `initialising`, `running`).
-2. MUST write `cancel` to the lockfile.
-3. MUST return immediately — the runtime monitor will detect the cancel
-   and transition to `stopped`.
+   (`pending`, `initialising`, `warmup`, `running`).
+2. MUST write `cancel` (or `abort`, if `abort: true`) to the lockfile.
+3. MUST return immediately — the runtime monitor will detect the
+   cancel/abort and transition to `stopped`/`failed` accordingly.
 
 **Requirements for force cancel (`force: true`):**
 1. MUST read the lockfile to get the scheduler job ID.
 2. MUST kill the scheduler job directly (e.g. `scancel`).
-3. MUST write `stopped` to the lockfile.
+3. MUST write `stopped` to the lockfile, or `failed` + run diagnostics
+   capture if `abort: true`.
 
 **Lockfile transitions:**
 | Mode | Transition | Who acts |
 |------|-----------|----------|
-| Graceful | (any) → `cancel` → `stopped` | Runtime monitor detects `cancel`, exits cleanly |
-| Force | (any) → `stopped` | CLI kills scheduler, writes lockfile |
+| Graceful cancel | (any) → `cancel` → `stopped` | Runtime monitor detects `cancel`, exits cleanly |
+| Graceful abort | (any) → `abort` → `failed` | Runtime monitor detects `abort`, captures diagnostics, exits |
+| Force cancel | (any) → `stopped` | CLI kills scheduler, writes lockfile |
+| Force abort | (any) → `failed` | CLI kills scheduler, writes lockfile, captures diagnostics |
 
 ```typescript
-await backend.requestCancel('qwen36', false);  // graceful
-await backend.requestCancel('qwen36', true);   // force kill
+await backend.requestCancel('qwen36', false, false);  // graceful cancel
+await backend.requestCancel('qwen36', true, false);    // force kill
+await backend.requestCancel('qwen36', false, true);    // graceful abort (captures diagnostics)
+await backend.requestCancel('qwen36', true, true);     // force abort
 ```
 
 ### 2.6 `getAllJobStatus(): Promise<LockfileV3[]>`

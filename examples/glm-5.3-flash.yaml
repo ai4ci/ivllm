@@ -1,21 +1,20 @@
 metadata:
     target: Isambard-AI GH200
     created-by: Rob
-    version: 0.4.1
-    lifecycle: experimental
+    version: 0.0.1
+    lifecycle: pre-release
 min-vllm-version: "0.29.0"
+# VLLM 0.29.0 not yet released
 idle-timeout: 60
 
 # vLLM config for zai-org/GLM-5.3-Flash on Isambard AI
 #
 # - 320 GB model
+# GLM-5.3-Flash is a 320B-total / 18B-active multimodal MoE
+# hybrid KDA and sparse MLA attention,
+# native FP8 weights, MTP, and a 1M-token context window.
 #
-# Model: ~743B total parameters, 39B active (MoE)
 # Quantization: FP8 (1 byte/param)
-#   Total weight footprint: ~743 GB
-#
-# KV Cache Offloading:
-#   1M context requires significant KV cache
 
 model: zai-org/GLM-5.3-Flash
 
@@ -32,9 +31,10 @@ gpu-memory-utilization: 0.95
 max-num-seqs: 16
 max-num-batched-tokens: 16384
 
-# Skip DeepGEMM warmup (faster startup)
-env:
-    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 1800
+# Probably required.
+# Will need patched 0.29.0.
+# env:
+#    IVLLM_DISABLE_FLASHINFER: 1
 
 # Parsers (GLM-5.2 custom)
 enable-auto-tool-choice: true
@@ -44,7 +44,8 @@ reasoning-parser: glm45
 # Prefix caching
 enable-prefix-caching: true
 
-# Multi-node compilation fix
-compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'
-no-async-scheduling: true
+# Possibly required
+# compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'
+# no-async-scheduling: true
+# disable-custom-all-reduce: true
 

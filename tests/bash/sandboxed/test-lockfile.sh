@@ -57,19 +57,26 @@ sandbox_run_test "update_initialise_basic" compute '
     [ -n "$hostname" ] && [ "$hostname" != "null" ] || { echo "FAIL: computeHostname not set"; exit 1; }
 '
 
-sandbox_run_test "update_initialise_does_not_create_log" compute '
-    # update_status_initialise only updates the lockfile — it does NOT
-    # create the log file. In the real system, the log file already exists
-    # by this point because SLURM created it via the sbatch --output/--error
-    # redirection *before* the job script (which calls this function) even
-    # starts running. That precondition, not this function, is what makes
-    # resolve_job_log(...) resolvable later. (An earlier version of this
-    # test incorrectly asserted the file was created by this call — see
-    # design/issues.md for the convention of fixing such findings.)
+sandbox_run_test "resolve_job_log_creates_file_if_missing" compute '
+    # Updated 2026-09-03: resolve_job_log() used to rely on SLURM having
+    # already created the log file via sbatch --output/--error redirection
+    # before this point — an earlier version of this test asserted exactly
+    # that (log file NOT present right after update_status_initialise).
+    # That reliance on log presence as an implicit signal was intentionally
+    # dropped (around the same time the per-node log suffix became
+    # mandatory even for single-node jobs): resolve_job_log() now always
+    # creates the file itself if missing, matching its own doc comment.
+    # (Consequence for the rest of ivllm, not tested here: every process
+    # that writes to this log must append, never overwrite/truncate.)
     create_status_pending "log-job" "model" 30 > /dev/null 2>&1
     update_status_initialise "log-job"
-    logfile=$(resolve_job_log "log-job")
+    job_dir=$(resolve_job_dir "log-job")
+    logfile="$job_dir/vllm.0.log"
     assert_file_not_exists "$logfile" || exit 1
+
+    resolved=$(resolve_job_log "log-job")
+    [[ "$resolved" == "$logfile" ]] || { echo "FAIL: resolve_job_log returned $resolved, expected $logfile"; exit 1; }
+    assert_file_exists "$logfile" || exit 1
 '
 
 sandbox_run_test "update_initialise_worker_only" compute '

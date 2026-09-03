@@ -22,10 +22,19 @@ and would need real cluster time, not just the sandboxed harness.
 
 ### Improved diagnostics
 
-**What exists today** (`report_memory()`/`wait_report()`, `utils.sh`):
-`IVLLM_DEBUG_LEVEL` is a numeric knob checked once per `wait_report()` tick
-(every `IVLLM_CHECK_INTERVAL_SECS`, while `initialising`, or always if
-`IVLLM_RUNTIME_DEBUG=1`):
+**Update, 2026-09-03**: `wait_report()` no longer exists — renamed to
+`monitor_node()` project-wide, and much of what this section originally
+planned as future work (`IVLLM_DEBUG_LEVEL` levels 3-4, `set_debugging_env()`,
+trigger-driven `report_cuda`/`report_torch`/`report_gpu`/`report_processes`
+captures) is now actually implemented, not just prototyped — see
+`design/active-issues.md`'s GLM-5.2 entry and CUDA-coredump-catch-22 entry for
+what's actually true about it today. This section is kept for historical
+context on the original design intent rather than rewritten to match.
+
+**What existed at the time of writing** (`report_memory()`/`wait_report()`,
+`utils.sh`): `IVLLM_DEBUG_LEVEL` is a numeric knob checked once per
+`wait_report()` tick (every `IVLLM_CHECK_INTERVAL_SECS`, while
+`initialising`, or always if `IVLLM_RUNTIME_DEBUG=1`):
 
 | Level | Adds |
 |-------|------|

@@ -1,6 +1,7 @@
 #!/bin/bash
-# design/prototype/ivllm-bench.sh — PROTOTYPE, not production (see AGENTS.md:
-# scripts in design/ are instructional examples, rewrite before shipping).
+#
+# lifecycle: experimental
+# N.B. Has not been end to end tested
 #
 # Draft of the ADR-118 (revised) "shadow project directory" benchmarking
 # design, taken one step further per discussion: instead of adding an

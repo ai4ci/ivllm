@@ -252,6 +252,25 @@ Notes:
 
 ## Debugging flags
 
+> **Staleness note, 2026-09-03**: this whole section (and its references to
+> `wait_report()`, `monitor_head()`'s "stall_detected sentinel" file, and
+> `design/prototype/debug-monitor-prototype.sh`) describes an early prototype
+> design. The shipped implementation in `utils.sh` has since diverged from it
+> in real ways — `wait_report()` was fully replaced by `monitor_node()`
+> everywhere it's called, and the actual stall-detection mechanism today is
+> `head_stall_detector()`'s application-level token-progress metric plus the
+> `[ivllm-diag]`/`.trigger-cuda.*`/`.trigger-diagnostics.*` pipe-file triggers
+> (`resolve_job_diagnostics_trigger()`), not a single `debug/stall_detected`
+> sentinel file. `IVLLM_DEBUG_LEVEL` levels 0-2 described below are still
+> accurate; levels 3+ need a fresh pass against the current `set_debugging_env()`/
+> `monitor_node()`/`report_cuda()`/`report_torch()` implementations before
+> trusting the specifics below. See `design/active-issues.md`'s GLM-5.2 entry
+> and its CUDA-coredump-catch-22 entry for what's actually true about level
+> 4+ capture today. Flagged rather than rewritten in this pass — reconciling
+> this section properly is a bigger job than a documentation-drift sweep, and
+> deserves dedicated attention with the current implementation open
+> side-by-side rather than a rushed rewrite.
+
 Design intent: **`IVLLM_DEBUG_LEVEL` is meant to become a single master
 flag** that decides everything that gets included in debug logging — which
 third-party env vars get set, at what verbosity — rather than each session
