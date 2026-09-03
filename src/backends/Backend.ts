@@ -199,7 +199,11 @@ export abstract class Backend {
      */
     async isStarting(job: string): Promise<boolean> {
         const status = await this.getStatusFlag(job);
-        return status === 'pending' || status === 'initialising';
+        return (
+            status === 'pending' ||
+            status === 'initialising' ||
+            status === 'warmup'
+        );
     }
 
     /**

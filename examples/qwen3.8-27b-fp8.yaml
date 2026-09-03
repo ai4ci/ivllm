@@ -1,0 +1,49 @@
+metadata:
+    target: Isambard-AI GH200
+    created-by: Rob
+    version: 0.3.0
+    lifecycle: operational
+min-vllm-version: "0.17.0"
+idle-timeout: 60
+
+# vLLM config for Qwen/Qwen3.6-35B-A3B on Isambard AI
+#   KV cache at 262K context ≈ 2.7 GB total — very small footprint.
+#   Parallelism: tp=1 (35 GB weights, ~60 GB remaining for KV cache)
+
+model: Qwen/Qwen3.8-27B-FP8
+tensor-parallel-size: 1
+max-model-len: 262144
+
+gpu-memory-utilization: 0.95
+max-num-seqs: 512
+max-num-batched-tokens: 16384
+enable-chunked-prefill: true
+
+mm-encoder-tp-mode: data
+
+max-cudagraph-capture-size: 256
+kv-cache-dtype: fp8
+
+# Reasoning (thinking mode enabled by default; use /no_think in prompt to disable)
+reasoning-parser: qwen3
+
+# Tool calling
+enable-auto-tool-choice: true
+tool-call-parser: qwen3_coder
+
+
+# Caching
+enable-prefix-caching: true
+
+speculative-config: '{"method":"qwen3_5_mtp","num_speculative_tokens":3,"enforce_eager":true}'
+
+# Long context from hf model card
+# hf-overrides: '{"text_config": {"rope_parameters": {"mrope_interleaved": true, "mrope_section": [11, 11, 10], "rope_type": "yarn", "rope_theta": 10000000, "partial_rotary_factor": 0.25, "factor": 4.0, "original_max_position_embeddings": 262144}}}'
+# max-model-len: 1000000
+
+# Long context from vllm recipes without rope
+# max-model-len: 1010000
+# hf-overrides: '{"text_config": {"max_position_embeddings": 1010000}}'
+
+# compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+

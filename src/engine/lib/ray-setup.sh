@@ -75,10 +75,10 @@ if [[ "$IVLLM_NODE_RANK" == 0 ]]; then
     RAY_ARGS+=(
         --head
         --port="$RAY_PORT"
+        #--include-dashboard=false
     )
 
-    echo "=== Selected environment exports ==="
-    env | grep -E "VLLM_|RAY_|NCCL_|FI_|NVHPC|CUDA_|LD_CONFIG|CPATH|PATH|SLURM_|TRITON|_CACHE_" | sort
+    report_setup
 
 
 else

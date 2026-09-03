@@ -130,9 +130,16 @@ export LIBRARY_PATH="$RDMA_ROOT/lib64:$RDMA_ROOT/lib:${LIBFABRIC_LIB_DIR}:${LIBR
 # Library path: brics/nccl libs first, then compat libs, then CUDA, compilers, NCCL, NVSHMEM, math.
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:$RDMA_ROOT/lib:$NVHPC_ROOT/cuda/$CUDA_VERSION/compat:$NVHPC_ROOT/cuda/$CUDA_VERSION/lib64:$NVHPC_ROOT/compilers/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nccl/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nvshmem/lib:$NVHPC_ROOT/math_libs/$CUDA_VERSION/lib64"
 
+# Explicitly force the loader to link the forward-compat debugger library
+export LD_PRELOAD="$NVHPC_ROOT/cuda/$CUDA_VERSION/compat/libcudadebugger.so.1:${LD_PRELOAD}"
+
 # vLLM CUDA forward compatibility
 export VLLM_ENABLE_CUDA_COMPATIBILITY=1
 export VLLM_CUDA_COMPATIBILITY_PATH="$NVHPC_ROOT/cuda/$CUDA_VERSION/compat"
+
+# VLLM_NCCL_SO_PATH
+# Path to the NCCL library file. It is needed because nccl>=2.19 brought
+# by PyTorch contains a bug: https://github.com/NVIDIA/nccl/issues/1234
 
 # ── HF Models flags:
 # ─────────────────────────────────

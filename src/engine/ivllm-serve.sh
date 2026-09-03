@@ -130,6 +130,10 @@ if is_status "$IVLLM_JOB" "initialising"; then
     echo "[serve] ERROR: job $IVLLM_JOB is already starting up" >&2
     exit 1
 fi
+if is_status "$IVLLM_JOB" "warmup"; then
+    echo "[serve] ERROR: job $IVLLM_JOB is already warming up" >&2
+    exit 1
+fi
 if is_status "$IVLLM_JOB" "running"; then
     echo "[serve] ERROR: job $IVLLM_JOB is already running" >&2
     exit 1
@@ -170,7 +174,7 @@ echo "=== Stripped configuration ======="
 awk '{print "  " $0}' < "$strippedConfig"
 echo "=================================="
 
-pushd "$here" || exit 1
+pushd "$here" > /dev/null 2>&1 || exit 1
 
 # TODO: costruct sbatch command using an array so that partition flags
 # and exclusive flags are tidier:
@@ -230,7 +234,7 @@ if [[ $EXIT_CODE == 0 ]]; then
     echo "  Tail log: ./ivllm-show-log.sh -j $IVLLM_JOB"
     echo "  Check status: ./ivllm-status.sh -j $IVLLM_JOB"
     echo "=================================="
-    echo ""
+
 else
     echo "  Slurm job rejected"
     echo "=================================="
@@ -238,5 +242,5 @@ else
     update_status_failed "$IVLLM_JOB" "SLURM rejection" "$EXIT_CODE"
 fi
 
-popd || exit $EXIT_CODE
+popd > /dev/null 2>&1 || exit $EXIT_CODE
 exit $EXIT_CODE

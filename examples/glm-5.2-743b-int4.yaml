@@ -1,78 +1,31 @@
 metadata:
     target: Isambard-AI GH200
     created-by: Rob
-    version: 0.4.1
-    lifecycle: experimental
+    version: 0.5.0
+    lifecycle: operational
 min-vllm-version: "0.26.0"
-ivllm-debug-level: 4
 idle-timeout: 60
 
 model: cyankiwi/GLM-5.2-AWQ-INT4
 
 # Total number of attention head (64) must be divisible by number of nodes.
 tensor-parallel-size: 8
-
 distributed-backend-executor: ray
-
 enable-expert-parallel: true
-
 moe-backend: marlin
-
 max-model-len: 262144
 
 gpu-memory-utilization: 0.90
 max-num-seqs: 16
 max-num-batched-tokens: 16384
 
-# per GPU
-# cpu-offload-gb: 64
-# offload-backend: uva
-
 # Chunked prefill for long context
 enable-chunked-prefill: true
-
 numa-bind: true
 
-# Skip DeepGEMM warmup (faster startup)
+# Disable flashinfer paths with custom patch present
 env:
-    VLLM_DEEP_GEMM_WARMUP: skip
     IVLLM_DISABLE_FLASHINFER: 1
-    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 1800
-
-    # FI_CXI_DEFAULT_CQ_SIZE: 131072
-    # FI_CXI_DEFAULT_TX_SIZE: 2048
-    # FI_CXI_DISABLE_NON_INJECT_MSG_IDC: 1
-    # FI_CXI_DISABLE_HOST_REGISTER: 1
-    # FI_MR_CACHE_MONITOR: userfaultfd
-    # FI_CXI_RDZV_PROTO: alt_read
-    # FI_CXI_RDZV_THRESHOLD: 0
-    # FI_CXI_RDZV_GET_MIN: 0
-    # FI_CXI_RDZV_EAGER_SIZE: 0
-    # FI_CXI_RX_MATCH_MODE: hybrid
-
-    # TODO: remove this and revery to v2 runner. PYSPY logs are showing V1 at
-    # stall point, and no longer clear why we are using this
-    VLLM_USE_V2_MODEL_RUNNER: 0
-
-
-    # improve network diagnostics
-    # New in isambard containers
-    # the PHB GDR level extends period of stability out
-    NCCL_NET_GDR_LEVEL: PHB
-    NCCL_GDRCOPY_ENABLE: 1
-    FI_HMEM_CUDA_USE_GDRCOPY: 1
-    # VLLM_USE_AOT_COMPILE: 1
-    NCCL_MNNVL_ENABLE: 0
-    # NCCL_COMM_BLOCKING: 0 - crashes ray.
-    NCCL_P2P_NET_CHUNKSIZE: 262144
-
-
-# enable logging
-enable-log-requests: true
-kv-cache-metrics: true
-cudagraph-metrics: true
-jit-monitor-verbose: true
-enable-logging-iteration-details: true
 
 disable-custom-all-reduce: true
 
@@ -86,7 +39,5 @@ enable-prefix-caching: true
 
 # Multi-node compilation fix
 compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'
-# scheduler-config: '{"async-scheduling": false}'
-
-# seems to remove very early hang on first few messages (or sometimes during warmup) where one GPU is at 0% and others at 100%.
 no-async-scheduling: true
+

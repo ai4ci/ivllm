@@ -76,27 +76,28 @@ export IVLLM_CRASH_INDICATORS=(
 
 
 # ── New: stall indicators (alongside the existing IVLLM_CRASH_INDICATORS) ──
-# export IVLLM_STALL_INDICATORS=(
-#     "No available shared memory broadcast block found"
-# )
+export IVLLM_FAIL_INDICATORS=(
+    "No available shared memory broadcast block"
+)
 
 # How long to wait before re-arming the stall trigger after firing once.
 # Chosen to comfortably exceed one hang "episode" at the ~60s message
 # repeat rate seen in logs/glm52q/20260812_213446/, without re-triggering
 # on every single repeat of the same still-ongoing hang.
-# export IVLLM_STALL_COOLDOWN_SECS="${IVLLM_STALL_COOLDOWN_SECS:-300}"
+export IVLLM_STALL_COOLDOWN_SECS="${IVLLM_STALL_COOLDOWN_SECS:-300}"
 
 # ── Path helpers ───────────────────────────────────────────────────────────
 
 # Resolve the per-node local working directory (RAM-backed tmpfs).
 # Creates the directory if it doesn't exist. This is per node per user job.
 # exports $LOCALDIR, returns node local dir
+# $1: job name if not given a node local scratch directory is returned
 # Usage: local localdir=$(resolve_localdir "$job")
 resolve_localdir() {
     # Resolve the per-node local working directory (RAM-backed tmpfs).
     # Creates the directory if it doesn't exist.
     # Usage: local dir=$(resolve_localdir "$job")
-    local job="$1"
+    local job="${1:-scratch}"
     local id=$(id -u)
 
     # TODO: brics/userenv creates a $LOCALDIR and a $SCRATCHDIR env variable.
@@ -173,8 +174,8 @@ resolve_nvhpc_root() {
     # Returns: path to the NVHPC versioned directory via stdout, or exit 1 on failure.
     local nvhpcDir=$(resolve_nvhpc_dir)
     if [[ ! -d "$nvhpcDir/Linux_aarch64/26.3" ]]; then
-      echo "NVHPC SDK version 26.3 is not installed. please run ivllm setup." >&2
-      return 1
+    echo "NVHPC SDK version 26.3 is not installed. please run ivllm setup." >&2
+    return 1
     fi
     echo "$nvhpcDir/Linux_aarch64/26.3"
 }
@@ -309,10 +310,13 @@ resolve_job_diagnostics_trigger() {
     if [[ -z ${2-} ]]; then
         resolve_job_dir "$1" ".trigger-diagnostics"
     else
-        local node_local=$(resolve_localdir "$1")
-        echo "$node_local/.trigger-diagnostics.rank-"
+        local node_scratch=$(resolve_localdir)
+        mkdir -p "$node_scratch"
+        echo "$node_scratch/.trigger-diagnostics.rank-"
     fi
 }
+
+
 
 # Resolve the path to a job's vllm.yaml config file.
 # Args: $1 — job name.
@@ -485,7 +489,6 @@ set_jit_caches() {
     export FLASHINFER_JIT_CACHE_DIR="$localdir/flashinfer"
     export VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR="$localdir/flashinfer_auto"
     export TORCHINDUCTOR_CACHE_DIR="$localdir/torchinductor"
-    export VLLM_XLA_CACHE_PATH="$localdir/xla"
 }
 
 # Configure vLLM/NCCL/libfabric debugging verbosity from a single master
@@ -506,6 +509,7 @@ set_jit_caches() {
 set_debugging_env() {
     local job=${1:?must set job name}
     local node="${2:-0}"
+    local host=$(hostname)
 
     local debug_level=$(get_job_config_setting "$job" ".ivllm-debug-level")
     debug_level=${debug_level:-0}
@@ -519,44 +523,25 @@ set_debugging_env() {
     local dumpdir
     dumpdir=$(resolve_job_dir "$job" "debug")
     mkdir -p "$dumpdir"
-    local torch_trigger=$(resolve_job_diagnostics_trigger "$job" "$node")
-
-    # These allow the use of torch flight profiling but only if the
-    # trigger is activated. the triggers are controlled in monitor_head and
-    # monitor_node
-
-    echo "[debug] ivllm-debug-level=$debug_level — torch triggered flight profile enabled"
-
-    export TORCH_NCCL_DESYNC_DEBUG=1
-    export TORCH_NCCL_DUMP_ON_TIMEOUT=1
-    export TORCH_FR_BUFFER_SIZE=2000
-    export TORCH_NCCL_TRACE_BUFFER_SIZE=2000
-    export TORCH_FR_CPP_STACK=1
-    export TORCH_NCCL_TRACE_CPP_STACK=1
-    export TORCH_FR_DUMP_TEMP_FILE="$dumpdir/torch-nccl-node-${node}-rank-"
-    export TORCH_NCCL_DEBUG_INFO_TEMP_FILE="$dumpdir/torch-nccl-node-${node}-rank-"
-
-    export TORCH_NCCL_DEBUG_INFO_PIPE_FILE="$torch_trigger"
-
 
     (( debug_level < 3 )) && return 0
 
-    echo "[debug] ivllm-debug-level=$debug_level — verbose third-party diagnostics enabled"
+    echo "[debug] ivllm-debug-level=$debug_level — third-party diagnostics enabled"
 
     # ── Layer 1: vLLM's own logger ──────────────────────────────────────
     export VLLM_LOGGING_LEVEL=DEBUG
 
     # ── Layer 2: NCCL / torch.distributed ────────────────────────────────
     export NCCL_DEBUG=WARN
+    export NCCL_DEBUG_FILE="$dumpdir/nccl-debug-%h-%p.log"
     export TORCH_CPP_LOG_LEVEL=ERROR
 
     # ── Layer 3: libfabric / CXI ──────────────────────────────────────────
-    # Deliberately NOT trace here — confirmed on this platform that `info`
-    # is more informative than `trace` at level 3 (see active-issues.md /
-    # ivllm-environment.md — non-monotonic verbosity, don't "fix" this).
-    export FI_LOG_LEVEL=warn
-    export FI_LOG_PROV=cxi
-    export FI_LOG_SUBSYS=core,cq,ep_data,mr
+    export FI_LOG_LEVEL=trace # libfabric levels are mixed up. do not fix
+    # export FI_LOG_PROV=cxi # default all providers enabled
+    export FI_LOG_SUBSYS=core,fabric,domain,ep_ctrl,ep_data,av,cq,eq,mr
+    export FI_LOG_LOCATION="$dumpdir/libfabric-debug-$host.log"
+    export FI_LOG_LOCATION_MODE=0644
 
     (( debug_level < 4 )) && return 0
 
@@ -564,29 +549,69 @@ set_debugging_env() {
     # High log volume — only reached at the top debug level.
 
     echo "[debug] ivllm-debug-level=$debug_level — enabling torch proiling & trace stats"
+    local node_scratch=$(resolve_localdir)
 
     export NCCL_DEBUG=INFO
-    export NCCL_DEBUG_SUBSYS=INIT,BOOTSTRAP,ENV,GRAPH
+    export NCCL_DEBUG_SUBSYS=INIT,BOOTSTRAP,ENV,GRAPH,COLL,NET
     export FI_LOG_LEVEL=trace # libfabric levels are mixed up. do not fix
-    export TORCH_CPP_LOG_LEVEL=WARN
+    export TORCH_CPP_LOG_LEVEL=WARNING
     export TORCH_DISTRIBUTED_DEBUG=INFO
 
+    export CUDA_LOG_FILE="$dumpdir/cuda.log"
+
+    echo "[debug] ivllm-debug-level=$debug_level — enabling cuda coredumps"
+
+    export CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0
+    export CUDA_ENABLE_USER_TRIGGERED_COREDUMP=1
+    export CUDA_COREDUMP_PIPE="$node_scratch/.trigger-cuda.%h.%p.pipe"
+    # export CUDA_COREDUMP_SHOW_PROGRESS=1
+    export CUDA_COREDUMP_GENERATION_FLAGS='skip_nonrelocated_elf_images,skip_global_memory,skip_shared_memory,skip_local_memory,skip_constbank_memory,skip_abort'
+
+    # Uses pipe form to post process CUDA dump
+    export CUDA_COREDUMP_FILE="| $SLURM_SUBMIT_DIR/lib/cuda-postprocess.sh '$node_scratch' '$dumpdir' '$debug_level'"
+
     # see https://docs.pytorch.org/docs/2.13/logging.html
+    # see https://docs.nvidia.com/cuda/cuda-gdb/index.html#gpu-core-dump-support
 
     (( debug_level < 5 )) && return 0
 
-    echo "[debug] ivllm-debug-level=$debug_level — enabling vllm function tracing"
-
-    export NCCL_DEBUG=TRACE
-    export NCCL_DEBUG_SUBSYS=$NCCL_DEBUG_SUBSYS,COLL,PROXY
-    export FI_LOG_LEVEL=info # libfabric levels are mixed up. do not fix
-    export VLLM_TRACE_FUNCTION=1
-    export VLLM_LOG_STATS_INTERVAL=1
     export CUDA_LAUNCH_BLOCKING=1
+
+    # These allow the use of torch flight profiling but only if the
+    # trigger is activated. the triggers are controlled in monitor_head and
+    # monitor_node
+
+    local torch_trigger=$(resolve_job_diagnostics_trigger "$job" "$node")
+
+    echo "[debug] ivllm-debug-level=$debug_level — enabling torch / nccl dumps"
+
     export TORCH_CPP_LOG_LEVEL=INFO
     export TORCH_DISTRIBUTED_DEBUG=DETAIL
     export TORCH_LOGS=+distributed
     export TORCH_SHOW_CPP_STACKTRACES=1
+
+    export TORCH_NCCL_DESYNC_DEBUG=1
+    export TORCH_NCCL_DUMP_ON_TIMEOUT=1
+    export TORCH_FR_BUFFER_SIZE=2097152
+    export TORCH_NCCL_TRACE_BUFFER_SIZE=2097152
+    export TORCH_FR_CPP_STACK=1
+    export TORCH_NCCL_TRACE_CPP_STACK=1
+    export TORCH_FR_DUMP_TEMP_FILE="$dumpdir/torch-nccl-${host}-rank-"
+    export TORCH_NCCL_DEBUG_INFO_TEMP_FILE="$dumpdir/torch-nccl-${host}-rank-"
+
+    export TORCH_NCCL_DEBUG_INFO_PIPE_FILE="$torch_trigger"
+
+    echo "[debug] ivllm-debug-level=$debug_level — enabling verbose network logging"
+
+    export NCCL_DEBUG=TRACE
+    export NCCL_DEBUG_SUBSYS=$NCCL_DEBUG_SUBSYS,COLL,PROXY
+    export FI_LOG_LEVEL=info # libfabric levels are mixed up. do not fix
+
+    echo "[debug] ivllm-debug-level=$debug_level — enabling vllm function tracing"
+
+    export VLLM_TRACE_FUNCTION=1
+    export VLLM_LOG_STATS_INTERVAL=1
+
 
 }
 
@@ -603,7 +628,6 @@ baseline_vllm_args() {
     local model=$(get_job_config_setting "$job" ".model")
     local serverPort=$(get_job_status_setting "$job" ".serverPort")
 
-    # TODO: debug / profiling options with:
     local debug_level=$(get_job_config_setting "$job" ".ivllm-debug-level")
     debug_level=${debug_level:-0}
 
@@ -617,7 +641,7 @@ baseline_vllm_args() {
 
     # The --profiler-config option is set here based on debug level.
     # https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.ProfilerConfig
-    if (( debug_level > 3 )); then
+    if (( debug_level > 4 )); then
         local dumpdir
         dumpdir=$(resolve_job_dir "$job" "torch-profile")
         mkdir -p "$dumpdir"
@@ -625,7 +649,11 @@ baseline_vllm_args() {
         printf -v json_config '{"profiler": "torch", "torch_profiler_dir": "%s"}' "$dumpdir"
         ref_args+=(
             --profiler-config "$json_config"
+            --enforce-eager
+            --jit-monitor-verbose
+
         )
+        echo "[debug] WARNING: enabling cuda graph profiling (debug level 5+) sets enforce-eager"
     fi
 }
 
@@ -733,6 +761,22 @@ update_status_initialise() {
             --arg stop_time "$(date -d "@${SLURM_JOB_END_TIME:-$(date +%s)}" -Iseconds 2>/dev/null || date -Iseconds)" \
             '.status = "initialising" | .slurmJobId = $slurm_job_id | .computeHostname = $compute_hostname | .startTime = $start_time | .stopTime = $stop_time' \
             "$lockfile" > "$lockfile.tmp" && mv "$lockfile.tmp" "$lockfile"
+    fi
+}
+
+# Mark job as running when vLLM health check passes.
+# Args: $1 — job name.
+# Run on head compute node (SLURM_NODEID==0). Sets .status to "running" via jq.
+# Usage: update_status_running "$job"
+update_status_warmup() {
+    local job="$1"
+    local lockfile
+
+    lockfile=$(resolve_job_status "$job")
+
+    if (( SLURM_NODEID == 0 )); then
+        echo "[startup] job $job is warming up."
+        jq '.status = "warmup"' "$lockfile" > "$lockfile.tmp" && mv "$lockfile.tmp" "$lockfile"
     fi
 }
 
@@ -896,11 +940,43 @@ is_startable() {
         echo "[serve] ERROR: job $job is already running" >&2
         return 1
     fi
+    if is_status "$job" "warmup"; then
+        echo "[serve] ERROR: job $job is warming up" >&2
+        return 1
+    fi
     if is_status "$job" "cancel"; then
         echo "[serve] ERROR: job $job is in process of shutting down" >&2
         return 1
     fi
     return 0
+}
+
+# Check if a job is starting - initialising or warming up.
+# Args: $1 — job name;
+is_starting() {
+    # Check existing status before starting job.
+    local job=${1:?must supply job id}
+    if is_status "$job" "initialising"; then
+        return 0
+    fi
+    if is_status "$job" "warmup"; then
+        return 0
+    fi
+    return 1
+}
+
+# Check if a job is active - warming up or running.
+# Args: $1 — job name;
+is_active() {
+    # Check existing status before starting job.
+    local job=${1:?must supply job id}
+    if is_status "$job" "running"; then
+        return 0
+    fi
+    if is_status "$job" "warmup"; then
+        return 0
+    fi
+    return 1
 }
 
 # ── Diagnostics and failure capture ────────────────────────────────────────
@@ -930,7 +1006,6 @@ capture_job_diagnostics() {
         local diag_dir
         diag_dir=$(resolve_diagnostics_dir "$job")
         echo "[diagnostics] archiving failed job artifacts to $diag_dir"
-
         cp -rf "$job_dir"/* "$diag_dir/" 2>/dev/null || true
 
     fi
@@ -958,9 +1033,9 @@ kill_pid() {
 # monitors a list of PIDs. Exits immediately if any PID dies.
 # Args: $1...$N — One or more process IDs to monitor.
 wait_all() {
-      [ $# -eq 0 ] && return 0
-      wait -n "$@" 2>/dev/null
-      return $?
+    [ $# -eq 0 ] && return 0
+    wait -n "$@" 2>/dev/null
+    return $?
 }
 
 # Args: $1 - pid
@@ -1013,6 +1088,19 @@ tidy_up() {
     fi
 
     echo "[shutdown] shutting down job $job (vllm: ${pid:-unknown}, slurm: ${slurm_job_id:-unknown}, exit: $exit_code)"
+
+    local debug_level=$(get_job_config_setting "$job" ".ivllm-debug-level")
+    debug_level=${debug_level:-0}
+
+    if (( debug_level > 3 )); then
+        # stop the torch profiling if running
+        echo "[shutdown] stopping profiling"
+        curl -sf -X POST "http://localhost:$server_port/stop_profile" > /dev/null 2>&1
+        echo "[shutdown] wait for debugging captures to complete"
+        sleep 30
+        # TODO: change this delay for a indicator file once all monitor_node(s)
+        # have finished their export.
+    fi
 
     # Update lockfile based on exit code
     case "$exit_code" in
@@ -1070,11 +1158,11 @@ tidy_up() {
             capture_job_diagnostics "$job"
             ;;
         *)
-            # VLLM node ( or wait_report() ) initiated errors
+            # VLLM node ( or monitor_node() ) initiated errors
             local status
             status=$(get_job_status_setting "$job" ".status")
-            if [[ $status == "pending" || $status == "initialising" ]]; then
-                echo "[shutdown] exit code $exit_code: vLLM crashed after startup"
+            if [[ $status == "pending" || $status == "initialising" || $status == "warmup" ]]; then
+                echo "[shutdown] exit code $exit_code: vLLM crashed during startup"
                 update_status_failed "$job" "didn't start" "$exit_code"
                 capture_job_diagnostics "$job"
             else
@@ -1178,9 +1266,9 @@ monitor_head() {
     local debug_level=$(get_job_config_setting "$job" ".ivllm-debug-level")
     debug_level=${debug_level:-0}
 
-
-
     local trigger=$(resolve_job_diagnostics_trigger "$job")
+    local heartbeat=$(resolve_job_dir "$job" ".heartbeat")
+    touch "$heartbeat"
 
     if [ ! -f "$lockfile" ]; then
         echo "[head] FATAL: lockfile $lockfile missing on startup"
@@ -1188,6 +1276,77 @@ monitor_head() {
     fi
 
     echo "[head] starting monitor (idle_timeout=$idle_timeout)..."
+
+    # Stream-watch the log for fail indicators in a background pipeline
+    # instead of polling: fires exactly once per matching line, in real
+    # time, no counting/cooldown needed. Runs independently of
+    # monitor_head()'s own control flow, so it still fires while blocked
+    # in the warmup retry loop below (can run 20+ minutes and is exactly
+    # where the known hang shows up). "-n0" skips lines already in the
+    # log at startup — only newly appended lines are matched.
+    local fail_patterns=()
+    for fail in "${IVLLM_FAIL_INDICATORS[@]}"; do
+        fail_patterns+=("-e" "$fail")
+    done
+    (
+        tail -Fn0 "$log" | grep --line-buffered -F "${fail_patterns[@]}" | while read -r line; do
+            if is_active "$job"; then
+                echo "[head] monitor detected no available memory during inferencing — capturing diagnostics."
+                echo "stalled (shm_broadcast)" > "$trigger"
+                # N.B. can't use $line here as creates an infinite loop
+            fi
+        done
+    ) &
+    local abort_watcher_pid=$!
+
+    # Setup a log watcher subshell to look for crashes.
+    # Fires once only when first crash specific indiciator detected then completes
+    # Completion is detected in main monitor loop
+    local crash_patterns=()
+    for crash in "${IVLLM_CRASH_INDICATORS[@]}"; do
+        crash_patterns+=("-e" "$crash")
+    done
+    (
+        tail -Fn0 "$log" | grep --line-buffered -F "${crash_patterns[@]}" | while read -r line; do
+            echo "[head] monitor detected an engine crash — capturing diagnostics."
+            echo "crashed" > "$trigger"
+            # N.B. can't use $line here as creates an infinite loop
+            break
+        done
+    ) &
+    local crash_watcher_pid=$!
+
+    # Set up a log watcher that touches a heartbeat file every time a content request
+    # is made.
+    local endpoint_patterns=()
+    for endpoint in "${IVLLM_TARGET_ENDPOINTS[@]}"; do
+        endpoint_patterns+=("-e" "$endpoint")
+    done
+    (
+        tail -Fn0 "$log" | grep --line-buffered -F "${endpoint_patterns[@]}" | while read -r line; do
+            touch "$heartbeat"
+        done
+    ) &
+    local activity_watcher_pid=$!
+
+
+    head_stall_detector "$job" "$server_port" "$trigger" "$debug_level" &
+    local head_stall_detector_pid=$!
+
+    trap '
+        pkill -P "$crash_watcher_pid" 2>/dev/null
+        kill "$crash_watcher_pid" 2>/dev/null
+        wait "$crash_watcher_pid" 2>/dev/null
+        pkill -P "$abort_watcher_pid" 2>/dev/null
+        kill "$abort_watcher_pid" 2>/dev/null
+        wait "$abort_watcher_pid" 2>/dev/null
+        pkill -P "$activity_watcher_pid" 2>/dev/null
+        kill "$activity_watcher_pid" 2>/dev/null
+        wait "$activity_watcher_pid" 2>/dev/null
+        pkill -P "$head_stall_detector_pid" 2>/dev/null
+        kill "$head_stall_detector_pid" 2>/dev/null
+        wait "$head_stall_detector_pid" 2>/dev/null
+    ' RETURN
 
     while true; do
 
@@ -1235,19 +1394,8 @@ monitor_head() {
             return 254
         fi
 
-        # Exit at any time (running or initialising if we detect a crash in logs)
-        local crash_patterns=()
-        for crash in "${IVLLM_CRASH_INDICATORS[@]}"; do
-            crash_patterns+=("-e" "$crash")
-        done
-
-        local recent_log
-        recent_log=$(tail -n 5000 "$log" 2>/dev/null)
-
-        # Check for recent crash related messages
-        if grep -q -F "${crash_patterns[@]}" <<< "$recent_log"; then
-            echo "[head] monitor detected a crash in head log file."
-            echo "monitor detected crash" > "$trigger"
+        # crash watch detected something:
+        if ! kill -0 "$crash_watcher_pid" 2>/dev/null; then
             sleep 60
             echo "[head] monitor shutting down."
             return 253
@@ -1259,16 +1407,13 @@ monitor_head() {
         if [[ $status ==  "initialising" ]]; then
             if curl -sf "http://localhost:$server_port/health" > /dev/null 2>&1; then
 
-                if (( debug_level > 3 )); then
-                    # start the torch profiling
-                    curl -sf -X POST "http://localhost:$server_port/start_profile" > /dev/null 2>&1
-                fi
-
                 # Could save cache before warmup which may help in certain
                 # circumstances if the model starts but fails warm up.
                 # however this is likely to cause cache pollution so currently disabled.
                 echo "[startup] vLLM /health active — saving JIT cache"
                 save_cache "$job"
+
+                update_status_warmup "$job"
 
                 # Warmup: send a test request to trigger JIT compilation
                 local max_retries=5
@@ -1284,13 +1429,20 @@ monitor_head() {
                     local warmup_pid=$!  # Capture the background PID of the warmup function
 
                     while kill -0 "$warmup_pid" 2>/dev/null; do
-                        # Check for external cancellation inside the running attempt
+                        # Check for external status changes inside the running attempt
                         tmp_status=$(get_job_status_setting "$job" ".status")
-                        if [[ ! "$tmp_status" == "initialising" ]]; then
+                        if [[ ! "$tmp_status" == "warmup" ]]; then
                             kill "$warmup_pid" 2>/dev/null
                             wait "$warmup_pid" 2>/dev/null # Clean up zombie process
                             warmup_ok=111
                             break 2 # Break out of BOTH the sub-loop and the outer retry loop
+                        fi
+
+                        # crash watch detected something:
+                        if ! kill -0 "$crash_watcher_pid" 2>/dev/null; then
+                            sleep 60
+                            echo "[head] monitor shutting down."
+                            return 253
                         fi
 
                         sleep 1
@@ -1315,6 +1467,15 @@ monitor_head() {
                     echo "[startup] job $job startup complete."
                     update_status_running "$job"
                     echo "[startup] startup complete: vLLM is running."
+
+                    # TODO: if the user is trying to debug live vllm activity we
+                    # woudl need to capture it here but also this is not enough
+                    # as it would need to be stopped before the profile is captured
+                    # if (( debug_level > 4 )); then
+                    #     echo "[debug] profiler running."
+                    #     curl -sf -X POST "http://localhost:$server_port/start_profile" > /dev/null 2>&1
+                    # fi
+
                     continue
                 elif (( warmup_ok == 111 )); then
                     echo "[startup] warmup interrupted"
@@ -1338,39 +1499,18 @@ monitor_head() {
             fi
         fi
 
-        # Running — check idle timeout
+        # Running — check idle timeout using heartbeat file
         if [[ $status == "running" && -n "$idle_timeout" && "$idle_timeout" -ge 0 ]]; then
 
-            # Build time patterns for the idle window
-            local time_patterns=()
-            for i in $(seq 0 "$idle_timeout"); do
-                time_patterns+=("-e" "$(date -d "$i minutes ago" "$IVLLM_TIME_FMT")")
-            done
+            # Calculate how many seconds the node has been idle
+            local current_time=$(date +%s)
+            local last_active=$(stat -c %Y "$heartbeat")
+            (( idle_seconds = current_time - last_active ))
 
-            local endpoint_patterns=()
-            for endpoint in "${IVLLM_TARGET_ENDPOINTS[@]}"; do
-                endpoint_patterns+=("-e" "$endpoint")
-            done
-
-            # Check for recent API requests (not /health)
-            if grep -F "${time_patterns[@]}" <<< "$recent_log" | grep -q -F "${endpoint_patterns[@]}"; then
-                sleep "$IVLLM_CHECK_INTERVAL_SECS"
-                continue
-            else
-                echo "[head] no API requests for $idle_timeout minutes — shutting down"
+            if (( idle_seconds >= idle_timeout*60 )); then
+                echo "[head] no API requests for $idle_seconds seconds — shutting down"
                 return 202
             fi
-
-            # TODO: stall detection
-            # The head monitor count look at /v1/metrics endpoint and captured
-            # data from https://docs.vllm.ai/en/stable/usage/metrics/
-            # to determine if the server has become unacceptably slow and
-            # possibly start the profiling with a
-            # curl -X POST http://localhost:8000/start_profile
-            # or stop it again with
-            # curl -X POST http://localhost:8000/stop_profile
-            # or trigger a dump via monitor_node with
-            # echo "reason" > "$trigger"
 
         fi
 
@@ -1381,6 +1521,90 @@ monitor_head() {
 }
 
 
+# Helper function to extract a Prometheus metric value safely
+get_metric_value() {
+    local metric_name=$1
+    local content=$2
+    # Extracts the numeric value at the end of the line, ignoring labels
+    echo "$content" | grep "^${metric_name}" | awk '{print $NF}'
+}
+
+head_stall_detector() {
+    local job=$1
+    local server_port=$2
+    local trigger=$3
+    local debug_level=$4
+    echo "[head-monitor] Application-level vLLM metrics watcher started."
+
+    local prev_tokens=0
+    local consecutive_stalls=0
+    local STALL_THRESHOLD=3 # Trigger a dump if frozen for 3 consecutive checks (~15s)
+
+    local status
+    status=$(get_job_status_setting "$job" ".status")
+
+    while true; do
+        sleep "$IVLLM_CHECK_INTERVAL_SECS"
+
+        if ! is_status "$job" "running" && ! is_status "$job" "warmup" ; then
+            continue
+        fi
+
+        # 1. Fetch metrics from the local vLLM API server instance
+        local metrics_payload=$(curl -s "http://localhost:$server_port/metrics")
+        if [[ -z "$metrics_payload" ]]; then
+            echo "[head-monitor] ⚠️ Failed to reach vLLM /metrics endpoint. Service might be down."
+            continue
+        fi
+
+        # 2. Extract key metrics fields
+        running_reqs=$(get_metric_value "vllm:num_requests_running" "$metrics_payload")
+        waiting_reqs=$(get_metric_value "vllm:num_requests_waiting" "$metrics_payload")
+        total_tokens=$(get_metric_value "vllm:generation_tokens_total" "$metrics_payload")
+
+        # Handle float conversions from Prometheus formatting to integer for evaluation
+        running_reqs=${running_reqs%.*}
+        waiting_reqs=${waiting_reqs%.*}
+        total_tokens=${total_tokens%.*}
+
+        # Default uninitialized metrics to 0
+        running_reqs=${running_reqs:-0}
+        total_tokens=${total_tokens:-0}
+
+        if (( debug_level > 3 )); then
+            echo "[head-monitor] running requests: $running_reqs; total tokens generated: $total_tokens"
+        fi
+
+        # 3. Evaluate Hang Conditions
+        # We only care if requests are actively assigned to the engine but nothing is generating
+        if (( running_reqs > 0 )); then
+            if [[ "$total_tokens" -eq "$prev_tokens" ]]; then
+                (( consecutive_stalls++ ))
+                echo "[head-monitor] ⚠️ Warning: vLLM is processing $running_reqs requests but 0 new tokens generated over $consecutive_stalls x $IVLLM_CHECK_INTERVAL_SECS seconds"
+            else
+                consecutive_stalls=0 # Reset tracker; tokens are flowing normally
+            fi
+        else
+            consecutive_stalls=0 # Engine is safely idle with no load
+        fi
+
+        prev_tokens=$total_tokens
+
+        # 4. Trigger cluster diagnostics on persistent hang once only
+        # don't reset consecutive_stalls. This will trigger once unless engine
+        # unblocks itself, and resets consecutive_stalls via logic above.
+        if (( consecutive_stalls == STALL_THRESHOLD )); then
+            echo "[head-monitor] VLLM metrics confim hang. Broadcasting cluster diagnostic trigger..."
+
+            # Write to the shared file mechanism you set up in your node loops
+            echo "stalled (metrics)" > "$trigger"
+
+            # Sleep for a longer period to let the cluster gather traces and avoid reset thrashing
+            sleep 60
+        fi
+    done
+}
+
 # This is the node local monitor. It is deliberately lightweight and
 # is responsible for reporting node local memory usage.
 # Waits for a process to finish whilst reporting on its memory usage.
@@ -1389,8 +1613,6 @@ monitor_head() {
 # flight recorder pipes (which are on node local storage)
 # TODO: although the trigger is detected by torch and the logs suggest the flight
 # recorder is written there is always the same content in them: 118 bytes of nonsense.
-# When a trigger is run the node will always make a copy of existing memory, network,
-# pyspy and
 # Args: $1 — job; $2 - pid for the process to monitor; $3 - node id.
 # Usage: monitor_node "$job" "$pid" "$node"
 monitor_node() {
@@ -1410,6 +1632,12 @@ monitor_node() {
 
     echo "[serve-$node] node monitor started with debug level: $debug_level"
 
+    node_hang_detector "$pid" "$trigger" &
+    local detector_pid=$!
+    # Clean up the background detector immediately if the main node monitor exits
+    trap 'kill $detector_pid 2>/dev/null; wait $detector_pid 2>/dev/null' EXIT
+
+
     while ! process_died "$pid"; do
 
         local current_mod
@@ -1420,24 +1648,23 @@ monitor_node() {
         fi
 
         if (( current_mod > last_mod )); then
+            # An active trigger:
             # bring forward the next capture if the trigger file was modified
             local reason=$(cat "$trigger")
             echo "[serve-$node] diagnostics capture trigger detected: $reason"
 
-            # trigger files will be xxx1.pipe, xxx2.pipe, xxx3.pipe indexed by
-            # GPU rank in whole collective (not node)
-            shopt -s nullglob
-            for file in "${torch_trigger}"*.pipe; do
-                echo "[serve-$node] propagating per rank trigger: $file"
-                echo "$reason" >> "$file"
-            done
-
-            # Always capture full details in the event of a triggered shutdown
             report_memory "$job" "$node"
             report_gpu "$job" "$node"
             report_processes "$job" "$node" "$reason"
-            report_gpu_net_stats "$job" "$node" "$reason"
-            report_cuda "$job" "$node" "$reason"
+
+            if (( current_mod > last_mod+IVLLM_CHECK_INTERVAL_SECS )); then
+                report_cuda "$job" "$node" "$reason"
+                report_torch "$job" "$node" "$reason"
+                report_gpu_net_stats "$job" "$node" "$reason"
+            else
+                echo "[serve-$node] throttled cuda / torch / net diagnostics capture"
+            fi
+
             last_mod=$current_mod
             elapsed=0
         else
@@ -1457,17 +1684,15 @@ monitor_node() {
                         report_processes "$job" "$node" "monitoring"
                     fi
 
-                    if (( debug_level > 3 )); then
-                        shopt -s nullglob
-                        for file in "${torch_trigger}"*.pipe; do
-                            echo "[serve-$node] per rank monitoring: $file"
-                            echo "monitoring" >> "$file"
-                        done
-                        # This is very unstable and leads to crashes:
-                        # report_cuda "$job" "$node" "monitoring"
-                    fi
+#                     if (( debug_level > 3 )); then
+#
+#                     fi
 
+                    # report_cuda is quite likely to bring the system to its knees
+                    # if done repeatedly so not done in monitoring
                     if (( debug_level > 4 )); then
+                        report_torch "$job" "$node" "monitoring"
+                        report_cuda "$job" "$node" "monitoring"
                         report_gpu_net_stats "$job" "$node" "monitoring"
                     fi
 
@@ -1482,12 +1707,17 @@ monitor_node() {
     local code=$?
 
     if [[ $code != 0 ]]; then
+        # A crash:
+        # Its basically unlikely that most of this will still be informative as
+        # The main ray / vllm process will have terminated, and this capture will be
+        # too late to be useful.
         echo "[serve-$node] vllm crashed with exit code $code"
         report_memory "$job" "$node"
         report_gpu "$job" "$node"
-        report_processes "$job" "$node" "vllm crash $code"
         report_gpu_net_stats "$job" "$node" "vllm crash $code"
-        report_cuda "$job" "$node" "vllm crash $code"
+        # report_cuda "$job" "$node" "vllm crash $code"
+        # report_torch "$job" "$node" "vllm crash $code"
+        # report_processes "$job" "$node" "vllm crash $code"
         return $code
     else
         echo "[serve-$node] vllm exited normally"
@@ -1495,6 +1725,79 @@ monitor_node() {
     fi
 
     return 1
+}
+
+# For a specific process identifies if the memory and cumulative CPU have flatlined
+# and alert all nodes. Runs on individual nodes.
+# $1 - the process (vllm or ray)
+# $2 - the trigger file
+node_hang_detector() {
+    local pid=$1
+    local trigger=$2
+    local prev_rss=0
+    local prev_cputime=""
+
+    # N.B. this occasionalty triggers very early in the vllm setup. It should
+    # probably check that vllm is running or warming up?
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep "$IVLLM_CHECK_INTERVAL_SECS"
+        sleep "$IVLLM_CHECK_INTERVAL_SECS"
+
+        local current_ps=$(ps -p "$pid" -o rss,time --no-headers 2>/dev/null)
+        [[ -z "$current_ps" ]] && break
+
+        local curr_rss=$(echo "$current_ps" | awk '{print $1}')
+        local curr_cputime=$(echo "$current_ps" | awk '{print $2}')
+
+        if [[ -n "$prev_cputime" ]]; then
+            # Check if both Resident Memory and Cumulative CPU cycles have flatlined
+            if [[ "$curr_rss" -eq "$prev_rss" && "$curr_cputime" == "$prev_cputime" ]]; then
+
+                # Atomic check: only write if another node hasn't already flagged a cluster hang
+                local current_reason=""
+                [[ -f "$trigger" ]] && current_reason=$(cat "$trigger")
+
+                if [[ ! "$current_reason" =~ "stalled" ]]; then
+                    echo "[serve-$node] Local process freeze detected. Acting as Patient Zero."
+                    echo "stalled (node $node freeze)" > "$trigger"
+                fi
+
+                # Prevent looping immediately; allow time for the cluster dump collection
+                sleep 60
+            fi
+        fi
+        prev_rss=$curr_rss
+        prev_cputime=$curr_cputime
+    done
+}
+
+# Triggers a set of torch nccl dumps. This does not currently result in
+# anything informative. The mechanism works but the torch output is nonsense.
+# Config required to make this work is only available in level 4+ debug.
+# however this can be called and wont do anything in lower levels
+# $1 - the job
+# $2 - the node
+# $3 - the reason for the dump
+report_torch() {
+    local job=${1:?must provide job}
+    local node=${2:-0}
+    local reason=${3:-monitoring}
+
+    local trigger=$(resolve_job_diagnostics_trigger "$job")
+    local torch_trigger=$(resolve_job_diagnostics_trigger "$job" "$node")
+
+    shopt -s nullglob
+    # Torch
+    # trigger files will be xxx1.pipe, xxx2.pipe, xxx3.pipe indexed by
+    # GPU rank in whole collective (not node)
+    # only node local pipes will exist in node_scratch
+    for file in "${torch_trigger}"*.pipe; do
+        [[ $reason != "monitoring" ]] && echo "[serve-$node] per rank torch nccl dump: $file"
+        # shellcheck disable=2016
+        timeout 2s bash -c 'echo "$reason" >> "$1"' _ "$file" \
+            || echo "[serve-$node] WARNING: write to $file timed out (stale/unread pipe?)"
+    done
+
 }
 
 # ── Resource monitoring ───────────────────────────────────────────────────
@@ -1507,12 +1810,44 @@ report_setup() {
     # Usage: report_setup
 echo "=== Python & Library Extension Environment ==="
 python -c "
-import os, sys, torch, deep_gemm, deep_ep
+import os, sys, torch, deep_gemm, deep_ep, ctypes
 
 print(f'Python Interpreter: {sys.executable}')
 print(f'PyTorch Source CUDA: {torch.version.cuda}')
 print(f'Device 0 Target Name: {torch.cuda.get_device_name(0)}')
 print(f'Device Compute Capability: {torch.cuda.get_device_capability(0)}')
+
+def nccl_version_of(path):
+    # ncclGetVersion(int *version) encodes as MAJOR*10000 + MINOR*100 + PATCH.
+    # Calling it directly on the already-mapped .so (ctypes.CDLL on a path
+    # that's already loaded returns a handle to the SAME resident library,
+    # it does not load a second copy) is the one check here that cannot be
+    # stale — it's the library's own compiled-in answer about itself.
+    try:
+        lib = ctypes.CDLL(path)
+        v = ctypes.c_int()
+        rc = lib.ncclGetVersion(ctypes.byref(v))
+        if rc != 0:
+            return f'<ncclGetVersion returned error code {rc}>'
+        n = v.value
+        return f'{n // 10000}.{(n // 100) % 100}.{n % 100} (raw={n})'
+    except Exception as e:
+        return f'<ncclGetVersion call failed: {e}>'
+
+paths = set()
+with open(f'/proc/{os.getpid()}/maps') as f:
+    for line in f:
+        if 'nccl' in line.lower():
+            path = line.split()[-1]
+            if path.startswith('/'):
+                paths.add(path)
+
+print('libnccl.so actually mapped into this process (ground truth):')
+if not paths:
+    print('  (none found — unexpected, torch should have loaded one)')
+for path in sorted(paths):
+    print(f'  {path}')
+    print(f'    ncclGetVersion() direct call: {nccl_version_of(path)}')
 
 print('\n--- Extension Library Status ---')
 # Crash-proof DeepGEMM Check
@@ -1531,7 +1866,7 @@ except ImportError as e:
 "
 echo "=== Final Environment Variables for vLLM ==="
 # Expanded search to capture your critical NVSHMEM, EP, DG, and GLOO runtime flags
-env | grep -E "^(VLLM_|RAY_|NCCL_|FI_|NVHPC|CUDA_|LD_CONFIG|CPATH|PATH|SLURM_|TRITON|NVSHMEM_|EP_|DG_|GLOO_)" | sort
+env | grep -E "^(VLLM_|RAY_|NCCL_|FI_|NVHPC|CUDA_|LD_|CPATH|PATH|SLURM_|TRITON|NVSHMEM_|EP_|DG_|GLOO_)" | sort
 echo "============================================"
 }
 
@@ -1553,9 +1888,14 @@ report_memory() {
     local top_6
     top_6=$(echo "$raw_ps" | awk '{m[$3]+=$2} END{for(c in m) printf "%d %s\n", m[c], c}' | sort -rn | head -n 6 | awk '{if($1>1024) printf "%s=%dM ",$2,$1/1024; else printf "%s=%dK ",$2,$1}')
 
+#     printf "[%s-node %s] Cache: %sK | RAM: %s | Top: %s\n" \
+#         "$(date +%H:%M:%S)" "$node" \
+#         "$(du -sk "$localdir" 2>/dev/null | cut -f1)" "$total_ram" "$top_6"
+
     printf "[%s-node %s] Cache: %sK | RAM: %s | Top: %s\n" \
         "$(date +%H:%M:%S)" "$node" \
-        "$(du -sk "$localdir" 2>/dev/null | cut -f1)" "$total_ram" "$top_6"
+        "$(timeout 5s du -sk "$localdir" 2>/dev/null | cut -f1)" "$total_ram" "$top_6"
+
 
 }
 
@@ -1568,13 +1908,17 @@ report_gpu() {
     local job="${1:?must provide job}"
     local node=${2:-0}
 
-     # Level 1+: per-GPU utilisation/memory, cheap, no process attach.
+    # Level 1+: per-GPU utilisation/memory, cheap, no process attach.
     if command -v nvidia-smi &>/dev/null; then
         local gpu_line
-        gpu_line=$(nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total \
+        gpu_line=$(timeout 5s nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total \
             --format=csv,noheader,nounits 2>/dev/null | \
             awk -F', ' '{printf "gpu%s=%s%%/%sM ", $1, $2, $3}')
-        printf "[%s-node %s] GPU: %s\n" "$(date +%H:%M:%S)" "$node" "$gpu_line"
+        if [[ -z "$gpu_line" ]]; then
+            printf "[%s-node %s] GPU: [nvidia-smi timed out or returned nothing]\n" "$(date +%H:%M:%S)" "$node"
+        else
+            printf "[%s-node %s] GPU: %s\n" "$(date +%H:%M:%S)" "$node" "$gpu_line"
+        fi
     fi
 }
 
@@ -1626,7 +1970,7 @@ report_processes() {
                     echo "=== pid $pid rss=${rss}K comm=$comm ==="
 
                     # PY-SPY dump
-                    py-spy dump --pid "$pid" --nonblocking 2>&1 || echo "[pyspy failed to extract trace]"
+                    timeout 10s py-spy dump --pid "$pid" --nonblocking 2>&1 || echo "[pyspy failed to extract trace]"
                     echo
 
                 } >> "$dumpfile"
@@ -1641,18 +1985,32 @@ report_processes() {
 
 }
 
-# NB: This looked like a good idea on paper but cuda-gdb is quite slow and
-# unstable with lots of dumps failing
-# # Report process information for the current node, by dumping cuda-gdb traces.
-# # Args: $1 — job name (used to determine dump output file).
-# # $2 - the node id
-# # $3 - a marker or reason
-# # Usage: report_processes "$job" "$SLURM_NODEID"
+# Report process information for the current node, by dumping cuda-gdb traces.
+# Config required to make this work is only available in level 4+ debug.
+# however this can be called and wont do anything in lower levels
+# Args: $1 — job name (used to determine dump output file).
+# $2 - the node id
+# $3 - a marker or reason
+# Usage: report_processes "$job" "$SLURM_NODEID"
 report_cuda() {
 
     local job="${1:?must provide job}"
     local node=${2:-0}
     local reason=${3:-monitoring}
+    local node_scratch=$(resolve_localdir)
+
+    shopt -s nullglob
+
+    # CUDA
+    # trigger files will be xxx1.pipe, xxx2.pipe, xxx3.pipe indexed by
+    # hostname and process id. Only node local process pipes are visible on the node_scratch.
+    # Dumps are post processed
+#     for file in "$node_scratch/.trigger-cuda."*.pipe; do
+#         [[ $reason != "monitoring" ]] && echo "[serve-$node] per process cuda dump: $file"
+#         # shellcheck disable=2016
+#         timeout 2s bash -c 'echo "$reason" >> "$1"' _ "$file" \
+#             || echo "[serve-$node] WARNING: write to $file timed out (stale/unread pipe?)"
+#     done
 
     local dumpdir
     dumpdir=$(resolve_job_dir "$job" "debug")
@@ -1678,13 +2036,18 @@ report_cuda() {
 
                 {
                     echo "=== pid $pid rss=${rss}K comm=$comm ==="
-                    timeout -s 9 10s cuda-gdb -q -p "$pid" \
+                    timeout -s 9 10s cuda-gdb -q --batch \
+                        -ex "attach $pid" \
                         -ex "set confirm off" \
                         -ex "set pagination off" \
-                        -ex "interrupt" \
-                        -ex "set scheduler-locking on" \
-                        -ex "thread apply all backtrace" \
+                        -ex "handle SIGURG nostop noprint pass" \
+                        -ex "handle SIGPIPE nostop noprint pass" \
+                        -ex "info inferiors" \
+                        -ex "info cuda devices" \
+                        -ex "info cuda contexts" \
+                        -ex "info cuda kernels" \
                         -ex "cuda thread apply all backtrace" \
+                        -ex "detach" \
                         -ex "quit" 2>&1 || echo "[cuda-gdb failed to extract trace]"
                     echo
 
@@ -1735,70 +2098,86 @@ report_gpu_net_stats() {
 # ── JIT cache operations ──────────────────────────────────────────────────
 
 run_vllm_warmup() {
-  local MODEL_NAME="${1:?must supply model}"
-  local PORT="${2:?must supply server port}"
-  local LONG_CONTEXT_TOKENS="${3:-40000}"
-  local URL="http://localhost:${PORT}/v1/chat/completions"
-  local RESPONSE_CODE
+    local MODEL_NAME="${1:?must supply model}"
+    local PORT="${2:?must supply server port}"
+    local LONG_CONTEXT_TOKENS="${3:-40000}"
+    local URL="http://localhost:${PORT}/v1/chat/completions"
+    local RESPONSE_CODE
+    local debug_level=$(get_job_config_setting "$job" ".ivllm-debug-level")
+    debug_level=${debug_level:-0}
 
-  curl -s -o /dev/null -w "%{http_code}" -X POST "$URL" \
-    --max-time 60 \
-    -H "Content-Type: application/json" \
-    -d "{
-      \"model\": \"$MODEL_NAME\",
-      \"messages\": [{\"role\": \"user\", \"content\": \"Ping\"}],
-      \"max_tokens\": 5,
-      \"n\": 1
-    }"
+    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/start_profile" > /dev/null 2>&1
 
-  # Give a delay for the model to settle, or throttle requests.
-  sleep 10
+    curl -s -o /dev/null -w "%{http_code}" -X POST "$URL" \
+        --max-time 60 \
+        -H "Content-Type: application/json" \
+        -d "{
+        \"model\": \"$MODEL_NAME\",
+        \"messages\": [{\"role\": \"user\", \"content\": \"Ping\"}],
+        \"max_tokens\": 5,
+        \"n\": 1
+        }"
 
-  # 1. Warm up batch_memcpy_kernel via multiple parallel streams/messages
-  echo "[startup] warming up multi-sequence memory kernels..."
-  RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$URL" \
-    --max-time 20 \
-    -H "Content-Type: application/json" \
-    -d "{
-      \"model\": \"$MODEL_NAME\",
-      \"messages\": [{\"role\": \"user\", \"content\": \"Ping\"}],
-      \"max_tokens\": 5,
-      \"n\": 4
-    }")
+    # Give a delay for the model to settle, or throttle requests.
+    sleep 10
 
-  if [ "$RESPONSE_CODE" -ne 200 ]; then
-    echo "[startup] WARNING: warmup step 1 failed with HTTP status: $RESPONSE_CODE" >&2
-    return 1
-  fi
+    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/stop_profile" > /dev/null 2>&1
 
-  # 2. Warm up fused_moe_kernel & generation paths via a dense 1024-token prompt + generation loop
-  echo "[startup] warming up large-context MoE and generation loops..."
-  local LARGE_CONTENT
-  LARGE_CONTENT=$(python3 -c 'print("verify context " * 512)')
+    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/start_profile" > /dev/null 2>&1
 
-  RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$URL" \
-    --max-time 10 \
-    -H "Content-Type: application/json" \
-    -d "{
-      \"model\": \"$MODEL_NAME\",
-      \"messages\": [{\"role\": \"user\", \"content\": \"$LARGE_CONTENT\"}],
-      \"max_tokens\": 128
-    }")
+    # 1. Warm up batch_memcpy_kernel via multiple parallel streams/messages
+    echo "[startup] warming up multi-sequence memory kernels..."
+    RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$URL" \
+        --max-time 60 \
+        -H "Content-Type: application/json" \
+        -d "{
+        \"model\": \"$MODEL_NAME\",
+        \"messages\": [{\"role\": \"user\", \"content\": \"Ping\"}],
+        \"max_tokens\": 5,
+        \"n\": 4
+        }")
 
-  if [ "$RESPONSE_CODE" -ne 200 ]; then
-    echo "[startup] WARNING warmup Step 2 failed with HTTP status: $RESPONSE_CODE" >&2
-    return 1
-  fi
+    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/stop_profile" > /dev/null 2>&1
 
-  # 3. Warm up long-context code paths (chunked-prefill beyond max-num-batched-tokens,
-  # any length-gated compile range / sparse-attention path, decode over a large KV
-  # cache) — these are only exercised once real context crosses this size, and if
-  # warmup never covers it, the first time it happens is mid-conversation instead
-  # of during this safe, pre-serving window. See design/active-issues.md.
-  echo "[startup] warming up long-context ($LONG_CONTEXT_TOKENS-token) code paths..."
-  local body_file
-  body_file=$(mktemp)
-  python3 -c "
+    if [ "$RESPONSE_CODE" -ne 200 ]; then
+        echo "[startup] WARNING: warmup step 1 failed with HTTP status: $RESPONSE_CODE" >&2
+        return 1
+    fi
+
+    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/start_profile" > /dev/null 2>&1
+
+    # 2. Warm up fused_moe_kernel & generation paths via a dense 1024-token prompt + generation loop
+    echo "[startup] warming up large-context MoE and generation loops..."
+    local LARGE_CONTENT
+    LARGE_CONTENT=$(python3 -c 'print("verify context " * 512)')
+
+    RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$URL" \
+        --max-time 600 \
+        -H "Content-Type: application/json" \
+        -d "{
+        \"model\": \"$MODEL_NAME\",
+        \"messages\": [{\"role\": \"user\", \"content\": \"$LARGE_CONTENT\"}],
+        \"max_tokens\": 128
+        }")
+
+    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/stop_profile" > /dev/null 2>&1
+
+    if [ "$RESPONSE_CODE" -ne 200 ]; then
+        echo "[startup] WARNING warmup Step 2 failed with HTTP status: $RESPONSE_CODE" >&2
+        return 1
+    fi
+
+    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/start_profile" > /dev/null 2>&1
+
+    # 3. Warm up long-context code paths (chunked-prefill beyond max-num-batched-tokens,
+    # any length-gated compile range / sparse-attention path, decode over a large KV
+    # cache) — these are only exercised once real context crosses this size, and if
+    # warmup never covers it, the first time it happens is mid-conversation instead
+    # of during this safe, pre-serving window. See design/active-issues.md.
+    echo "[startup] warming up long-context ($LONG_CONTEXT_TOKENS-token) code paths..."
+    local body_file
+    body_file=$(mktemp)
+python3 -c "
 import json, sys
 # Numbered tokens rather than a repeated phrase: most BPE tokenizers don't
 # collapse a long run of distinct small integers the way they would a
@@ -1813,16 +2192,18 @@ print(json.dumps({
 
     local response
     response=$(curl -s -w '\n%{http_code}' -X POST "$URL" \
-      --max-time 30 \
-      -H "Content-Type: application/json" \
-      --data @"$body_file")
+    --max-time 600 \
+    -H "Content-Type: application/json" \
+    --data @"$body_file")
     RESPONSE_CODE=$(echo "$response" | tail -n1)
     rm -f "$body_file"
 
     if [ "$RESPONSE_CODE" -ne 200 ]; then
-      echo "[startup] WARNING: long-context warmup failed with HTTP status: $RESPONSE_CODE" >&2
-      return 1
+    echo "[startup] WARNING: long-context warmup failed with HTTP status: $RESPONSE_CODE" >&2
+    return 1
     fi
+
+    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/stop_profile" > /dev/null 2>&1
 
     # Log the actual achieved prompt_tokens so the target can be tuned against
     # this model's real tokenizer rather than the word-count estimate above.
@@ -1837,7 +2218,8 @@ print(json.load(sys.stdin).get("usage",{}).get("prompt_tokens","?"))
     return 0
 }
 
-# Restore the JIT compilation cache from shared storage to local tmpfs.
+# Restore the JIT compilation cache from shared storage to local tmpfs. Creates
+# a node local scratch space in localdir and ensures it is empty
 # Usage: restore_cache "$job"
 restore_cache() {
     # Restore JIT cache from shared storage to local tmpfs.
@@ -1859,6 +2241,16 @@ restore_cache() {
     else
         echo "[cache] nothing to restore, new cache in $localdir"
     fi
+
+    echo "[cache] restored sizes:"
+    du -h -d 1 "$localdir"
+
+    # make sure the scratch directory is empty:
+    local scratchdir=$(resolve_localdir)
+    if [[ -d "${scratchdir?scratchdir must exist}" ]]; then
+        rm -rf "$scratchdir"
+    fi
+    mkdir -p "$scratchdir"
 }
 
 # Save the JIT compilation cache from local tmpfs to shared storage.
@@ -1878,6 +2270,8 @@ save_cache() {
 
     if (( SLURM_NODEID == 0 )); then
         echo "[cache] archiving JIT cache to user storage: $cachetar"
+        echo "[cache] caching localdir size:"
+        du -h -d 1 "$localdir"
 
 #         chgrp -R "$IVLLM_GRP" "$localdir"
 #         chmod g+rwXs "$localdir" 2>/dev/null || true

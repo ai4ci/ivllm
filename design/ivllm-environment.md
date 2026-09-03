@@ -161,7 +161,12 @@ TODO: EP_NIC_NAME="cxi0" I've moved into common-env.sh and could do with documen
 Notes:
 - `NCCL_SOCKET_IFNAME=hsn` is a deliberate prefix match (matches
   `hsn0`-`hsn3`, all 4 Cassini NICs) — `GLOO_SOCKET_IFNAME`'s exact-match
-  form only needs one, `hsn0`.
+  form only needs one, `hsn0`. **Confirmed equivalent to HPE's own vendor
+  tooling**: HPE's `shs-nccl-env` plugin sets this explicitly as
+  `hsn0,hsn1,hsn2,hsn3` rather than relying on prefix-matching, but per
+  NCCL's own documented semantics the two forms resolve identically on this
+  platform — see `knowledge-base.md`'s NCCL/Libfabric section for the full
+  vendor-tool comparison.
 - `TP_SOCKET_IFNAME`: forces PyTorch's internal TensorPipe layer to follow
   Gloo to the exact index.
 

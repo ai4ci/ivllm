@@ -88,8 +88,6 @@ is `always`/`never`, not in the tuning tables below.
 | `DG_JIT_USE_RUNTIME_API` | `1` | always | DeepGEMM | |
 | `VLLM_USE_DEEP_GEMM_E8M0` | `0` | always | Hopper/GH200 | E8M0 unsupported |
 | `EP_DISABLE_GIN` | `1` | always | DeepEP/UCCL-EP | |
-| `FI_CXI_DEFAULT_TX_SIZE` | `1024` | never (change to `2048`) | tested vs GLM-5.2 hang | no measurable difference |
-| `FI_CXI_RX_MATCH_MODE` | `software` | never (change to `hybrid`) | tested vs GLM-5.2 hang | no measurable difference — **needs further research**, only tried once |
 | `FI_CXI_RDZV_THRESHOLD` | `0` | never (expecting "always rendezvous") | | floored to 192 regardless — **matches vendor's own guidance, see note** |
 | `FI_CXI_RDZV_GET_MIN` | `0` | never (expecting "always rendezvous") | | see `FI_CXI_RDZV_THRESHOLD` |
 | `FI_CXI_RDZV_EAGER_SIZE` | `0` | never (expecting "always rendezvous") | | see `FI_CXI_RDZV_THRESHOLD` |
@@ -101,10 +99,10 @@ is `always`/`never`, not in the tuning tables below.
 | `NCCL_COMM_BLOCKING` | `0` | never | Ray executor | crashes Ray outright |
 
 Notes:
-- `FI_CXI_DEFAULT_TX_SIZE=2048` and `FI_CXI_RX_MATCH_MODE=hybrid` were both
-  tried (per [uccl-project/uccl#956](https://github.com/uccl-project/uccl/issues/956)'s
-  corruption-avoidance discussion) against the GLM-5.2 hang — no measurable
-  change either direction, leave at the defaults (proven, negative result).
+- `FI_CXI_DEFAULT_TX_SIZE`/`FI_CXI_RX_MATCH_MODE`: **moved out of this table**
+  — no longer a settled "never," see the NCCL/Libfabric tuning section below.
+  New vendor evidence (HPE's own `shs-nccl-env` tool) tips this back into
+  "worth reconsidering" territory despite the earlier inconclusive test.
 - `FI_CXI_RDZV_THRESHOLD`/`_GET_MIN`/`_EAGER_SIZE` set to `0` does **not**
   mean "always rendezvous" as it looks like it should — libfabric silently
   floors the threshold to 192 bytes regardless, confirmed via
@@ -359,7 +357,9 @@ Notes:
 | `NCCL_CUMEM_ENABLE` | `0` | sometimes | possibly-stale NCCL-version workaround | **re-test candidate** — see note |
 | `NCCL_IB_PCI_RELAXED_ORDERING` | `1` | sometimes | | unproven value |
 | `NCCL_P2P_NET_CHUNKSIZE` | `262144` | sometimes | | untested for hang, matches vendor's own next-power-of-2 example |
-| `FI_CXI_RDZV_PROTO` | `alt_read` | sometimes | | longest stable GLM-5.2 run |
+| `FI_CXI_RDZV_PROTO` | `alt_read` | sometimes | | longest stable GLM-5.2 run — **independently confirmed as HPE's own Slingshot-11 default**, see note |
+| `FI_CXI_DEFAULT_TX_SIZE` | `1024` | sometimes (reconsider `2048`) | tested vs GLM-5.2 hang, no measurable difference | **HPE's own Slingshot-11 default is `2048`** — see note |
+| `FI_CXI_RX_MATCH_MODE` | `software` | sometimes (reconsider `hybrid`) | tested vs GLM-5.2 hang, no measurable difference | **HPE's own Slingshot-11 default is `hybrid`** — see note |
 | `NCCL_P2P_LEVEL` | untested | sometimes | intra-node GPU↔GPU analogue of `NCCL_NET_GDR_LEVEL` | **unvalidated, worth testing** — see note |
 | `NCCL_OOB_NET_ENABLE` | untested | sometimes | routes comm-init bootstrap over the already-proven OFI/CXI path instead of sockets | **unvalidated** — init-time only, weak link to the live-serving hang |
 | `NCCL_BUFFSIZE` | untested | sometimes | GPU↔GPU per-channel buffer size, default 4MiB | future perf/memory-pressure tuning, not a hang candidate |
@@ -373,9 +373,18 @@ Notes:
 - `NCCL_NET_GDR_LEVEL=PHB`: cleanest isolated comparison in this project's
   history — `PHB` sustained ~8m19s of real GLM-5.2 serving before a hang vs
   the default `SYS`'s ~2m49s, otherwise identical config (~3x). Doesn't fix
-  the hang, delays it (proven). **Open decision, not yet made**: `vllm-env.sh`'s
-  shared default is still `SYS` — worth a deliberate call on whether to
-  promote `PHB` or keep it a job-level override. **GitHub research finding**:
+  the hang, delays it (proven). **Open decision — now resolved in favor of
+  promoting `PHB`.** HPE's own `shs-nccl-env` plugin
+  ([HewlettPackard/shs-nccl-env](https://github.com/HewlettPackard/shs-nccl-env),
+  `src/shs_nccl_env.cc`) — an official Slingshot-11 NCCL auto-config tool
+  that sets defaults only if not already present — defaults `NCCL_NET_GDR_LEVEL`
+  to `PHB` for *all* Slingshot-11 NCCL workloads generally, not anything
+  GLM-5.2/vLLM-specific. `vllm-env.sh`'s shared default is still `SYS`, with
+  `PHB` only applied per-job so far — given this is now vendor consensus, not
+  just our own single-model finding, worth promoting `PHB` to the shared
+  default rather than continuing to treat it as a job-level override
+  (proven for the delay effect; documentation/recommendation for promoting
+  it, from an independent vendor source). **GitHub research finding**:
   [vllm-project/vllm#26318](https://github.com/vllm-project/vllm/issues/26318)
   is a near-identical failure signature to ours — Slurm + Slingshot
   multi-node pipeline-parallel hang, closed unresolved ("not planned") —
@@ -435,6 +444,40 @@ Notes:
   paths). Missing that flag for a long stretch meant `alt_read` was silently
   half-applied; adding it produced the single longest/most stable GLM-5.2
   run recorded (proven, per [HPE's rendezvous-protocol docs](https://support.hpe.com/hpesc/public/docDisplay?docId=dp00005991en_us&page=user/rendezvous_protocol_configuration.html)).
+  **Independently corroborated**: HPE's own `shs-nccl-env` plugin (see
+  `NCCL_NET_GDR_LEVEL` note above) also defaults `FI_CXI_RDZV_PROTO` to
+  `alt_read` for all Slingshot-11 NCCL workloads — this is genuinely
+  reassuring confirmation that this project's single most concrete empirical
+  finding lines up with vendor consensus, not something fragile or
+  GLM-5.2-specific (documentation, independent vendor corroboration).
+- `FI_CXI_DEFAULT_TX_SIZE`/`FI_CXI_RX_MATCH_MODE`: previously filed as
+  settled "never" (Mandatory table) on the strength of one negative test —
+  `2048`/`hybrid` together (per
+  [uccl-project/uccl#956](https://github.com/uccl-project/uccl/issues/956)'s
+  corruption-avoidance discussion) showed no measurable change against the
+  GLM-5.2 hang either direction. **Reopened**: HPE's own `shs-nccl-env`
+  plugin defaults to exactly this pair — `FI_CXI_DEFAULT_TX_SIZE=2048`,
+  `FI_CXI_RX_MATCH_MODE=hybrid` — for the entire Slingshot-11 NCCL ecosystem,
+  a far broader validation base than one vLLM-specific test. "No measurable
+  difference" in that narrow test doesn't rule out real value under
+  different traffic patterns — `hybrid`'s specific purpose is avoiding
+  match-resource starvation under heavy unexpected-message load, which is
+  plausible for an 8-GPU MoE model's dispatch/combine pattern and wasn't
+  specifically stress-tested. Since the one test run found no regression
+  either, promoting both to match vendor defaults is low-risk and worth
+  doing rather than continuing to diverge from vendor consensus without a
+  specific reason (proven for the earlier negative result; recommendation
+  for promoting, from an independent vendor source).
+- `NCCL_SOCKET_IFNAME=hsn` (set in `common-env.sh`, documented in
+  `ivllm-environment.md`'s Networking configuration table): HPE's
+  `shs-nccl-env` plugin instead sets this explicitly to
+  `hsn0,hsn1,hsn2,hsn3`. **Confirmed not a functional gap** — per `nccl.md`'s
+  own documented semantics, `NCCL_SOCKET_IFNAME` is a *prefix* filter by
+  default (`eth` matches `eth0, eth1, …`), so the bare `hsn` prefix already
+  matches all four Cassini NICs identically to HPE's explicit list. HPE's
+  version is likely just more defensive/portable for a generic tool that
+  can't assume a fixed NIC count on every Slingshot deployment it runs on.
+  No change needed here (documentation, confirmed via vendor comparison).
 - `NCCL_P2P_LEVEL`: per `nccl.md`, this is the exact intra-node (GPU↔GPU)
   counterpart to `NCCL_NET_GDR_LEVEL` (NIC↔GPU) — same "maximum topological
   distance before falling back" idea, `LOC`/`NVL`/`PIX`/`PXB`/`PHB`/`SYS`.

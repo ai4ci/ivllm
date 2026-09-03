@@ -371,6 +371,7 @@ async function cmdConnect(
 
         // 3. Conditional Background Log Tailing Setup
         if (await backend.isStarting(jobName)) {
+            console.clear();
             console.log(
                 `[connect] job '${jobName}' is starting. attaching background log watcher...`,
             );

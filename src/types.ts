@@ -154,6 +154,7 @@ export interface V1ModelsResponse {
 export type LockfileState =
     | 'pending'
     | 'initialising'
+    | 'warmup'
     | 'running'
     | 'failed'
     | 'stopped'
@@ -225,7 +226,7 @@ export interface VllmConfigMetadata {
 
 /** Per-job status inside a BenchmarkStatus snapshot. */
 export interface BenchmarkJobStatus {
-    status: string;           // LockfileV3.status values, or "unknown"
+    status: string; // LockfileV3.status values, or "unknown"
     reason: string | null;
 }
 
@@ -233,11 +234,12 @@ export interface BenchmarkJobStatus {
  *  for the authoritative schema; this type must stay in sync with it. */
 export interface BenchmarkStatus {
     pid: number;
-    updated: string;          // ISO8601 UTC
-    complete: boolean;        // true once EVERY job has a terminal status
+    updated: string; // ISO8601 UTC
+    complete: boolean; // true once EVERY job has a terminal status
     counts: {
         pending: number;
         initialising: number;
+        warmup: number;
         running: number;
         stopped: number;
         failed: number;

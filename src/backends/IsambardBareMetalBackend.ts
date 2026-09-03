@@ -116,6 +116,7 @@ export class IsambardBareMetalBackend extends Backend {
             if (s == 'running') break;
             if (s == 'pending') console.log('Waiting for job to start');
             if (s == 'initialising') console.log('vLLM is starting up');
+            if (s == 'warmup') console.log('vLLM is warming up');
             await sleep(10_000);
         }
 

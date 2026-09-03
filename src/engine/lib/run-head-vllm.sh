@@ -66,8 +66,7 @@ source "$SLURM_SUBMIT_DIR/lib/vllm-env.sh"
 eval "$envExports"
 set_debugging_env "$IVLLM_JOB" 0
 
-echo "=== Selected environment exports ==="
-env | grep -E "VLLM_|RAY_|NCCL_|FI_|NVHPC|CUDA_|LD_CONFIG|CPATH|PATH|SLURM_|TRITON" | sort
+report_setup
 echo "==================================="
 echo "[serve-0] model home directory: $HF_HOME"
 echo "[serve-0] executing: vllm serve $(printf '%q ' "${IVLLM_ARGS[@]}")"

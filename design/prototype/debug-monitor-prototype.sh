@@ -266,6 +266,9 @@ monitor_head() {
     server_port=$(get_job_status_setting "$job" ".serverPort")
     model=$(get_job_status_setting "$job" ".model")
 
+    local debug_level=$(get_job_config_setting "$job" ".ivllm-debug-level")
+    debug_level=${debug_level:-0}
+
     if [ ! -f "$lockfile" ]; then
         echo "[head] FATAL: lockfile $lockfile missing on startup"
         return 250

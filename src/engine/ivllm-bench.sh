@@ -325,7 +325,7 @@ process_job() {
 # on every poll tick rather than trying to diff/patch incrementally.
 write_status_summary() {
     local job status reason
-    local pending=0 initialising=0 running=0 stopped=0 failed=0 unknownCount=0
+    local pending=0 initialising=0 running=0 stopped=0 failed=0 warmup=0 unknownCount=0
     local jobsJson="{}"
 
     for job in "${jobNames[@]}"; do
@@ -336,6 +336,7 @@ write_status_summary() {
         case "$status" in
             pending) (( pending++ )) ;;
             initialising) (( initialising++ )) ;;
+            warmup) (( warmup++ )) ;;
             running) (( running++ )) ;;
             stopped) (( stopped++ )) ;;
             failed) (( failed++ )) ;;
@@ -351,17 +352,21 @@ write_status_summary() {
     # deliberately NOT terminal — better to keep polling than declare done
     # on a transient read glitch.
     local complete="false"
-    (( pending + initialising + running + unknownCount == 0 )) && complete="true"
+    (( pending + initialising + warmup + running + unknownCount == 0 )) && complete="true"
 
     jq -n \
         --argjson pid "$ORCHESTRATOR_PID" \
         --arg updated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson complete "$complete" \
-        --argjson pending "$pending" --argjson initialising "$initialising" \
-        --argjson running "$running" --argjson stopped "$stopped" --argjson failed "$failed" \
+        --argjson pending "$pending" \
+        --argjson initialising "$initialising" \
+        --argjson running "$running" \
+        --argjson stopped "$stopped" \
+        --argjson failed "$failed" \
+        --argjson warmup "$warmup" \
         --argjson jobs "$jobsJson" \
         '{pid: $pid, updated: $updated, complete: $complete,
-          counts: {pending: $pending, initialising: $initialising, running: $running,
+          counts: {pending: $pending, initialising: $initialising, warmup: $warmup, running: $running,
                    stopped: $stopped, failed: $failed},
           jobs: $jobs}' > "$STATUS_FILE.tmp" && mv "$STATUS_FILE.tmp" "$STATUS_FILE"
 }
