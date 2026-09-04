@@ -1,0 +1,46 @@
+metadata:
+    target: Isambard-AI GH200
+    created-by: Rob
+    version: 0.3.0
+    lifecycle: pre-release
+min-vllm-version: "0.29.0"
+ivllm-debug-level: 3
+idle-timeout: 60
+
+# vLLM config for Qwen/Qwen3.8-Flash-Next on Isambard AI
+#   180B parameters. 125B+6B active + 51B n-gram
+
+model: Qwen/Qwen3.8-Flash-Next-FP8
+tensor-parallel-size: 4
+
+max-model-len: auto
+gpu-memory-utilization: 0.95
+max-num-seqs: 16
+max-cudagraph-capture-size: 256
+
+no-enable-flashinfer-autotune: true
+moe-backend: triton
+
+max-num-batched-tokens: 16384
+enable-chunked-prefill: true
+kv-cache-dtype: fp8
+
+# Reasoning (thinking mode enabled by default; use /no_think in prompt to disable)
+reasoning-parser: qwen3
+
+# Tool calling
+enable-auto-tool-choice: true
+tool-call-parser: qwen3_xml
+
+# Caching
+enable-prefix-caching: true
+
+speculative-config: '{"method":"mtp","num_speculative_tokens":3}'
+
+env:
+    VLLM_PLE_CPU_OFFLOAD=1 #feature in 0.29.0?
+
+# hf-overrides: '{"rope_parameters":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":262144}}'
+# max-model-len: 1024K
+
+

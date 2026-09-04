@@ -23,14 +23,6 @@ enable-prefix-caching: true
 enable-chunked-prefill: true
 max-num-seqs: 512
 
-# Mixture of experts models need to be forced to use triton
-# gdn-prefill-backend: "triton"
-# moe-backend: triton             # Forces vLLM to use pre-compiled Triton MoE kernels
-# attention-config: '{"backend":"TRITON_ATTN"}'
-# This will not have been picked up by vllm as it suppresses : false in the options
-# enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
-# it appears to be working without
-
 # suggested on the huggingface card (but not vllm recipes)
 async-scheduling: true
 trust-remote-code: true

@@ -200,7 +200,7 @@ separate from TypeScript — editable directly on the HPC without recompilation.
 | `slurm-hf-download.sh` | Model download via `srun` on interactive partition |
 | `run_head_vllm.sh` | Head node vLLM launcher |
 | `run_worker_vllm.sh` | Worker node vLLM launcher |
-| `vllm_logs.json` | vLLM logging configuration for idle timeout detection |
+| `vllm_logs.json` | vLLM logging configuration (originally for idle timeout detection now no longer needed) |
 
 ### 5. Lockfile Protocol
 
@@ -213,8 +213,8 @@ It lives on the shared parallel filesystem under
 ```
 pending → initialising → running → stopped | failed
                 ↑                     ↓
-                └── cancel (request) ──┘
-                └── abort (request) ───┘
+                └── cancel (request) ─┘
+                └── abort (request) ──┘
 ```
 
 **Schema:** `status`, `jobName`, `model`, `serverPort`, `user`, `requestedTime`,

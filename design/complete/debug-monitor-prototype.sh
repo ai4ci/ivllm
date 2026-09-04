@@ -227,6 +227,7 @@ trigger_torch_nccl_dump() {
         # open()/read() setup rather than for a multiple-readers reason.
         local i
         for i in 1 2 3 4 5; do
+            # shellcheck disable=2016
             timeout 2 bash -c 'echo dump > "$1" 2>/dev/null' _ "$pipe"
             sleep 0.2
         done

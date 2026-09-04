@@ -7,15 +7,7 @@ min-vllm-version: "0.19.1"
 idle-timeout: 60
 
 # vLLM config for google/gemma-4-31B-it on Isambard AI
-#
-# Hardware: 4 × GH200 120GB per node (Isambard AI Phase 1/2) — ~96 GiB usable HBM3e per GPU
 # Model: 30.7B dense parameters at fp8 quantization
-#
-# Architecture: Dense hybrid transformer
-#   Vision encoder: ~550 M params (text + image; no audio on 31B)
-#   Thinking mode: structured reasoning via <|channel|>thought... delimiters
-#   Function calling: native tool-use protocol with dedicated special tokens
-#
 
 model: RedHatAI/gemma-4-31B-it-FP8-dynamic
 tensor-parallel-size: 1
@@ -38,6 +30,3 @@ tool-call-parser: gemma4
 # Prefix caching — valuable for repeated system prompts and document contexts.
 enable-prefix-caching: true
 
-# Text-only workload: uncomment to skip vision encoder memory allocation
-# and avoid multimodal profiling overhead.
-# limit-mm-per-prompt: "image=0,audio=0"

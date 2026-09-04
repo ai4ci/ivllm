@@ -1,0 +1,132 @@
+--- a/vllm/compilation/passes/fusion/allreduce_rms_fusion.py
++++ b/vllm/compilation/passes/fusion/allreduce_rms_fusion.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import contextlib
++import os
+ from importlib.util import find_spec
+ from types import ModuleType
+ from typing import Any
+@@ -85,14 +86,38 @@
+ logger = init_logger(__name__)
+ 
+ flashinfer_comm: ModuleType | None = None
+-if find_spec("flashinfer"):
++# ivllm patch: two independent guards around this eager, module-level
++# `import flashinfer.comm` -- flashinfer's own package __init__ makes an
++# eager torch.cuda.get_device_capability() call at import time
++# (flashinfer/jit/env.py), which can hang indefinitely in a process with no
++# active CUDA context yet.
++# 1) Always skip in vLLM's EngineCore process -- it never calls anything in
++#    this file (only imports the module transitively while resolving a
++#    model class for a multimodal-support check), so the import is pure
++#    accidental overhead there, and it's the process observed hanging.
++#    See design/active-issues.md.
++# 2) Skip in worker processes too when IVLLM_DISABLE_FLASHINFER=1, matching
++#    the existing runtime guard in fused_allreduce_gemma_rms_norm.py's
++#    _can_use_flashinfer() (kept opt-in per job -- e.g. genuine multi-node
++#    topologies with no working flashinfer allreduce backend).
++try:
++    import setproctitle
++
++    _ivllm_is_engine_core = "EngineCore" in setproctitle.getproctitle()
++except ImportError:
++    _ivllm_is_engine_core = False
++if (
++    not _ivllm_is_engine_core
++    and os.environ.get("IVLLM_DISABLE_FLASHINFER") != "1"
++    and find_spec("flashinfer")
++):
+     try:
+         import flashinfer.comm as _flashinfer_comm
+ 
+         if hasattr(_flashinfer_comm, "allreduce_fusion") and hasattr(
+             _flashinfer_comm, "create_allreduce_fusion_workspace"
+         ):
+             flashinfer_comm = _flashinfer_comm
+     except ImportError:
+         pass
+ 
+--- a/vllm/distributed/device_communicators/flashinfer_all_reduce.py
++++ b/vllm/distributed/device_communicators/flashinfer_all_reduce.py
+@@ -23,15 +23,28 @@
+ PDL_ADVANCE_LAUNCH_TOKENS = 16
+ 
+ fi_ar_available = False
+-try:
+-    import flashinfer.comm as flashinfer_comm  # type: ignore[no-redef]
+-    from flashinfer.comm.mnnvl import (
+-        TorchDistBackend,  # type: ignore[import-not-found, no-redef]
+-    )
++# ivllm patch: two independent guards around this eager, module-level
++# `import flashinfer.comm` -- see the matching guard (and full rationale)
++# in vllm/compilation/passes/fusion/allreduce_rms_fusion.py. Always skip
++# in EngineCore's own process (it never uses this module); skip in worker
++# processes too when IVLLM_DISABLE_FLASHINFER=1. See
++# design/active-issues.md.
++try:
++    import setproctitle
+ 
+-    fi_ar_available = hasattr(flashinfer_comm, "allreduce_fusion")
+-except ImportError:
+-    pass
++    _ivllm_is_engine_core = "EngineCore" in setproctitle.getproctitle()
++except ImportError:
++    _ivllm_is_engine_core = False
++if not _ivllm_is_engine_core and os.environ.get("IVLLM_DISABLE_FLASHINFER") != "1":
++    try:
++        import flashinfer.comm as flashinfer_comm  # type: ignore[no-redef]
++        from flashinfer.comm.mnnvl import (
++            TorchDistBackend,  # type: ignore[import-not-found, no-redef]
++        )
++
++        fi_ar_available = hasattr(flashinfer_comm, "allreduce_fusion")
++    except ImportError:
++        pass
+ 
+ # Workspace for standalone allreduce and non-quant ar+rms fusion
+ _fi_ar_workspace = None
+
+ --- a/vllm/model_executor/layers/fused_allreduce_gemma_rms_norm.py
++++ b/vllm/model_executor/layers/fused_allreduce_gemma_rms_norm.py
+@@ -14,6 +14,8 @@
+ numerically identical to the unfused model path.
+ """
+
++import os
++
+ import torch
+
+ from vllm.distributed.communication_op import tensor_model_parallel_all_reduce
+@@ -22,8 +24,11 @@
+     get_tensor_model_parallel_world_size,
+     get_tp_group,
+ )
++from vllm.logger import init_logger
+ from vllm.model_executor.layers.layernorm import GemmaRMSNorm
+
++logger = init_logger(__name__)
++
+ MiB = 1024 * 1024
+
+ # flashinfer fused all-reduce + RMSNorm is wired as a registered custom op in
+@@ -66,6 +71,18 @@
+
+ def _can_use_flashinfer(hidden_states: torch.Tensor, tp_size: int) -> tuple[bool, int]:
+     """Whether the flashinfer fused path applies; returns (ok, max_token_num)."""
++    # ivllm patch: IVLLM_DISABLE_FLASHINFER=1 unconditionally skips the fused
++    # allreduce+RMSNorm path, falling back to plain all_reduce + GemmaRMSNorm
++    # (numerically identical, per this module's own docstring). Opt-in per
++    # job via the yaml env: block, so other models/jobs sharing this venv are
++    # unaffected unless they explicitly set it too. See
++    # design/active-issues.md / design/prototype/patch/README.md.
++    if os.environ.get("IVLLM_DISABLE_FLASHINFER") == "1":
++        logger.info_once(
++            "IVLLM_DISABLE_FLASHINFER=1 — skipping flashinfer fused "
++            "allreduce+RMSNorm, using plain all_reduce + GemmaRMSNorm."
++        )
++        return False, 0
+     if (
+         flashinfer_trtllm_fused_allreduce_norm is None
+         or get_fi_ar_workspace is None

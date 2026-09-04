@@ -4,39 +4,26 @@ metadata:
     version: 0.4.1
     lifecycle: experimental
 min-vllm-version: "0.26.0"
-ivllm-debug-level: 4
+ivllm-debug-level: 3
 idle-timeout: 60
 
 # vLLM config for MiniMax-M3 on Isambard AI
 #
-# ⚠️ HARDWARE REQUIREMENTS:
-# - 1 node × 4 GPUs = 4 GPUs total
-# - 214 GB model (INT4) / 4 = 53.5 GB per GPU (fits in 70 GB usable!)
-#
 # Model: 427B total parameters, 26B active (MoE)
-# Quantization: AWQ INT4 (weight-only, 0.5 bytes/param)
-#   Total weight footprint: ~214 GB
-#
-# Parallelism: TP=4 on single node
-#   TP=4 (within node - shards both attention and experts)
-#   No EP needed (INT4 weight-only quantization doesn't benefit from EP)
-#
-# KV Cache: Full 256K context fits on-GPU
-#   No offloading needed for moderate context lengths
+# MXFP8 quantization (also FP8-Dynamic) ~ 427B ~ 53Gb per GPU in theory
+# In practice this is likely to need 4 nodes.
 
 model: MiniMaxAI/MiniMax-M3-MXFP8
 
+# Total number of attention head (64) must be divisible by number of nodes.
 tensor-parallel-size: 8
 enable-expert-parallel: true
 distributed-backend-executor: ray
 
-kv-cache-dtype: fp8_e4m3
-
-# Context: full context with TP12 possible
-max-model-len: 262144
+max-model-len: auto
 gpu-memory-utilization: 0.95
-max-num-seqs: 8
-max-num-batched-tokens: 4096
+max-num-seqs: 1
+language-model-only: true
 
 # MSA sparse attention: block-size=128 is MANDATORY
 block-size: 128
@@ -63,8 +50,6 @@ enable-prefix-caching: true
 compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'
 # kernel-config: '{"enable_flashinfer_autotune": false}'
 # kv-offloading-size: 220
-# 55GB per GPU independe ce to
-
 
 # Lazy loading for large models
 safetensors-load-strategy: lazy
@@ -72,7 +57,6 @@ safetensors-load-strategy: lazy
 # debugging flags for crash
 env:
     IVLLM_DISABLE_FLASHINFER: 1
-    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 1800
 
 # N.B. RUNNING ON PATCHED 0.26.0
 # JIT CACHES DELETED

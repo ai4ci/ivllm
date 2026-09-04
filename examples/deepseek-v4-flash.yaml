@@ -8,7 +8,6 @@ idle-timeout: 60
 
 # vLLM config for deepseek-ai/DeepSeek-V4-Flash on Isambard AI
 # Model: 284B total parameters, 13B active parameters (MoE)
-# This may stuggle with OOM on loading...
 # Using the full fp8 unquantised base model to keep in the fp8 sweet spot
 # Architecture: Mixture of Experts (MoE) with hybrid CSA+HCA attention
 #   Compressed Sparse Attention (CSA) and Heavily Compressed Attention (HCA)
@@ -22,7 +21,7 @@ enable-expert-parallel: true
 # Wide EP settings.
 
 # Highly KV-cache efficient; FP8 KV cache further reduces memory footprint
-# kv-cache-dtype: fp8
+kv-cache-dtype: fp8_ds_mla
 block-size: 256
 
 max-model-len: 1048576
@@ -43,28 +42,11 @@ tokenizer-mode: deepseek_v4
 # Prefix caching — valuable for repeated system prompts and CoT contexts.
 enable-prefix-caching: true
 
-# deepseek-flash-base (fp8 experts)
-# OOM with wide EP - could work with TP4 DP1 probably:
-# moe-backend: deep_gemm
-
-# deepseek-flash-base (fp8 experts)
-# failed with: notImplementedError: DeepSeek V4 MegaMoE only supports fp4 experts; got expert_dtype='fp8'. Drop --kernel-config moe_backend=deep_gemm_mega_moe for this checkpoint.
-# moe-backend: deep_gemm_mega_moe
-
-# If we have to revert to FP4 quantised experts then
 # moe-backend: humming
 # env:
 #     VLLM_HUMMING_MOE_GEMM_TYPE: indexed
 #     VLLM_HUMMING_INPUT_QUANT_CONFIG: '{"dtype":"float8e4m3","input_scale_group_size":128}'
 # as per https://blog.doubleword.ai/throughputmaxxing-v4-flash-single-node
 
-speculative-config: '{"method": "deepseek_mtp","num_speculative_tokens": 1}'
+speculative-config: '{"method": "deepseek_mtp","num_speculative_tokens": 3}'
 
-# AI recommended attention config:
-# disable-hybrid-kv-cache-manager is on vllm recipes also
-kv-cache-dtype: fp8_ds_mla
-
-# This will not have been picked up by vllm as it suppresses : false in the options
-# disable-hybrid-kv-cache-manager: false
-# and seems to be workign without
-# attention-backend: FLASHINFER_MLA_SPARSE

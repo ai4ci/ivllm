@@ -1,0 +1,11 @@
+--- a/app.py
++++ b/app.py
+@@ -15,7 +15,7 @@
+ def load_model_layer():
+     """Stand-in for e.g. MinimaxM3QKVParallelLinearWithIndexer's fused
+     load path — unpatched, this is the "wrong for this checkpoint" behavior."""
+-    return "single fused qkv+indexer GEMM (breaks on mixed-precision checkpoints)"
++    return "un-fused qkv + separate replicated indexer projections (correct for mixed-precision checkpoints)"
+
+
+ def serve():

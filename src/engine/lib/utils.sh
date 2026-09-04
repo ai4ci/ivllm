@@ -1431,7 +1431,7 @@ monitor_head() {
 
                     # 1. Run the warmup routine in the background
                     # this includes a 10 second delay
-                    run_vllm_warmup "$model" "$server_port" &
+                    run_vllm_warmup "$job" &
                     local warmup_pid=$!  # Capture the background PID of the warmup function
 
                     while kill -0 "$warmup_pid" 2>/dev/null; do
@@ -1531,8 +1531,8 @@ monitor_head() {
 get_metric_value() {
     local metric_name=$1
     local content=$2
-    # Extracts the numeric value at the end of the line, ignoring labels
-    echo "$content" | grep "^${metric_name}" | awk '{print $NF}'
+    # Extracts the numeric value at the end of the first matching line, ignoring labels
+    echo "$content" | awk "/^${metric_name}/ {print \$NF; exit}"
 }
 
 head_stall_detector() {
@@ -2003,12 +2003,14 @@ report_processes() {
 # Usage: report_processes "$job" "$SLURM_NODEID"
 report_cuda() {
 
-    local job="${1:?must provide job}"
-    local node=${2:-0}
-    local reason=${3:-monitoring}
-    local node_scratch=$(resolve_localdir)
+    echo "[debug] cuda dumps disabled (instability)"
 
-    shopt -s nullglob
+#     local job="${1:?must provide job}"
+#     local node=${2:-0}
+#     local reason=${3:-monitoring}
+#     local node_scratch=$(resolve_localdir)
+#
+#     shopt -s nullglob
 
     # CUDA
     # trigger files will be xxx1.pipe, xxx2.pipe, xxx3.pipe indexed by
@@ -2021,54 +2023,55 @@ report_cuda() {
 #             || echo "[serve-$node] WARNING: write to $file timed out (stale/unread pipe?)"
 #     done
 
-    local dumpdir
-    dumpdir=$(resolve_job_dir "$job" "debug")
-    mkdir -p "$dumpdir"
-    local dumpfile="$dumpdir/cuda-gdb-node${node}.log"
 
-    local dumped=0
-    local pid
-    local rss
-    local comm
-
-    local raw_ps
-    raw_ps=$(ps -u "$(whoami)" -o pid=,rss=,comm= 2>/dev/null || true)
-
-    {
-        echo "### $(date +%Y-%m-%dT%H:%M:%S) $reason ###"
-        echo "=== CUDA-GDB ==="
-    } >> "$dumpfile"
-
-    while read -r pid rss comm; do
-        case "$comm" in
-            *RayWorkerP*|*EngineCor*|vllm|*VLLM*)
-
-                {
-                    echo "=== pid $pid rss=${rss}K comm=$comm ==="
-                    timeout -s 9 10s cuda-gdb -q --batch \
-                        -ex "attach $pid" \
-                        -ex "set confirm off" \
-                        -ex "set pagination off" \
-                        -ex "handle SIGURG nostop noprint pass" \
-                        -ex "handle SIGPIPE nostop noprint pass" \
-                        -ex "info inferiors" \
-                        -ex "info cuda devices" \
-                        -ex "info cuda contexts" \
-                        -ex "info cuda kernels" \
-                        -ex "cuda thread apply all backtrace" \
-                        -ex "detach" \
-                        -ex "quit" 2>&1 || echo "[cuda-gdb failed to extract trace]"
-                    echo
-
-                } >> "$dumpfile"
-
-                (( dumped++ ))
-                ;;
-        esac
-    done <<< "$raw_ps"
-
-    printf "[%s-node %s] [debug] appended %d cuda-dbg dump(s) to %s\n" \
-        "$(date +%H:%M:%S)" "$node" "$dumped" "$dumpfile"
+#     local dumpdir
+#     dumpdir=$(resolve_job_dir "$job" "debug")
+#     mkdir -p "$dumpdir"
+#     local dumpfile="$dumpdir/cuda-gdb-node${node}.log"
+#
+#     local dumped=0
+#     local pid
+#     local rss
+#     local comm
+#
+#     local raw_ps
+#     raw_ps=$(ps -u "$(whoami)" -o pid=,rss=,comm= 2>/dev/null || true)
+#
+#     {
+#         echo "### $(date +%Y-%m-%dT%H:%M:%S) $reason ###"
+#         echo "=== CUDA-GDB ==="
+#     } >> "$dumpfile"
+#
+#     while read -r pid rss comm; do
+#         case "$comm" in
+#             *RayWorkerP*|*EngineCor*|vllm|*VLLM*)
+#
+#                 {
+#                     echo "=== pid $pid rss=${rss}K comm=$comm ==="
+#                     timeout -s 9 10s cuda-gdb -q --batch \
+#                         -ex "attach $pid" \
+#                         -ex "set confirm off" \
+#                         -ex "set pagination off" \
+#                         -ex "handle SIGURG nostop noprint pass" \
+#                         -ex "handle SIGPIPE nostop noprint pass" \
+#                         -ex "info inferiors" \
+#                         -ex "info cuda devices" \
+#                         -ex "info cuda contexts" \
+#                         -ex "info cuda kernels" \
+#                         -ex "cuda thread apply all backtrace" \
+#                         -ex "detach" \
+#                         -ex "quit" 2>&1 || echo "[cuda-gdb failed to extract trace]"
+#                     echo
+#
+#                 } >> "$dumpfile"
+#
+#                 (( dumped++ ))
+#                 ;;
+#         esac
+#     done <<< "$raw_ps"
+#
+#     printf "[%s-node %s] [debug] appended %d cuda-dbg dump(s) to %s\n" \
+#         "$(date +%H:%M:%S)" "$node" "$dumped" "$dumpfile"
 
 }
 
@@ -2106,125 +2109,176 @@ report_gpu_net_stats() {
 
 # ── JIT cache operations ──────────────────────────────────────────────────
 
+run_vllm_request() {
+    local job=${1?must supply job}
+    local debug_level=${2?must supply debug level}
+    local message=${3?must supply message}
+    local n_requests=${4:-1}
+    local max_time=${5:-60}
+    local tools=${6:-0}
+    local max_tokens=${7:-128}
+
+    local server_port
+    local model
+    server_port=$(get_job_status_setting "$job" ".serverPort")
+    model=$(get_job_status_setting "$job" ".model")
+
+    local dumpdir
+    dumpdir=$(resolve_job_dir "$job" "debug")
+    mkdir -p "$dumpdir"
+
+    local i=1
+    # Loop until a file name that does not exist is found
+    while [[ -e "${dumpdir}/request_${i}.json" ]]; do
+        ((i++))
+    done
+
+    local requestfile="$dumpdir/request_${i}.json"
+    local responsefile="$dumpdir/response_${i}.json"
+
+    local request=$(jq -n \
+        --arg model "$model" \
+        --argjson max_tokens "$max_tokens" \
+        --argjson n "$n_requests" \
+        --arg message "$message" \
+        --argjson flag "$tools" '
+            {
+                "model": $model,
+                "messages": [{
+                    "role": "user",
+                    "content": $message
+                }],
+                "max_tokens": $max_tokens,
+                "n": $n
+            }
+            + (
+            if $flag == 1 then
+            {
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get the current weather for a location.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"location": {"type": "string"}},
+                            "required": ["location"]
+                        }
+                    }
+                }]
+            }
+            else
+            {}
+            end
+            )
+        '
+    )
+
+    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/start_profile" > /dev/null 2>&1
+
+    # Execute curl, appending the status code to the end of the output
+    local response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
+        -X POST "http://localhost:${server_port}/v1/chat/completions" \
+        --max-time "${max_time}" \
+        -H "Content-Type: application/json" \
+        -d "$request")
+
+    # Extract the status code safely by targeting the specific token
+    local http_code=$(echo "$response" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d':' -f2)
+    # Fallback if curl completely failed to connect (e.g. timeout / DNS error)
+    http_code=${http_code:-000}
+    # Strip the token line from the body completely, regardless of where it falls
+    local body=$(echo "$response" | sed '/HTTP_STATUS:/d')
+
+    if (( http_code == 200 )); then
+        local reply=$(jq -r '
+            .choices[0].message |
+            (select(.content != null and .content != "") | .content) //
+            (select(.reasoning_content != null and .reasoning_content != "") | "(think) " + .reasoning_content) //
+            (select(.reasoning != null and .reasoning != "") | "(think) " + .reasoning) //
+            (select(.tool_calls != null) | "(tool call) " + (.tool_calls[0].function.name // "unknown")) //
+            "unknown"
+        ' <<< "$body")
+        # local reply=$(jq -r '.choices[0].message.content // "could not extract content"' <<< "$body")
+        local prompt_tok=$(jq -r '.usage.prompt_tokens' <<< "$body")
+        local comp_tok=$(jq -r '.usage.completion_tokens' <<< "$body")
+        echo "[warmup] message: ${message:0:40} [${#message} chars, $prompt_tok tokens]"
+        echo "[warmup] reply: ${reply:0:40} [${#reply} chars, $comp_tok tokens]"
+    else
+        echo "[warmup] call failed. http status: $http_code"
+    fi
+
+    # Output the results
+    (( debug_level > 1 )) && echo "$request" > "$requestfile"
+    (( debug_level > 1 )) && echo "$response" > "$responsefile"
+
+    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/stop_profile" > /dev/null 2>&1
+
+    (( http_code == 200 )) && return 0 || return 1
+
+}
+
 run_vllm_warmup() {
-    local MODEL_NAME="${1:?must supply model}"
-    local PORT="${2:?must supply server port}"
-    local LONG_CONTEXT_TOKENS="${3:-40000}"
-    local URL="http://localhost:${PORT}/v1/chat/completions"
-    local RESPONSE_CODE
+    local job="${1?must supply job}"
     local debug_level=$(get_job_config_setting "$job" ".ivllm-debug-level")
     debug_level=${debug_level:-0}
 
-    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/start_profile" > /dev/null 2>&1
-
-    curl -s -o /dev/null -w "%{http_code}" -X POST "$URL" \
-        --max-time 60 \
-        -H "Content-Type: application/json" \
-        -d "{
-        \"model\": \"$MODEL_NAME\",
-        \"messages\": [{\"role\": \"user\", \"content\": \"Ping\"}],
-        \"max_tokens\": 5,
-        \"n\": 1
-        }"
-
+    run_vllm_request "$job" "$debug_level" "ping" 1 60 0 5
     # Give a delay for the model to settle, or throttle requests.
     sleep 10
 
-    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/stop_profile" > /dev/null 2>&1
-
-    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/start_profile" > /dev/null 2>&1
-
     # 1. Warm up batch_memcpy_kernel via multiple parallel streams/messages
-    echo "[startup] warming up multi-sequence memory kernels..."
-    RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$URL" \
-        --max-time 60 \
-        -H "Content-Type: application/json" \
-        -d "{
-        \"model\": \"$MODEL_NAME\",
-        \"messages\": [{\"role\": \"user\", \"content\": \"Ping\"}],
-        \"max_tokens\": 5,
-        \"n\": 4
-        }")
-
-    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/stop_profile" > /dev/null 2>&1
-
-    if [ "$RESPONSE_CODE" -ne 200 ]; then
-        echo "[startup] WARNING: warmup step 1 failed with HTTP status: $RESPONSE_CODE" >&2
+    echo "[warmup] warming up multi-sequence memory kernels..."
+    if ! run_vllm_request "$job" "$debug_level" "ping" 4 60 0 5; then
+        echo "[warmup] WARNING: warmup multi-sequence memory kernels failed"
         return 1
     fi
-
-    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/start_profile" > /dev/null 2>&1
 
     # 2. Warm up fused_moe_kernel & generation paths via a dense 1024-token prompt + generation loop
-    echo "[startup] warming up large-context MoE and generation loops..."
-    local LARGE_CONTENT
-    LARGE_CONTENT=$(python3 -c 'print("verify context " * 512)')
-
-    RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$URL" \
-        --max-time 600 \
-        -H "Content-Type: application/json" \
-        -d "{
-        \"model\": \"$MODEL_NAME\",
-        \"messages\": [{\"role\": \"user\", \"content\": \"$LARGE_CONTENT\"}],
-        \"max_tokens\": 128
-        }")
-
-    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/stop_profile" > /dev/null 2>&1
-
-    if [ "$RESPONSE_CODE" -ne 200 ]; then
-        echo "[startup] WARNING warmup Step 2 failed with HTTP status: $RESPONSE_CODE" >&2
+    echo "[warmup] warming up large-context MoE and generation loops..."
+    local large_content
+    large_content=$(python3 -c "print('verify context ' * 512)")
+    if ! run_vllm_request "$job" "$debug_level" "$large_content" 1 600 0 128; then
+        echo "[warmup] WARNING: warmup large-context MoE failed"
         return 1
     fi
 
-    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/start_profile" > /dev/null 2>&1
-
-    # 3. Warm up long-context code paths (chunked-prefill beyond max-num-batched-tokens,
-    # any length-gated compile range / sparse-attention path, decode over a large KV
-    # cache) — these are only exercised once real context crosses this size, and if
-    # warmup never covers it, the first time it happens is mid-conversation instead
-    # of during this safe, pre-serving window. See design/active-issues.md.
-    echo "[startup] warming up long-context ($LONG_CONTEXT_TOKENS-token) code paths..."
-    local body_file
-    body_file=$(mktemp)
-python3 -c "
-import json, sys
-# Numbered tokens rather than a repeated phrase: most BPE tokenizers don't
-# collapse a long run of distinct small integers the way they would a
-# repeated word, so token count tracks word count much more predictably.
-text = ' '.join(str(i) for i in range($LONG_CONTEXT_TOKENS))
-print(json.dumps({
-    'model': '$MODEL_NAME',
-    'messages': [{'role': 'user', 'content': text}],
-    'max_tokens': 16,
-}))
-" > "$body_file"
-
-    local response
-    response=$(curl -s -w '\n%{http_code}' -X POST "$URL" \
-    --max-time 600 \
-    -H "Content-Type: application/json" \
-    --data @"$body_file")
-    RESPONSE_CODE=$(echo "$response" | tail -n1)
-    rm -f "$body_file"
-
-    if [ "$RESPONSE_CODE" -ne 200 ]; then
-    echo "[startup] WARNING: long-context warmup failed with HTTP status: $RESPONSE_CODE" >&2
-    return 1
+    # 3. Warm up chunked-prefill beyond max-num-batched-tokens
+    echo "[warmup] warming up long-context 32768 tokens and generation loops..."
+    local long_content
+    long_content=$(python3 -c "print(' '.join(str(i) for i in range(32768)))")
+    # Token count from numbers is likely larger that number of repeats so we
+    # truncate to 32K*4 characters to get approximately to 32K tokens.
+    # imperfect solution. As it happens we also don't know what the
+    # max-num-batched-tokens limit will be that we are trying to test.
+    if ! run_vllm_request "$job" "$debug_level" "${long_content:0:131072}" 1 600 0 128; then
+        echo "[warmup] WARNING: warmup long-context MoE failed"
+        echo "[warmup] max model length must be greater than 32768"
+        return 1
     fi
 
-    (( debug_level > 4 )) && curl -sf -X POST "http://localhost:$server_port/stop_profile" > /dev/null 2>&1
+    echo "[warmup] warmup complete. All major JIT variations compiled."
 
-    # Log the actual achieved prompt_tokens so the target can be tuned against
-    # this model's real tokenizer rather than the word-count estimate above.
-    local achieved
-    achieved=$(echo "$response" | head -n -1 | python3 -c '
-import json,sys
-print(json.load(sys.stdin).get("usage",{}).get("prompt_tokens","?"))
-' 2>/dev/null)
-    echo "[startup] long-context warmup achieved prompt_tokens=$achieved (target words=$LONG_CONTEXT_TOKENS)"
+    if (( debug_level > 1 )); then
 
-    echo "[startup] warmup complete. All major JIT variations compiled."
+        echo "[warmup] model output sanity / structural checks."
+
+        run_vllm_request "$job" "$debug_level" "Hi, are you there?" 1 60 0 128
+        run_vllm_request "$job" "$debug_level" "What is the weather in Bristol, UK? Use the get_weather tool." 1 60 1 128
+
+        # Edge case formatting checks
+        echo "[warmup] validation: special whitespace structures..."
+        run_vllm_request "$job" "$debug_level" $'\n\n  \t  Diagnostic text block  \n' 1 60 0 32
+
+        # Absolute lower limit generation boundaries
+        echo "[warmup] validation: lower boundary token counts..."
+        run_vllm_request "$job" "$debug_level" "Boundary limit verification" 1 60 0 1
+
+        echo "[warmup] model output checks complete - see debug for output."
+    fi
+
     return 0
+
 }
 
 # Restore the JIT compilation cache from shared storage to local tmpfs. Creates

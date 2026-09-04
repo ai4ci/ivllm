@@ -1,0 +1,60 @@
+--- a/vllm/compilation/passes/fusion/allreduce_rms_fusion.py
++++ b/vllm/compilation/passes/fusion/allreduce_rms_fusion.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import contextlib
++import os
+ from importlib.util import find_spec
+ from types import ModuleType
+ from typing import Any
+@@ -86,7 +87,17 @@
+ logger = init_logger(__name__)
+ 
+ flashinfer_comm: ModuleType | None = None
+-if find_spec("flashinfer"):
++# ivllm patch: IVLLM_DISABLE_FLASHINFER=1 also skips this import -- flashinfer's
++# own package __init__ makes an eager torch.cuda.get_device_capability() call
++# at import time (flashinfer/jit/env.py), which can hang indefinitely in a
++# process with no active CUDA context yet (observed: vLLM's EngineCore
++# process, reached via importing a model's compilation-pass dependencies
++# during model-class resolution, well before any GPU work happens there).
++# The existing IVLLM_DISABLE_FLASHINFER check in
++# fused_allreduce_gemma_rms_norm.py's _can_use_flashinfer() only skips
++# *using* the fused kernel at runtime -- it doesn't stop this import from
++# happening. See design/active-issues.md.
++if os.environ.get("IVLLM_DISABLE_FLASHINFER") != "1" and find_spec("flashinfer"):
+     try:
+         import flashinfer.comm as _flashinfer_comm
+ 
+--- a/vllm/distributed/device_communicators/flashinfer_all_reduce.py
++++ b/vllm/distributed/device_communicators/flashinfer_all_reduce.py
+@@ -23,15 +23,20 @@
+ PDL_ADVANCE_LAUNCH_TOKENS = 16
+ 
+ fi_ar_available = False
+-try:
+-    import flashinfer.comm as flashinfer_comm  # type: ignore[no-redef]
+-    from flashinfer.comm.mnnvl import (
+-        TorchDistBackend,  # type: ignore[import-not-found, no-redef]
+-    )
++# ivllm patch: IVLLM_DISABLE_FLASHINFER=1 also skips this import -- see the
++# matching guard in vllm/compilation/passes/fusion/allreduce_rms_fusion.py
++# for why (flashinfer's own import-time CUDA probe can hang). See
++# design/active-issues.md.
++if os.environ.get("IVLLM_DISABLE_FLASHINFER") != "1":
++    try:
++        import flashinfer.comm as flashinfer_comm  # type: ignore[no-redef]
++        from flashinfer.comm.mnnvl import (
++            TorchDistBackend,  # type: ignore[import-not-found, no-redef]
++        )
+ 
+-    fi_ar_available = hasattr(flashinfer_comm, "allreduce_fusion")
+-except ImportError:
+-    pass
++        fi_ar_available = hasattr(flashinfer_comm, "allreduce_fusion")
++    except ImportError:
++        pass
+ 
+ # Workspace for standalone allreduce and non-quant ar+rms fusion
+ _fi_ar_workspace = None

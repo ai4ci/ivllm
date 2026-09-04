@@ -1,0 +1,74 @@
+metadata:
+    target: Isambard-AI GH200
+    created-by: Rob
+    version: 0.5
+    lifecycle: operational
+min-vllm-version: "0.26.0"
+idle-timeout: 60
+
+# vLLM config for MiniMax-M3 on Isambard AI
+#
+# Model: 427B total parameters, 26B active (MoE)
+# Quantization: AWQ INT4 (weight-only, 0.5 bytes/param)
+#   Total weight footprint: ~214 GB
+# weight loading takes 60Gb on one node, leaving not much for KV cache
+#
+# This quantisation requires a specific vllm patch to work:
+# minimax-m3-indexer-unfuse.v0.26.0.v1.patch
+#
+# Patch implements
+# minimax-m3-compressed-tensors see
+# https://huggingface.co/cyankiwi/MiniMax-M3-AWQ-INT4
+#
+# clone the fork + fetch the upstream base commit
+# git clone https://github.com/toncao/vllm.git
+# cd vllm
+# git remote add upstream https://github.com/vllm-project/vllm.git
+# git fetch upstream a7fdfeef72323eb3db6f0620e4ea200290d0ca5a
+# git checkout minimax-m3-compressed-tensors
+#
+# Python 3.12 env + install with upstream precompiled kernels
+# uv venv --python 3.12
+# source .venv/bin/activate
+# VLLM_USE_PRECOMPILED=1 uv pip install -e . --torch-backend=auto
+
+model: cyankiwi/MiniMax-M3-AWQ-INT4
+
+# Total number of attention head (64) must be divisible by number of nodes.
+tensor-parallel-size: 4
+enable-expert-parallel: true
+
+max-model-len: 512K
+gpu-memory-utilization: 0.95
+max-num-seqs: 1
+max-num-batched-tokens: 16384
+language-model-only: true
+
+# MSA sparse attention: block-size=128 is MANDATORY
+block-size: 128
+
+# Chunked prefill for long context
+enable-chunked-prefill: true
+
+# Speculative decoding: EAGLE3 (3 tokens)
+# speculative-config: '{"method":"eagle3","model":"Inferact/MiniMax-M3-EAGLE3","num_speculative_tokens":3}'
+
+# Parsers (MiniMax-M3 custom)
+enable-auto-tool-choice: true
+tool-call-parser: minimax_m3
+reasoning-parser: minimax_m3
+default-chat-template-kwargs: '{"thinking_mode": "enabled"}'
+
+# Prefix caching
+enable-prefix-caching: true
+env:
+    VLLM_FLASHINFER_ALLREDUCE_BACKEND: "trtllm"
+
+# All flags that were needed in the past prior to ray. Keeping in case
+# disable-custom-all-reduce: true
+# compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'
+# kernel-config: '{"enable_flashinfer_autotune": false}'
+# kv-offloading-size: 220
+
+safetensors-load-strategy: prefetch
+

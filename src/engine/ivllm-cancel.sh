@@ -95,6 +95,11 @@ if [[ -f $lockfile ]]; then
             fi
             rm -f "$lockfile"
 
+            cache=$(resolve_job_jit_cache "$IVLLM_JOB")
+            echo "[cancel] deleting job jit cache file: $cache"
+            [[ -e $cache ]] || rm "$cache"
+
+
         fi
 
     fi

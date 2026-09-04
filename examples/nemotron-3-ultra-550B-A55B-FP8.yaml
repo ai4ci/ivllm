@@ -6,21 +6,16 @@ metadata:
 min-vllm-version: "0.22.0"
 idle-timeout: 60
 
-# vLLM config for NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8 on Isambard AI
+# vLLM config for NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8-dynamic on Isambard AI
 #
 # Model: 550B total parameters, 55B active (MoE)
 # Architecture: Hybrid Transformer-Mamba (LatentMoE)
-# Quantization: FP8 block-quantized
 #   Total weight footprint: ~550 GB
-#
-# Parallelism: This is using Ray (no hybrid parallelism seems possible) and hence TP=8
-#   EP=8 (experts distributed across all 8 GPUs)
 
 model: RedHatAI/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8-dynamic
 
 tensor-parallel-size: 8
 enable-expert-parallel: true
-
 distributed-backend-executor: ray
 
 # added for debugging may be not needed:
@@ -31,9 +26,9 @@ kv-cache-dtype: fp8_e4m3
 
 # Context: full context with TP8 possible
 max-model-len: 1048576
-gpu-memory-utilization: 0.95
-max-num-seqs: 8
-max-num-batched-tokens: 4096
+gpu-memory-utilization: 0.975
+max-num-seqs: 4
+max-num-batched-tokens: 8192
 
 # Chunked prefill for long context
 enable-chunked-prefill: true
@@ -64,8 +59,3 @@ speculative-config: '{"method": "nemotron_h_mtp", "num_speculative_tokens": 5}'
 
 # Compilation fix
 compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}, "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32, 64]}'
-
-# debugging flags for crash
-# env:
-#     IVLLM_DEBUG_LEVEL: 3
-#     IVLLM_RUNTIME_DEBUG: 1
