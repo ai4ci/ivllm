@@ -25,7 +25,7 @@ kv-cache-dtype: fp8_ds_mla
 block-size: 256
 
 max-model-len: 1048576
-max-num-seqs: 512
+max-num-seqs: 16
 gpu-memory-utilization: 0.90
 max-cudagraph-capture-size: 256
 
@@ -41,6 +41,9 @@ tokenizer-mode: deepseek_v4
 
 # Prefix caching — valuable for repeated system prompts and CoT contexts.
 enable-prefix-caching: true
+
+env:
+    PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
 
 # moe-backend: humming
 # env:

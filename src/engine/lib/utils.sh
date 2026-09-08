@@ -634,6 +634,14 @@ baseline_vllm_args() {
     local model=$(get_job_config_setting "$job" ".model")
     local serverPort=$(get_job_status_setting "$job" ".serverPort")
 
+    local tp=$(get_job_config_setting "$job" ".tensor-parallel-size")
+    tp=${tp:-1}
+
+    # Size of the KV cache offloading buffer in GiB. When TP > 1, this is
+    # the total buffer size summed across all TP ranks.
+#     local off
+#     (( off = tp*48 ))
+
     local debug_level=$(get_job_config_setting "$job" ".ivllm-debug-level")
     debug_level=${debug_level:-0}
 
@@ -643,7 +651,30 @@ baseline_vllm_args() {
         --config "$strippedConfig"
         --port "${serverPort:-8000}"
         --served-model-name "$model" "default" "$IVLLM_JOB"
+#         --kv-offloading-size "$off"
+#         --kv-offloading-backend "native"
     )
+
+    # TODO: investigate offloading to CPU then $SCRATCHDIR
+    # Nb. this almost definitely won't work multi-node
+#     --kv-transfer-config '{
+#         "kv_connector": "OffloadingConnector",
+#         "kv_role": "kv_both",
+#         "kv_connector_extra_config": {
+#         "spec_name": "TieringOffloadingSpec",
+#         "cpu_bytes_to_use": 10737418240,
+#         "block_size": 16,
+#         "eviction_policy": "lru",
+#         "secondary_tiers": [
+#             {
+#             "type": "fs",
+#             "root_dir": "/mnt/kv_cache",
+#             "n_read_threads": 32,
+#             "n_write_threads": 16
+#             }
+#         ]
+#         }
+#     }'
 
     # The --profiler-config option is set here based on debug level.
     # https://docs.vllm.ai/en/stable/api/vllm/config/#vllm.config.ProfilerConfig
@@ -1875,7 +1906,7 @@ except ImportError as e:
 "
 echo "=== Final Environment Variables for vLLM ==="
 # Expanded search to capture your critical NVSHMEM, EP, DG, and GLOO runtime flags
-env | grep -E "^(VLLM_|RAY_|NCCL_|FI_|NVHPC|CUDA_|LD_|CPATH|PATH|SLURM_|TRITON|NVSHMEM_|EP_|DG_|GLOO_)" | sort
+env | grep -E "^(PYTORCH|TORCH|VLLM_|RAY_|NCCL_|FI_|NVHPC|CUDA_|LD_|CPATH|PATH|SLURM_|TRITON|NVSHMEM_|EP_|DG_|GLOO_)" | sort
 echo "============================================"
 }
 

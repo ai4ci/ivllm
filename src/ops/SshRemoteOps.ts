@@ -35,6 +35,10 @@ const SSH_MUX_OPTS = [
     'ControlPersist=600',
     '-o',
     'ControlPath=/tmp/ivllm-ssh-%r@%h:%p',
+    '-o',
+    'ServerAliveInterval=15',
+    '-o',
+    'ServerAliveCountMax=3',
 ] as const;
 
 export class SshRemoteOps extends RemoteOps {

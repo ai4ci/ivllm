@@ -43,4 +43,5 @@ logs
 # local read-only checkouts of upstream source for reference (vllm, uccl-ep,
 # humming, etc) — not part of this project, never committed.
 vendor
-
+.agentports
+.agentreadonly
