@@ -39,6 +39,16 @@ export abstract class Backend {
     abstract setup(version: string, force?: boolean): Promise<void>;
 
     /**
+     * Install or update vLLM on the HPC.
+     * @param version — vLLM version to install (e.g. `'0.19.1'`)
+     * @param patch - an a/b patch file rooted in site-packages
+     * @param revert — If true, revert an existing patch
+     */
+    patch(version: string, patch: string, revert?: boolean): Promise<void> {
+        throw new Error('Engine patching is not enabled on this backend');
+    }
+
+    /**
      * Connect to or start a vLLM job.
      * @param job — Job name
      * @param localPort — Local port for the SSH tunnel

@@ -3,7 +3,8 @@ metadata:
     created-by: Rob
     version: 0.4.1
     lifecycle: experimental
-min-vllm-version: "0.25.0"
+min-vllm-version: "0.26.0"
+# This is using solar patch on 0.26.0
 idle-timeout: 60
 
 # vLLM config for upstage/Solar-Open2-250B on Isambard AI

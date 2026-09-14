@@ -38,6 +38,18 @@ async function main() {
         .action(cmdSetup);
 
     program
+        .command('patch')
+        .description('Patch a vLLM <version> on the HPC (one-off)')
+        .argument('<version>', 'the vLLM version to patch - must already be installed (e.g. 0.19.1)')
+        .argument('<patch>', 'the path to the patch file, given as an a/b diff rooted in site-packages')
+        .option(
+            '--revert',
+            'revert the patch',
+            false,
+        )
+        .action(cmdPatch);
+
+    program
         .command('cancel')
         .description(
             `Cancel a running vLLM inference job.
@@ -266,6 +278,26 @@ async function cmdSetup(
     assertConfigured(config);
     const backend = getBackend(config);
     await backend.setup(vllmVersion, options.force);
+}
+
+/**
+ * Setup command handler.
+ *
+ * Loads credentials, creates the backend, and delegates to
+ * {@link Backend.setup} to install vLLM on the HPC.
+ * @param vllmVersion — Version string (e.g. `'0.19.1'`)
+ * @param options — `{ force: boolean }` — force reinstall
+ * @param options.force
+ */
+async function cmdPatch(
+    vllmVersion: string,
+    patch: string,
+    options: { revert: boolean },
+): Promise<void> {
+    const config = loadCredentials();
+    assertConfigured(config);
+    const backend = getBackend(config);
+    await backend.patch(vllmVersion, patch, options.revert);
 }
 
 /**

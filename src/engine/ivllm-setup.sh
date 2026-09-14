@@ -39,7 +39,7 @@ while getopts "v:frlh" opt; do
 done
 
 if [[ -z $LOG ]]; then
-    LOG=$(resolve_job_log "vllm-setup")
+    LOG=$(resolve_job_log "vllm-install-$IVLLM_VERSION")
 fi
 
 if [[ -z "$IVLLM_VERSION" ]]; then

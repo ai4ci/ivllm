@@ -21,6 +21,7 @@ vllmVersion=${1:?must supply a vllm version to setup.sh}
 
 source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 vllmVersionDir=$(resolve_vllm_version_dir "$vllmVersion")
+job="vllm-install-$vllmVersion"
 
 echo "=== ivllm-setup ==="
 echo "Installing: $vllmVersion to $vllmVersionDir"
@@ -33,9 +34,13 @@ if ! command -v uv &>/dev/null; then
 fi
 
 # grab a local working directory for the "vllm-install" job:
-workingDir=$(resolve_localdir "vllm-install")
+workingDir=$(resolve_localdir "$job")
 # Use $workingDir (fast in-job scratch, wiped at job end)
 trap 'rm -rf "$workingDir"' EXIT
+
+debugDir=$(resolve_job_dir "$job" "debug")
+mkdir -p "$debugDir"
+
 
 echo "working directory: $workingDir"
 nvhpcDir=$(resolve_nvhpc_dir)
@@ -44,13 +49,17 @@ nvhpcDir=$(resolve_nvhpc_dir)
 if [ ! -d "$nvhpcDir/Linux_aarch64/26.3/cuda" ]; then
 
   echo "=== Installing NVIDIA HPC SDK 26.3 (cuda_multi) to $nvhpcDir ==="
-  wget --progress=dot:giga "https://developer.download.nvidia.com/hpc-sdk/26.3/nvhpc_2026_263_Linux_aarch64_cuda_multi.tar.gz" \
+
+  (
+    wget --progress=dot:giga "https://developer.download.nvidia.com/hpc-sdk/26.3/nvhpc_2026_263_Linux_aarch64_cuda_multi.tar.gz" \
     -O "$workingDir/nvhpc.tar.gz"
-  tar xpzf "$workingDir/nvhpc.tar.gz" -C "$workingDir"
-  cd "$workingDir/nvhpc_2026_263_Linux_aarch64_cuda_multi"
-  NVHPC_SILENT=true NVHPC_INSTALL_DIR=$nvhpcDir NVHPC_INSTALL_TYPE=single ./install
-  rm -rf "$workingDir/nvhpc.tar.gz" "$workingDir/nvhpc_2026_263_Linux_aarch64_cuda_multi"
-  echo "=== HPC SDK install complete ==="
+    tar xpzf "$workingDir/nvhpc.tar.gz" -C "$workingDir"
+    cd "$workingDir/nvhpc_2026_263_Linux_aarch64_cuda_multi"
+    NVHPC_SILENT=true NVHPC_INSTALL_DIR=$nvhpcDir NVHPC_INSTALL_TYPE=single ./install
+    rm -rf "$workingDir/nvhpc.tar.gz" "$workingDir/nvhpc_2026_263_Linux_aarch64_cuda_multi"
+  ) > "$debugDir/nvhpc.log" &&
+  echo "HPC SDK install complete" ||
+  echo "WARNING: HPC SDK install failed - see debug logs"
 
 else
 
@@ -60,42 +69,54 @@ fi
 
 # RDMA compile from source
 # Compile rdma-core from source to provide the necessary libibverbs headers and libraries if missing
+# although Infiniband is not supported on Isambards slingshot
+# the headers are still needed to compile other parts of the
+# system.
 rdma_install_dir=$(resolve_rdma_dir)
 if [[ ! -f "$rdma_install_dir/include/infiniband/verbs.h" ]]; then
+  echo "=== Compiling RDMA-core to $rdma_install_dir ==="
   echo "infiniband/verbs.h not found in system or local headers. Compiling rdma-core from source to $rdma_install_dir..."
-  rdmaCoreGit="https://github.com/linux-rdma/rdma-core.git"
-  mkdir -p "$workingDir/rdma-core-src"
-  if git clone --depth 1 "$rdmaCoreGit" "$workingDir/rdma-core-src"; then
-    pushd "$workingDir/rdma-core-src"
+  (
+    rdmaCoreGit="https://github.com/linux-rdma/rdma-core.git"
+    mkdir -p "$workingDir/rdma-core-src"
+    if git clone --depth 1 "$rdmaCoreGit" "$workingDir/rdma-core-src"; then
+      pushd "$workingDir/rdma-core-src"
 
-    rm -rf build && mkdir build && cd build
+      rm -rf build && mkdir build && cd build || exit 1
 
-    # 2. Configure using IN_PLACE and skip hardware providers
-    if cmake -DIN_PLACE=1 \
-              -DNO_PROVIDERS=ON \
-              -DENABLE_VALGRIND=OFF \
-              -DENABLE_LOG_ERRORS=OFF \
-              -DNO_MAN_PAGES=ON \
-              -DENABLE_PYTHON=OFF \
-              .. && make -j16; then
+      # 2. Configure using IN_PLACE and skip hardware providers
+      if cmake -DIN_PLACE=1 \
+                -DNO_PROVIDERS=ON \
+                -DENABLE_VALGRIND=OFF \
+                -DENABLE_LOG_ERRORS=OFF \
+                -DNO_MAN_PAGES=ON \
+                -DENABLE_PYTHON=OFF \
+                .. && make -j16; then
 
-      # 3. Create your custom installation directories manually
-      mkdir -p "$rdma_install_dir/include/infiniband"
-      mkdir -p "$rdma_install_dir/lib"
+        # 3. Create your custom installation directories manually
+        mkdir -p "$rdma_install_dir/include/infiniband"
+        mkdir -p "$rdma_install_dir/lib"
 
-      # 4. Copy the compiled Infiniband Verb headers to your target include dir
-      cp -rL include/infiniband/* "$rdma_install_dir/include/infiniband/"
+        # 4. Copy the compiled Infiniband Verb headers to your target include dir
+        cp -rL include/infiniband/* "$rdma_install_dir/include/infiniband/"
 
-      # 5. Optional: Copy the generated libibverbs stub libraries if your program links to them
-      cp -dL lib/libibverbs* "$rdma_install_dir/lib/" 2>/dev/null || true
+        # 5. Optional: Copy the generated libibverbs stub libraries if your program links to them
+        cp -dL lib/libibverbs* "$rdma_install_dir/lib/" 2>/dev/null || true
 
-      echo "rdma-core headers safely extracted to $rdma_install_dir!"
-
+        # signal installation succeeded
+        popd
+        exit 0
+      else
+        popd
+        exit 1
+      fi
     else
-      echo "WARNING: Failed to compile rdma-core from source."
+      echo "could not clone rdma-core"
+      exit 1
     fi
-    popd
-  fi
+  ) > "$debugDir/rdma.log" &&
+  echo "rdma-core headers safely extracted to $rdma_install_dir!" ||
+  echo "WARNING: Failed to compile rdma-core from source."
 else
   if [[ -d "$rdma_install_dir" ]]; then
     echo "=== Local userspace rdma-core already installed at $rdma_install_dir — reusing. === "
@@ -150,26 +171,26 @@ else
 fi
 
 
-
 export FLASHINFER=$(uv pip list --format=json | jq '.[] | select(.name == "flashinfer-python") | .version' -r)
 
 if uv pip show flashinfer-jit-cache &>/dev/null; then
-  echo "flashinfer-jit-cache already installed"
+  echo "=== flashinfer-jit-cache already installed ==="
 else
   echo "=== Installing flashinfer-jit-cache ($FLASHINFER) ==="
-  uv pip install flashinfer-jit-cache=="$FLASHINFER" --index-url https://flashinfer.ai/whl/cu129
-  echo "flashinfer-jit-cache ($FLASHINFER) install complete."
+  uv pip install flashinfer-jit-cache=="$FLASHINFER" --index-url https://flashinfer.ai/whl/cu129 &&
+  echo "flashinfer-jit-cache ($FLASHINFER) install complete." ||
+  echo "flashinfer-jit-cache ($FLASHINFER) install failed."
 fi
 
 # DeepGEMM
 
 if uv pip show deep_gemm &>/dev/null; then
-  echo "DeepGEMM already installed"
+  echo "=== DeepGEMM already installed ==="
 else
   deepGEMMRef=$(curl -fsSL "https://raw.githubusercontent.com/vllm-project/vllm/refs/heads/releases/v$vllmVersion"/tools/install_deepgemm.sh | grep "DEEPGEMM_GIT_REF=" | head -n 1 | sed 's/.*="\(.*\)".*/\1/')
 
   if [[ -z ${deepGEMMRef:-} ]]; then
-    echo "WARNING: no DeepGEMM git reference found to compile"
+    echo "WARNING: no DeepGEMM git reference found to compile. skipping DeepGEMM."
   else
 
     echo "=== compiling DeepGEMM from source ==="
@@ -185,23 +206,30 @@ else
 
     # COMPILE AND PIP INSTALL VIA UV
     echo "Compiling DeepGEMM C++/CUDA extensions directly into venv..."
-    uv pip install --no-build-isolation -vvv .
-    echo "DeepGEMM successfully compiled and installed from tmpfs."
-    popd
-    echo "DEEPGEMM_SETUP_SUCCESS"
+    if uv pip install --no-build-isolation -vvv .; then
+      echo "DeepGEMM successfully compiled and installed from tmpfs."
+      popd
+      echo "DeepGEMM installation success"
+    else
+      popd
+      echo "DeepGEMM installation did not complete"
+    fi
 
   fi
 fi
 
 
-# Ensure build requirements match the host environment
-uv pip install tomlkit nanobind wheel setuptools build pybind11 meson-python
 
 if uv pip show deep-ep &>/dev/null && uv pip show uccl &>/dev/null && uv pip show nixl-cu12 &>/dev/null; then
-    echo "UCCL already installed with DeepEP wrapper & NIXL support"
+    echo "=== UCCL already installed with DeepEP wrapper & NIXL support ==="
 else
 
     echo "=== Building UCCL-EP with HPE Slingshot (CXI) transport support ==="
+
+    # Install build dependency: nanobind
+    echo "Installing UCCL-EP / NIXL build dependencies..."
+    # Ensure build requirements match the host environment
+    uv pip install tomlkit nanobind wheel setuptools build pybind11 meson-python meson ninja pybind11 pytest patchelf types-PyYAML
 
     # Ensure build requirements match Isambard's Grace Hopper nodes
     export TORCH_CUDA_ARCH_LIST="9.0a"
@@ -211,122 +239,134 @@ else
     # replicates specific instructions from:
     # https://raw.githubusercontent.com/uccl-project/uccl/refs/heads/main/build_inner.sh
 
-    # Install build dependency: nanobind
-    echo "Installing UCCL-EP build dependency: nanobind..."
+    (
+      # The doublewordAI fork has been built for isambard.
+      # ucclEPgit="https://github.com/doublewordai/uccl.git"
+      # most of the pull requests have been merged
+      ucclEPgit="https://github.com/uccl-project/uccl.git"
+      mkdir -p "$workingDir/uccl"
 
+      if git clone --recursive --shallow-submodules -b main "$ucclEPgit" "$workingDir/uccl"; then
 
-    # The doublewordAI fork has been built for isambard.
-    # ucclEPgit="https://github.com/doublewordai/uccl.git"
-    # most of the pull requests have been merged
-    ucclEPgit="https://github.com/uccl-project/uccl.git"
-    mkdir -p "$workingDir/uccl"
+        pushd "$workingDir/uccl"
+        echo "--> Compiling P2P extension components..."
+            cd p2p && make clean && make "-j$(nproc)" && cd ..
 
-    if git clone --recursive --shallow-submodules -b main "$ucclEPgit" "$workingDir/uccl"; then
+            mkdir -p uccl/lib
+            cp p2p/libuccl_p2p.so uccl/lib/
+            cp p2p/p2p.*.so uccl/
+            cp p2p/utils.py uccl/
 
-      pushd "$workingDir/uccl"
-      echo "--> Compiling P2P extension components..."
-          cd p2p && make clean && make "-j$(nproc)" && cd ..
+            # Handle nanobind stable ABI naming convention if python >= 3.12
+            py_stable_abi_ok=$(python3 -c "import sys; print(1 if sys.version_info >= (3, 12) else 0)")
+            if [[ "$py_stable_abi_ok" == "1" ]]; then
+                for f in uccl/*.cpython-*.so; do
+                    if [[ -f "$f" ]]; then
+                        #shellcheck disable=2001
+                        newname=$(echo "$f" | sed 's/\.cpython-[^.]*-[^.]*-[^.]*\.so/.abi3.so/')
+                        mv "$f" "$newname"
+                    fi
+                done
+            fi
 
-          mkdir -p uccl/lib
-          cp p2p/libuccl_p2p.so uccl/lib/
-          cp p2p/p2p.*.so uccl/
-          cp p2p/utils.py uccl/
+            # 3. Replicate 'build_ep' function from build_inner.sh
+            echo "--> Compiling EP extension components..."
+            pushd ep
+            make clean
+            rm -rf build || true
 
-          # Handle nanobind stable ABI naming convention if python >= 3.12
-          py_stable_abi_ok=$(python3 -c "import sys; print(1 if sys.version_info >= (3, 12) else 0)")
-          if [[ "$py_stable_abi_ok" == "1" ]]; then
-              for f in uccl/*.cpython-*.so; do
-                  if [[ -f "$f" ]]; then
-                      #shellcheck disable=2001
-                      newname=$(echo "$f" | sed 's/\.cpython-[^.]*-[^.]*-[^.]*\.so/.abi3.so/')
-                      mv "$f" "$newname"
-                  fi
-              done
-          fi
+            # Run the setup.py inline tracking hook inside ep/
+            python3 setup.py build_ext --inplace
+            popd
 
-          # 3. Replicate 'build_ep' function from build_inner.sh
-          echo "--> Compiling EP extension components..."
-          pushd ep
-          make clean
-          rm -rf build || true
+            # Mirror the metadata hooks into the target workspace
+            cp -r ep/build/lib.linux-aarch64-*/* uccl/ 2>/dev/null || cp -r ep/*.so uccl/ 2>/dev/null || true
 
-          # Run the setup.py inline tracking hook inside ep/
-          python3 setup.py build_ext --inplace
+            # 4. Run the final 'python3 -m build' command from build_inner.sh
+            echo "--> Executing top-level package compilation pass..."
+            python3 -m build --wheel --no-isolation
+
+            # 5. Extract and install the finished, native host wheel file via uv
+            echo "--> Deploying unified UCCL wheel..."
+            uv pip install --no-build-isolation dist/uccl-*.whl
+
+            # 6. Install the deep_ep_wrapper so vLLM can use it as a drop-in replacement
+            echo "--> Integrating deep_ep_wrapper..."
+            cd ep
+            if uv pip install --no-build-isolation -vvv ./deep_ep_wrapper; then
+              echo "UCCL-EP install success"
+            else
+              exit 1
+            fi
           popd
+      else
+          echo "WARNING: Failed to clone UCCL repository."
+          exit 1
+      fi
 
-          # Mirror the metadata hooks into the target workspace
-          cp -r ep/build/lib.linux-aarch64-*/* uccl/ 2>/dev/null || cp -r ep/*.so uccl/ 2>/dev/null || true
+      # NIXL SUPPORT
+      # Needs to run alongside the UCCL compilation to pick up UCCL headers
+      # See an alternative strategy here:
+      # https://raw.githubusercontent.com/uccl-project/uccl/61ee42402819cabba3ac2a56dd4addec3363976c/p2p/NIXL_plugin_readme.md
+      uv pip install meson ninja pybind11 tomlkit pytest patchelf types-PyYAML setuptools wheel
 
-          # 4. Run the final 'python3 -m build' command from build_inner.sh
-          echo "--> Executing top-level package compilation pass..."
-          python3 -m build --wheel --no-isolation
+      echo "=== Compiling NIXL with HPE Slingshot (CXI) Support ==="
 
-          # 5. Extract and install the finished, native host wheel file via uv
-          echo "--> Deploying unified UCCL wheel..."
-          uv pip install --no-build-isolation dist/uccl-*.whl
+      # 2. Clone the core NIXL codebase
+      mkdir -p "$workingDir/nixl"
 
-          # 6. Install the deep_ep_wrapper so vLLM can use it as a drop-in replacement
-          echo "--> Integrating deep_ep_wrapper..."
-          cd ep
-          uv pip install --no-build-isolation -vvv ./deep_ep_wrapper
+      git clone --recursive https://github.com/ai-dynamo/nixl.git "$workingDir/nixl"
+      pushd "$workingDir/nixl"
+
+      LOCAL_FABRIC="/opt/cray/libfabric/1.22.0"
+
+      TARGET_PLUGINS="LIBFABRIC,UCCL,POSIX"
+
+      # 1. Point to your custom UCCL source and compiled library spaces
+      export UCCL_STAGING_DIR="$workingDir/uccl"
+
+      # We explicitly add the nested 'p2p/util' subdirectory to find common.h
+      export CPATH="$UCCL_STAGING_DIR/include:$UCCL_STAGING_DIR/p2p:$UCCL_STAGING_DIR/p2p/util:$CPATH"
+      export CPLUS_INCLUDE_PATH="$UCCL_STAGING_DIR/include:$UCCL_STAGING_DIR/p2p:$UCCL_STAGING_DIR/p2p/util:${CPLUS_INCLUDE_PATH:-}"
+
+      # ── Extended Linker Path Matrix (Build-Time Binaries) ──
+      # Points the compiler to find libuccl_p2p.so inside your staging workspace
+      export LIBRARY_PATH="$UCCL_STAGING_DIR/uccl/lib:$UCCL_STAGING_DIR/p2p:$LIBRARY_PATH"
+      export LD_LIBRARY_PATH="$UCCL_STAGING_DIR/uccl/lib:$UCCL_STAGING_DIR/p2p:$LD_LIBRARY_PATH"
+
+      # 3. Compile the base C++ engine and build the target architecture wheel
+      # Passing --no-build-isolation forces the setup layout to acknowledge Slingshot structures
+      # NIXL_EP requires UCX/UCP which is Infiniband specific no path exists to
+      # install on Slingshot as far as I can see.
+      python3 -m build --wheel --no-isolation --skip-dependency-check \
+        -Csetup-args="-Dcudapath_inc=$CUDA_HOME/include" \
+        -Csetup-args="-Dcudapath_lib=$CUDA_HOME/lib64" \
+        -Csetup-args="-Ddisable_gds_backend=true" \
+        -Csetup-args="-Ddisable_mooncake_backend=true" \
+        -Csetup-args="-Ddisable_infinia_backend=true" \
+        -Csetup-args="-Dlibfabric_path=$LOCAL_FABRIC" \
+        -Csetup-args="-Dnixl_cuda_arch_list=90" \
+        -Csetup-args="-Dbuild_nixl_ep=false" \
+        -Csetup-args="-Dbuild_tests=false" \
+        -Csetup-args="-Dbuild_examples=false" \
+        -Csetup-args="-Denable_plugins=$TARGET_PLUGINS" \
+        -Csetup-args="-Dcpp_args=-Wno-error=deprecated-enum-enum-conversion" \
+        -Csetup-args="-Dwerror=false"
+
+      # 4. Install the resulting wheel package into your Python environment
+      if uv pip install --no-build-isolation dist/nixl*.whl; then
         popd
-    else
-        echo "WARNING: Failed to clone UCCL repository."
-    fi
-
-    # NIXL SUPPORT
-    # Needs to run alongside the UCCL compilation to pick up UCCL headers
-    # See an alternative strategy here:
-    # https://raw.githubusercontent.com/uccl-project/uccl/61ee42402819cabba3ac2a56dd4addec3363976c/p2p/NIXL_plugin_readme.md
-    uv pip install meson ninja pybind11 tomlkit pytest patchelf types-PyYAML setuptools wheel
-
-    echo "=== Compiling NIXL with HPE Slingshot (CXI) Support ==="
-
-    # 2. Clone the core NIXL codebase
-    mkdir -p "$workingDir/nixl"
-
-    git clone --recursive https://github.com/ai-dynamo/nixl.git "$workingDir/nixl"
-    pushd "$workingDir/nixl"
-
-    LOCAL_FABRIC="/opt/cray/libfabric/1.22.0"
-
-    TARGET_PLUGINS="LIBFABRIC,UCCL,POSIX"
-
-    # 1. Point to your custom UCCL source and compiled library spaces
-    export UCCL_STAGING_DIR="$workingDir/uccl"
-
-    # We explicitly add the nested 'p2p/util' subdirectory to find common.h
-    export CPATH="$UCCL_STAGING_DIR/include:$UCCL_STAGING_DIR/p2p:$UCCL_STAGING_DIR/p2p/util:$CPATH"
-    export CPLUS_INCLUDE_PATH="$UCCL_STAGING_DIR/include:$UCCL_STAGING_DIR/p2p:$UCCL_STAGING_DIR/p2p/util:${CPLUS_INCLUDE_PATH:-}"
-
-    # ── Extended Linker Path Matrix (Build-Time Binaries) ──
-    # Points the compiler to find libuccl_p2p.so inside your staging workspace
-    export LIBRARY_PATH="$UCCL_STAGING_DIR/uccl/lib:$UCCL_STAGING_DIR/p2p:$LIBRARY_PATH"
-    export LD_LIBRARY_PATH="$UCCL_STAGING_DIR/uccl/lib:$UCCL_STAGING_DIR/p2p:$LD_LIBRARY_PATH"
-
-    # 3. Compile the base C++ engine and build the target architecture wheel
-    # Passing --no-build-isolation forces the setup layout to acknowledge Slingshot structures
-    # NIXL_EP requires UCX/UCP which is Infiniband specific no path exists to
-    # install on Slingshot as far as I can see.
-    python3 -m build --wheel --no-isolation --skip-dependency-check \
-      -Csetup-args="-Dcudapath_inc=$CUDA_HOME/include" \
-      -Csetup-args="-Dcudapath_lib=$CUDA_HOME/lib64" \
-      -Csetup-args="-Ddisable_gds_backend=true" \
-      -Csetup-args="-Ddisable_mooncake_backend=true" \
-      -Csetup-args="-Ddisable_infinia_backend=true" \
-      -Csetup-args="-Dlibfabric_path=$LOCAL_FABRIC" \
-      -Csetup-args="-Dnixl_cuda_arch_list=90" \
-      -Csetup-args="-Dbuild_nixl_ep=false" \
-      -Csetup-args="-Dbuild_tests=false" \
-      -Csetup-args="-Dbuild_examples=false" \
-      -Csetup-args="-Denable_plugins=$TARGET_PLUGINS" \
-      -Csetup-args="-Dcpp_args=-Wno-error=deprecated-enum-enum-conversion" \
-      -Csetup-args="-Dwerror=false"
-
-    # 4. Install the resulting wheel package into your Python environment
-    uv pip install --no-build-isolation dist/nixl*.whl
-
-    popd
+        echo "NIXL install success"
+        exit 0
+      else
+        popd
+        echo "NIXL install failure"
+        exit 1
+      fi
+      #TODO decouple UCCL-EP success from NIXL success
+    ) > "$debugDir/uccl-nixl.log" &&
+    echo "UCCL-EP & NIXL installation success" ||
+    echo "UCCL-EP & NIXL installation failed"
 fi
 
 # UCCL-EP enables deep_ep moe kernels on GH200
@@ -347,7 +387,11 @@ if uv pip show humming-kernels &>/dev/null; then
     echo "humming kernels already installed (doubleword-AI)"
 else
     echo "=== Installing humming from doublewordAI ==="
-    uv pip install git+https://github.com/doublewordai/humming.git
+    if uv pip install git+https://github.com/doublewordai/humming.git; then
+      echo "Humming kernels install success"
+    else
+      echo "Humming kernels install failure"
+    fi
 fi
 
 # Humming moe-backend and linear-backend
@@ -355,18 +399,23 @@ fi
 # https://blog.doubleword.ai/throughputmaxxing-v4-flash-single-node
 
 
-if uv pip show hpc &>/dev/null; then
-    echo "Tencent HPC-OPS already installed"
-else
-    echo "=== Tencent HPC-OPS ==="
-    git clone https://github.com/Tencent/hpc-ops.git "$workingDir/hpc-ops"
-    cd "$workingDir/hpc-ops"
-
-    # build packages
-    make wheel
-    # 4. Install the resulting wheel package into your Python environment
-    uv pip install --no-build-isolation dist/*.whl
-fi
+# This HPC-OPS installation is very slow and seems to always fail.
+# if uv pip show hpc &>/dev/null; then
+#     echo "=== Tencent HPC-OPS already installed ==="
+# else
+#     echo "=== Tencent HPC-OPS install from source ==="
+#     (
+#     git clone https://github.com/Tencent/hpc-ops.git "$workingDir/hpc-ops"
+#     cd "$workingDir/hpc-ops"
+#
+#     # build packages
+#     make wheel
+#     # 4. Install the resulting wheel package into your Python environment
+#     uv pip install --no-build-isolation dist/*.whl
+#     ) > "$debugDir/hpc-ops.log" &&
+#     echo "Tencent hpc-ops installed." ||
+#     echo "Tencent hpc-ops failed to install."
+# fi
 
 # HPC-OPS:
 # https://vllm.ai/blog/2026-07-06-vllm-hpc-ops
@@ -386,4 +435,12 @@ fi
 # Cassini/libfabric (cxi) transport via the existing aws-ofi-nccl 1.8.1-aws
 # plugin, with a correct cross-node all_reduce (nccl-probe.sh section [7]).
 echo "=== Pinning nvidia-nccl-cu12 to 2.30.4 (see vLLM issue #46097) ==="
-uv pip install --upgrade nvidia-nccl-cu12==2.30.4
+if uv pip install --upgrade nvidia-nccl-cu12==2.30.4; then
+  echo "Nvidia NCCL pinned at 2.30.4"
+  echo "Overall VLLM installation SUCCESS."
+  exit 0
+else
+  echo "ERROR: Could not pin correct NCCL version"
+  echo "Overall VLLM installation FAIL."
+  exit 1
+fi

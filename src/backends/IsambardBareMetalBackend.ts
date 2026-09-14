@@ -44,36 +44,6 @@ export class IsambardBareMetalBackend extends Backend {
             'up',
         );
 
-        // DISABLED: script directory user specific so version checks not needed.
-        // now will always rsync but overhead to this is quite low given number of files
-        //         const localVersion = (globalThis as any).__VERSION__ as string;
-        //         const remoteVersion = await this.getRemoteEngineVersion();
-        //
-        //         if (remoteVersion && compareVersions(localVersion, remoteVersion) < 0) {
-        //             throw new Error(`
-        // This ivllm client is version ${localVersion}, but the engine deployed at
-        // ${this.creds.projectDir} is version ${remoteVersion}.
-        // Please upgrade your local ivllm install to ${remoteVersion} or later before continuing.
-        // (i.e. do a git pull)
-        // `);
-        //         }
-        //
-        //         if (
-        //             !remoteVersion ||
-        //             compareVersions(localVersion, remoteVersion) > 0
-        //         ) {
-        //             const currentDir = import.meta.dir;
-        //             const enginePath = path.resolve(currentDir, '../engine');
-        //             const remoteEngine = await this.getRemoteEngine();
-        //             await this.ops.copyDirectory(
-        //                 `${enginePath}/`,
-        //                 `${remoteEngine}/`,
-        //                 'up',
-        //             );
-        //             // copy contents
-        //             await this.setRemoteEngineVersion(localVersion);
-        //         }
-
         this.bootstrapped = true;
     }
 
@@ -89,6 +59,26 @@ export class IsambardBareMetalBackend extends Backend {
         if (exitCode !== 0)
             throw new Error(
                 `setup request failed (exit ${exitCode}): ${stdout}`,
+            );
+    }
+
+    override async patch(version: string, patch: string, revert?: boolean): Promise<void> {
+        await this.bootstrap();
+        if (!fs.existsSync(patch)) {
+            throw new Error(`patch path ${patch} does not exist`)
+        }
+        const remoteEngine = await this.getRemoteEngine();
+        const remoteTemp = `${await this.getRemoteHome()}/.local/share/ivllm/${path.basename(patch)}`
+        await this.ops.copyFile(patch, `${remoteTemp}`)
+
+        const { stdout, exitCode } = await this.ops.runRemote(
+            `${remoteEngine}/ivllm-patch.sh -v "${version}" -p "${remoteTemp}"${revert ? ' -r' : ''}`,
+            { env: this.envs, silent: false },
+        );
+
+        if (exitCode !== 0)
+            throw new Error(
+                `patch request failed (exit ${exitCode}): ${stdout}`,
             );
     }
 
