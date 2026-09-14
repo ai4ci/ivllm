@@ -131,7 +131,7 @@ export LIBRARY_PATH="$RDMA_ROOT/lib64:$RDMA_ROOT/lib:${LIBFABRIC_LIB_DIR}:${LIBR
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:$RDMA_ROOT/lib:$NVHPC_ROOT/cuda/$CUDA_VERSION/compat:$NVHPC_ROOT/cuda/$CUDA_VERSION/lib64:$NVHPC_ROOT/compilers/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nccl/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nvshmem/lib:$NVHPC_ROOT/math_libs/$CUDA_VERSION/lib64"
 
 # Explicitly force the loader to link the forward-compat debugger library
-export LD_PRELOAD="$NVHPC_ROOT/cuda/$CUDA_VERSION/compat/libcudadebugger.so.1:${LD_PRELOAD}"
+export LD_PRELOAD="$NVHPC_ROOT/cuda/$CUDA_VERSION/compat/libcudadebugger.so.1${LD_PRELOAD:+:${LD_PRELOAD}}"
 
 # vLLM CUDA forward compatibility
 export VLLM_ENABLE_CUDA_COMPATIBILITY=1
