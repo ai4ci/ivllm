@@ -221,6 +221,8 @@ Once installed, ask your AI agent: *"Generate a vllm.yaml config for
 | `cancel <job> [--force] [--abort]` | Cancel a running job. Graceful (default) writes `cancel` to the lockfile for clean shutdown. `--force` kills the SLURM job directly. `--abort` triggers diagnostics capture for debugging issues |
 | `config` | Show or set connection details (host, username, project dir, HF token). Run once per user. |
 | `setup <version>` | **Admin:** Install vLLM `<version>` on the HPC. Creates a shared venv with CUDA toolchains. One-off per project version. |
+| `patch <version> <patch-file> [--revert]` | **Admin:** Apply (or `--revert`) a local source patch against an already-installed vLLM `<version>` venv. See [Admin: `ivllm patch`](#admin-ivllm-patch) below. |
+| `diagnostics <job> --out <path>` | Download logs, config, SLURM script, and lockfile state from a failed/crashed job for local analysis. |
 
 Run `ivllm <command> --help` for command-specific options.
 
@@ -250,6 +252,34 @@ This submits a SLURM job on a compute node to install the NVIDIA HPC SDK 26.3
 (providing CUDA 12.9 forward compatibility) and the specified vLLM version into
 a shared directory at `$PROJECTDIR/engine/<version>/`. Takes ~10–20 min on first
 run. Skipped automatically if that version is already installed.
+
+* * *
+
+## Admin: `ivllm patch`
+
+Sometimes a fix needs to land before it ships in a tagged vLLM release, or a
+bug is a local workaround that shouldn't be baked permanently into
+`ivllm setup`. `ivllm patch` applies (or reverts) an ordinary unified diff
+against an already-installed vLLM venv on the HPC, keyed by version — like
+`ivllm setup`, this is shared: once applied, every team member using that
+vLLM version sees the patched code.
+
+```bash
+ivllm patch 0.29.0 patches/0.29.0/disable-flashinfer-unified.v0.29.0.v1.patch
+ivllm patch 0.29.0 patches/0.29.0/disable-flashinfer-unified.v0.29.0.v1.patch --revert
+```
+
+- `<version>` must already be installed via `ivllm setup`.
+- `<patch-file>` is a local path to a `.patch` file — see [`patches/README.md`](patches/README.md)
+  for the naming convention, the current patch inventory, and how to produce
+  a new one.
+- **Idempotent in both directions**: applying an already-applied patch, or
+  reverting one that isn't applied, is a clean no-op rather than an error —
+  checked with a dry-run in both directions before touching anything.
+- A version bump creates a fresh venv; patches don't automatically carry
+  forward to it. Re-verify (`patch --dry-run`) before assuming an existing
+  patch still applies unchanged to a new version — small hunk updates are
+  common even when nothing about the underlying fix has changed.
 
 * * *
 

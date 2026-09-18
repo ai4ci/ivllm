@@ -1,7 +1,5 @@
 #!/bin/bash
-# tp-dp-pp-sweep.sh — PROTOTYPE, not wired into the build.
-#
-# Two tables, using ONLY config.json and model.safetensors.index.json:
+# Generates two tables, using ONLY config.json and model.safetensors.index.json:
 #
 #   Table 1 — weight loading. Sweeps power-of-2 GPU counts (TP×PP product)
 #   within a node budget — NOT individual (TP, PP, DP) triples, since none

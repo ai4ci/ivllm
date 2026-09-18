@@ -4,7 +4,7 @@ description: 'Use when asked to generate, create, or write a vLLM config, vllm.y
 license: MIT
 metadata:
   author: Rob Challen
-  version: 0.2
+  version: 0.3
 ---
 
 # Generate vLLM Config for Isambard AI
@@ -103,7 +103,7 @@ Each GPU gets:
 | 100-400B | 50-150 GB | TP=2-4 | ⚠️ Maybe |
 | >400B | >150 GB | TP=4+ | ❌ No (DeepSeek-V4-Pro needs TP=8) |
 
-**See:** [Shared Layer Replication Fix](design/shared-layer-replication-fix.md) for detailed explanation.
+**See:** [Shared Layer Replication Fix](references/shared-layer-replication-fix.md) for detailed explanation.
 
 **⚠️ Multi-node MoE models — Wide EP vs Hybrid EP:**
 
@@ -119,16 +119,9 @@ For large MoE models spanning multiple nodes, you must choose between:
    - Example: Qwen3.5-397B (heavy attention/embedding layers, ~150GB shared)
    - Config: `--tensor-parallel-size 4 --pipeline-parallel-size N --enable-expert-parallel`
 
-**⚠️ TP>4 IS UNTESTED ON ISAMBARD:**
+**⚠️ TP>4 spans node boundaries — prefer PP for that instead, updated 2026-09-15:**
 
-While DeepSeek-V4-Pro theoretically needs TP=8 (250GB shared / 70GB per GPU = 3.6 → round up to 4, but 250/4 = 62.5GB still too big, so TP=8), **TP>4 has not been tested on Isambard AI**.
-
-**Practical implication:** Models requiring TP>4 should be considered **not viable** until tested:
-- DeepSeek-V4-Pro (1.6T): Needs TP=8 → **Not viable** (use V4-Flash instead)
-- GLM-5.2 (743B): Needs TP=4 → **Viable** (150GB/4 = 37.5GB ✅)
-- Qwen3.5-397B: Needs TP=4 → **Viable**
-
-**See:** [MoE Parallelism Strategy Guide](references/moe-parallelism-strategy.md) for detailed decision framework.
+TP=8 configs *have* now been run in practice on Isambard (GLM-5.3-Flash, Nemotron-3-Ultra-550B both use `tensor-parallel-size: 8` directly — see `examples/`), so "untested, not viable" is stale. But `scripts/estimate-gpu-memory.sh`'s own findings (WIRING NOTE #14) established a real reason to still be cautious about this specific shape: with 4 GPUs/node, `tensor-parallel-size: 8` puts the tensor-parallel group itself across 2 nodes, meaning every TP all-reduce crosses Slingshot 11 (25 GB/s) instead of staying on intra-node NVLink-C2C (900 GB/s) — that's real, structural communication overhead, not a hypothetical one. **Prefer `tensor-parallel-size: 4` + `pipeline-parallel-size: N` to reach >4 GPUs** — TP stays intra-node (fast all-reduces), PP crosses node boundaries (latency-tolerant point-to-point handoffs, the right tool for that job). Straight `tensor-parallel-size: 8+` works and is used in this project, but treat it as a fallback, not the default, when `pipeline-parallel-size` can achieve the same GPU count instead.
 
 ### Critical gotchas (config errors that cause real failures)
 
@@ -149,72 +142,46 @@ While DeepSeek-V4-Pro theoretically needs TP=8 (250GB shared / 70GB per GPU = 3.
 | `dtype` | `bfloat16` | Use `fp8` only if memory-constrained and FP8 variant exists |
 | `enable-auto-tool-choice` | `true` | Only for base/pretrain checkpoints or pure reasoning models |
 
-### CPU offload threshold
+### CPU offload — two different features, don't conflate them
 
-The OffloadingConnector extends the prefix cache by offloading completed KV blocks to slower but larger tiers (CPU host memory, plus optional secondary tiers) as they are produced. Hits in the offload tiers are promoted back to GPU on demand. Transfers between GPU and CPU use DMA (cudaMemcpyAsync) and run asynchronously alongside model computation, so offloading adds minimal CPU- and GPU-core overhead.
+⚠️ **Rewritten 2026-09-15 — the previous version of this section conflated two unrelated vLLM features and included fabricated CLI syntax** (`enable-kv-cache-offload`/`kv-cache-offload-config` with a `"mooncake"` connector_type — neither flag exists anywhere in vLLM 0.26.0 or 0.29.0's source; verified by direct grep). Real vLLM has two genuinely separate offload mechanisms — pick based on **what's actually short of room**:
 
-**⚠️ GH200 Unified Memory Optimization:**
+| | Weight offload (`cpu-offload-gb`) | KV cache offload (`--kv-offloading-size` / `OffloadingConnector`) |
+|---|---|---|
+| Extends capacity for | Model **weights** | **KV cache** blocks (prefix cache) |
+| Real vLLM config | `CacheConfig`/`UVAOffloadConfig`, `--cpu-offload-gb`, `--offload-backend` | `CacheConfig.kv_offloading_size`, `--kv-offloading-size`, `--kv-offloading-backend` |
+| ivllm default | Off (opt-in, set explicitly per job) | **Off, opt-in only** — see below |
+| Status | Straightforward, no known issues found this project | **Real production issues found — read this whole section before enabling** |
 
-On GH200 Grace Hopper Superchips, **use UVA (Unified Virtual Addressing) offloading** instead of Mooncake for single-node deployments:
+#### Weight offload (`cpu-offload-gb`)
+
+Use when weights alone don't fit on the GPU(s) you have and you want a single-node job anyway (rather than scaling out with more TP/PP). Uses UVA (zero-copy page faults over NVLink-C2C on GH200, 900 GB/s) — accessed from CPU memory on-the-fly during each forward pass.
 
 ```yaml
-# ✅ GH200-optimized (uses NVLink-C2C 900 GB/s)
-cpu-offload-gb: 100
-offload-backend: uva
-
-# ❌ Suboptimal on GH200 (uses cudaMemcpy at 35 GB/s)
-enable-kv-cache-offload: true
-kv-cache-offload-config: '{"connector_type": "mooncake", "memory_budget": 64}'
+model: meta-llama/Llama-3.1-70B
+tensor-parallel-size: 1               # 70B @ bf16 ≈ 140 GB; exceeds single 96GB GPU
+cpu-offload-gb: 50                    # reserves 50 GB CPU memory for weights
+gpu-memory-utilization: 0.90
 ```
 
-**Why UVA is better on GH200:**
-- **Zero-copy access** via page faults (not explicit cudaMemcpy)
-- **900 GB/s effective bandwidth** (NVLink-C2C vs 35 GB/s PCIe)
-- **Hardware-managed coherency** (no manual transfers)
-- **Simpler configuration** (single parameter)
+Suggest it when `params_B × 2 > 86.4` (usable GB per GPU) and the user wants single-node. See the CPU offload guidance section further down for the sizing table.
 
-**When to use Mooncake:**
-- Multi-node deployments needing **cross-node KV sharing**
-- Scenarios with **shared system prompts** across nodes
-- Not for pure single-node offloading!
+#### KV cache offload — opt-in only, real known issues, read before enabling
 
-**See:** [GH200 KV Offloading Research](design/gh200-kv-offloading-research.md) for detailed comparison.
+**This is now opt-in in ivllm, not a default** (`baseline_vllm_args()` in `src/engine/lib/utils.sh` had it unconditionally enabled at one point — `--kv-offloading-size $((tp*48)) --kv-offloading-backend native` on every job — and it was disabled by default because it directly caused real production failures: it was the root cause eventually found behind a DeepSeek-V4-Flash OOM crash, and independently confirmed as the fix for a separate Qwen3.8-Flash-Next issue too, on two unrelated models). **Do not add KV cache offload to a generated config unless the user specifically asks for it or you have a concrete, diagnosed reason** (e.g. genuinely needing a much larger effective prefix-cache hit rate than GPU HBM alone allows, and you've confirmed weights+activations+the primary GPU KV pool already fit comfortably without it).
 
-```
-vllm serve <model> \
-  --kv-transfer-config '{
-    "kv_connector": "OffloadingConnector",
-    "kv_role": "kv_both",
-    "kv_connector_extra_config": {
-      "block_size": 64,
-      "cpu_bytes_to_use": 1000000000
-    }
-  }'
+If you do enable it, only use the plain **native** backend — never the tiered/multi-secondary-tier config. These are plain vLLM CLI flags (work as ordinary yaml keys, same as every other vLLM option):
+
+```yaml
+kv-offloading-size: 48          # GiB — group total across all TP ranks, not per-worker (see below)
+kv-offloading-backend: native   # do NOT use anything else — see tiered-path warning below
 ```
 
-cpu_bytes_to_use: a bigger CPU tier means fewer trips to slower secondary tiers and a higher hit rate. The value is total across all workers, not per-worker. Leave headroom for the rest of the host workload. For single-tier (CPU-only) setups, set cpu_bytes_to_use larger than the aggregate GPU KV cache. Because offloading is immediate, a smaller CPU tier just mirrors what the GPU already holds and adds no hit rate.
+**Why not the tiered path (`TieringOffloadingSpec` / `--kv-transfer-config` with `"kv_connector": "OffloadingConnector"` and a `secondary_tiers` block):** confirmed via direct source read (`design/active-issues.md`, 2026-09-05 research) to be **structurally broken on multi-node TP in three independent ways** — the head node's `/dev/shm` region gets `ftruncate`d to the *entire group's* budget and eagerly populated there alone (real risk of `ENOSPC` before serving even starts), slice addressing uses the *local* device index rather than the global TP rank (non-head nodes can never address their own high-numbered slots), and secondary-tier stores/loads only ever see the head node's file (silent half-block corruption on non-head ranks — surfaces as garbage completions, not an error). The plain native path avoids all of this (per-worker anonymous pinned RAM, no shared `/dev/shm` state, NUMA-local first-touch) and is the only variant confirmed safe on both single- and multi-node topologies.
 
-**GH200 offload size calculation:**
+**`cpu_bytes_to_use`/`--kv-offloading-size` is a *group total*, not per-worker** — confirmed against vLLM's own docs and source: "Total bytes of host memory reserved for the CPU tier across all workers (not per-worker)." Size accordingly.
 
-```python
-# For UVA offloading on GH200
-weights_gb = params_B * 2  # BF16 (or * 1 for FP8)
-gpu_usable = 86.4  # 96 GB × 0.90 utilization
-offload_needed = max(0, weights_gb - gpu_usable)
-
-# Add KV cache estimate (conservative)
-kv_cache_gb = max_tokens * 0.0003  # ~0.3 MB per 1K tokens for 70B model
-
-# Round up with 20% headroom
-cpu_offload_gb = ceil((offload_needed + kv_cache_gb) * 1.2 / 10) * 10
-
-# Example: Llama-3-70B at BF16 with 128K context
-# weights_gb = 70 * 2 = 140 GB
-# gpu_usable = 86.4 GB
-# offload_needed = 140 - 86.4 = 53.6 GB
-# kv_cache_gb = 128 * 0.0003 = 0.04 GB (negligible)
-# cpu_offload_gb = ceil(53.6 * 1.2 / 10) * 10 = 70 GB
-```
+**A second, separate cost worth knowing about**: the native backend's pinned host-memory buffer is real GPU-adjacent bookkeeping, not purely "free" CPU RAM sitting off to the side — it was directly implicated (alongside a missing MTP-attention-layer accounting gap) in a real, unexplained ~10 GiB shortfall between this skill's KV-cache formula and an actual production OOM on a hybrid MoE model (see `scripts/estimate-gpu-memory.sh`'s WIRING NOTES). If a model's KV-cache margin is already tight, adding KV cache offload on top can make an OOM *more* likely, not less — it doesn't create free GPU memory, it extends prefix-cache capacity at the cost of some GPU-side overhead.
 
 ---
 
@@ -423,7 +390,18 @@ When checking whether a feature, parser, or config key exists, verify it in the 
 
 ### 5. Calculate memory and parallelism
 
-Use the rules in [references/vllm-config-guide.md](references/vllm-config-guide.md):
+**Prefer running `scripts/estimate-gpu-memory.sh <hf-model-id> <max-nodes>` over the manual formula below.** It fetches the model's real `config.json` and `model.safetensors.index.json` from HuggingFace and produces two tables:
+
+1. **Weight-fit table** — one row per achievable GPU count (TP×PP product), showing exact weight GB/GPU (from the safetensors index — no parameter-count guessing) and GB remaining at 0.90/0.95 utilization, at three assumed `max-num-batched-tokens` scenarios (4K/8K/16K) — because that scheduler setting materially changes how much memory is left over for KV cache (confirmed against a real production log: dropping it from ~16K to 8192 freed 6.2 GiB). Rows that don't fit are simply absent, not shown as placeholders.
+2. **KV-cache table** — for every surviving (TP, PP) split, KV cache GB/GPU at five context-length targets (64K/128K/256K/512K/1024K) and both bf16/fp8 `kv-cache-dtype`, using vLLM's *actual* source-verified formula (including the group-padding allocator behavior hybrid/mamba models hit — see below), not an approximation.
+
+```bash
+scripts/estimate-gpu-memory.sh Qwen/Qwen2.5-72B-Instruct 4
+```
+
+This directly fixes two known fragile spots in the manual approach: (a) total parameter count no longer needs to be scraped from model-card prose (it comes from `model.safetensors.index.json`'s exact `metadata.total_size`), and (b) the KV-cache formula below was missing a ×2 factor for storing both K and V — undercounting every KV-cache estimate by exactly half. Read the script's own header and its "WIRING NOTES" (14 of them) before trusting an edge case — it documents its own known simplifications (MoE weight-sharding is optimistic since real expert-parallel isn't modeled; hybrid/linear-attention layer types other than Nemotron-style mamba2 aren't modeled at all) rather than silently getting them wrong.
+
+Only fall back to the manual formula below if the tool can't reach HuggingFace (network policy) or the model isn't public:
 
 ```
 weights_GB ≈ total_params_B × 2          (bfloat16, both dense and MoE)
@@ -490,17 +468,18 @@ This disables the fusion pass entirely, so the FlashInfer workspace setup (and t
 
 ### 6. Choose max-model-len
 
-- **Default to the model's full native context length.** KV cache headroom depends on `tensor-parallel-size` and whether weights fit with room to spare. Do not reduce the context pre-emptively.
-- Only reduce `max-model-len` if an explicit OOM analysis shows the KV cache at native context would exhaust available memory after weights are loaded. Calculate:
+- **Prefer `max-model-len: auto`.** vLLM resolves this to whatever context actually fits at startup (live-profiled against real GPU memory, not a config.json-derived formula) and — unlike leaving the key unset entirely — still prevents a client request from overriding it upward into an unsafe value. This is now the default recommendation for every config this skill generates, not just a fallback for when the manual calculation is inconvenient.
+- If a specific fixed number is genuinely needed instead, use `scripts/estimate-gpu-memory.sh`'s Table 2 (KV-cache sweep) to sanity-check that the target context length actually fits at your chosen (TP, PP, kv-cache-dtype) before hardcoding it — its `MaxSeqs@.95` column shows how many concurrent full-length requests the KV pool can hold, not just a binary fits/doesn't-fit.
+- Only fall back to the formula below if the tool is unavailable — and note the leading ×2 in it (for K **and** V) is easy to miss and was actually missing from this doc until 2026-09-15 (confirmed against vLLM's real `FullAttentionSpec.max_memory_usage_bytes()` — see `scripts/estimate-gpu-memory.sh` WIRING NOTE #1); it undercounts every estimate by exactly half if dropped.
 
 ```
-kv_per_token ≈ num_kv_heads × head_dim × 2 bytes × num_layers  (standard dense attention)
+kv_per_token ≈ 2 × num_kv_heads × head_dim × 2 bytes × num_layers  (standard dense attention; the leading ×2 is for K+V)
 total_kv_GB  = kv_per_token × max_tokens / 1e9
-available_for_kv = (usable_per_gpu × tensor_parallel_size) − weights_GB  # scales with tp  # scales with tp
+available_for_kv = (usable_per_gpu × tensor_parallel_size) − weights_GB  # scales with tp
 ```
 
 - If the native context does exceed available KV budget, reduce to the largest power-of-two that fits, and note the native context in a YAML comment.
-- Exception: hybrid architectures (e.g. Qwen3.5-35B-A3B with Gated DeltaNet layers) have a tiny KV footprint — keep the full context.
+- **Hybrid architectures need more care than "tiny footprint, keep full context"** — that blanket rule is only safe for pure linear-attention hybrids (e.g. Qwen3.5-35B-A3B's Gated DeltaNet layers genuinely have a small KV footprint). **Mamba2-style hybrids (e.g. Nemotron-H-family models) do not** — vLLM's real KV-cache allocator pads every layer-type group (attention, mamba) up to the *largest* group's layer count (confirmed via direct source read, `scripts/estimate-gpu-memory.sh` WIRING NOTE #12), so a model with many more mamba layers than attention layers can need dramatically *more* KV cache per sequence than a naive per-layer sum implies — the opposite of "tiny." Run the tool (it detects and models this) rather than assuming either direction from architecture name alone.
 
 ### 7. Check for special options
 
@@ -508,7 +487,7 @@ available_for_kv = (usable_per_gpu × tensor_parallel_size) − weights_GB  # sc
 
 🚨 **MoE models — backend selection is critical (NEW)**:
 
-Backend choices depend on **quantization format** and **model architecture**. See [Backend Selection Guide](references/vllm-backend-selection.md) for complete matrix.
+Backend choices depend on **quantization format** and **model architecture**. There is no separate backend-selection reference doc yet — the table below is the current, complete guidance.
 
 **Quick reference:**
 ```yaml
@@ -644,17 +623,7 @@ For MoE models, all expert weights must reside in GPU memory simultaneously even
 
 ### Flashinfer on Isambard
 
-Flash infer compilation seems to have particular problems on isambard with start up times exceeding 2 hours if it is enabled. This is mainly due a mixture of experts models. The following set of options must be applied to all MOE models.
-
-```yaml
-# Mixture of experts models need to be forced to use triton
-gdn-prefill-backend: "triton"
-moe-backend: triton             # Forces vLLM to use pre-compiled Triton MoE kernels
-attention-config: '{"backend":"TRITON_ATTN"}'
-enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
-```
-
-**Why this matters:** FlashInfer's autotune profiling loop can take **2+ hours** on MoE models with GH200. The Triton kernels are pre-compiled and work immediately.
+Flash infer causes two genuinely different classes of problem here (JIT autotune hang, and a separate `EngineCore` import hang needing a source patch, not a yaml fix) — **see the full "FlashInfer on Isambard" section under Debugging & Patching below** for both, including the `enable-flashinfer-autotune: false` boolean-drop trap and when `IVLLM_DISABLE_FLASHINFER` actually helps (Worker-only, doesn't fix the import hang by itself).
 
 **See also:** [FlashInfer section in Packages Reference](references/isambard-vllm-packages.md#4-flashinfer-kernel-library) for detailed background.
 
@@ -706,25 +675,14 @@ Common choices:
 - **tp=2**: default for models needing 1–2 GPUs (e.g., 72B at bf16). Good balance of queue time and capacity.
 - **tp=4**: full node. For models needing 3–4 GPUs, or when the user explicitly wants maximum throughput or very long contexts.
 
-**⚠️ TP>4 IS UNTESTED ON ISAMBARD:**
+**⚠️ TP>4 crosses node boundaries — prefer PP instead (updated 2026-09-15):**
 
-While some models theoretically require TP>4 to fit shared layers (e.g., DeepSeek-V4-Pro with ~250GB shared needs TP=8), **TP>4 has not been tested on Isambard AI**.
+TP=8 has been run in practice (GLM-5.3-Flash, Nemotron-3-Ultra — see `examples/`), so this is no longer "untested, not viable." But with 4 GPUs/node, `tensor-parallel-size: 8` puts the TP group's all-reduces across Slingshot 11 (25 GB/s) instead of intra-node NVLink-C2C (900 GB/s) — real overhead, confirmed structurally by `scripts/estimate-gpu-memory.sh`'s WIRING NOTE #14.
 
 **Practical guidance:**
-- **TP=1,2,4**: Tested and working ✅
-- **TP=8+**: Not tested — consider model **not viable** until validated
-- **Workaround:** Use smaller model variants (e.g., DeepSeek-V4-Flash instead of V4-Pro)
-
-**Why TP>4 is problematic:**
-1. **Communication overhead:** Slingshot 11 (25 GB/s) vs NVLink (900 GB/s intra-node)
-2. **Synchronization complexity:** More TP ranks = more failure points
-3. **No validated configs:** No existing working examples on Isambard
-
-**If a model requires TP>4:**
-1. Check if smaller variant exists (Flash, distilled, quantized)
-2. Calculate if KV offloading helps (doesn't reduce weight footprint, but enables longer context)
-3. Document as "not viable" until TP>4 testing completed
-4. Recommend alternative models
+- **TP=1,2,4**: intra-node, no communication penalty.
+- **>4 GPUs needed**: prefer `tensor-parallel-size: 4` + `pipeline-parallel-size: N` over straight `tensor-parallel-size: 8+` — same GPU count, TP stays fast/intra-node, PP absorbs the cross-node hop (which it's designed for).
+- Straight `tensor-parallel-size: 8+` still works and has real working examples in this project — just isn't the first choice when PP can reach the same GPU count.
 
 Multi-node (pp>1) adds inter-node communication latency and complexity — only use it when the model's weights genuinely won't fit on a single 4-GPU node.
 
@@ -855,7 +813,7 @@ Before writing the file, verify every item:
 | Memory borderline | Try `quantization: fp8` — halves weight memory with minimal accuracy loss on Hopper (GH200/H100) |
 | `ivllm start` fails with "version too low" | The installed vLLM (`ivllm config --vllm-version`) is below `min-vllm-version`; run `ivllm setup` with a newer version or update the config |
 | Multi-node crash: `Flashinfer allreduce is not supported for multi-node allreduce with 'trtllm' backend` | Add `compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'` (merge if a `compilation-config` already exists) — see Step 5, Multi-node. Applies to any multi-node job, not just MoE models; `disable-custom-all-reduce` does not fix this |
-| **MoE model OOM on startup with TP=1** | **Shared layers replicating on every GPU! Check: `shared_layers_gb > 70`. Fix: Increase TP to shard shared layers. See [Shared Layer Replication Fix](design/shared-layer-replication-fix.md)** |
+| **MoE model OOM on startup with TP=1** | **Shared layers replicating on every GPU! Check: `shared_layers_gb > 70`. Fix: Increase TP to shard shared layers. See [Shared Layer Replication Fix](references/shared-layer-replication-fix.md)** |
 | **Recipe recommends TP=1 but model >400B** | **Recipe assumes 8-GPU node with full NVLink. Recalculate: `minimum_tp = ceil(shared_layers_gb / 70)`. Model may need TP>4 (untested on Isambard)** |
 
 ### Debugging with ivllm diagnostics
@@ -884,6 +842,60 @@ grep -i "out of memory\|flashinfer\|nccl\|timeout" diagnostics/<job>/vllm.0.log 
 
 **See full debugging workflow in "Troubleshooting & Debugging" section below.**
 
+### `ivllm-debug-level` — the diagnostics-verbosity ladder
+
+Set `ivllm-debug-level: N` (0-5) in the job's yaml to progressively enable more (and more expensive) diagnostics. Each level includes everything from the levels below it. Source: `set_debugging_env()` and `baseline_vllm_args()` in `src/engine/lib/utils.sh`.
+
+| Level | Adds | Cost |
+|---|---|---|
+| 0 (default) | Nothing extra | none |
+| 1 | Runtime memory profiling (`report_memory()` — periodic RAM/GPU/process snapshots in the job log) | negligible |
+| 2 | Creates the job's `debug/` output directory (where every level above writes its artifacts) | negligible |
+| 3 | Third-party diagnostics: `VLLM_LOGGING_LEVEL=DEBUG`, NCCL debug logging to file, libfabric/CXI trace logging to file | moderate log volume |
+| 4 | Torch profiling + trace stats (fuller NCCL subsystem coverage, `CUDA_LOG_FILE`), **and enables user-triggered CUDA coredump support** (`CUDA_COREDUMP_PIPE`/`CUDA_COREDUMP_GENERATION_FLAGS`, post-processed by `cuda-postprocess.sh`) | real overhead — use when actively chasing a live hang, not as a standing default |
+| 5 | Full flight-recorder mode: `CUDA_LAUNCH_BLOCKING=1`, `TORCH_DISTRIBUTED_DEBUG=DETAIL`, NCCL/torch flight-recorder dumps on timeout or via trigger pipe, `NCCL_DEBUG=TRACE`, `VLLM_TRACE_FUNCTION=1`. Also adds `--profiler-config` (torch profiler, dumps to the job's `torch-profile/` dir), forces `--enforce-eager`, and enables verbose JIT-compilation-monitor logging | high overhead, high log volume — genuinely last-resort |
+
+**Practical guidance**: start at 0. Reach for level 3 first for anything that looks like a network/collective issue (NCCL/libfabric trace to file, moderate cost). Only reach for 4-5 when you have a *reproducible* hang or crash and need a device-side snapshot or flight-recorder trace — both add real startup/runtime cost and `--enforce-eager` at level 5 changes execution mode (no CUDA graphs), which can itself mask or shift timing-sensitive bugs.
+
+**Known gap** (`design/active-issues.md`): there's a genuine catch-22 in CUDA device-state capture on this platform — live `cuda-gdb -p <pid>` attach at level 4 never returns device-side info at all (confirmed empirically across dozens of runs), and the user-triggered coredump path only produces a valid, complete dump when `skip_abort` is *not* set — which then aborts the process being captured. There is currently no way to get a non-destructive device-side snapshot of a still-running worker on this platform; a coredump capture is a one-shot, terminal diagnostic, not a repeatable one.
+
+### FlashInfer on Isambard — when it's a problem, and the two independent fixes
+
+FlashInfer causes two genuinely different classes of problem here, and they need different fixes — don't reach for one when the other is needed.
+
+**Problem 1 — MoE JIT autotune hang (2+ hours on startup).** FlashInfer's autotune profiling loop can take 2+ hours on MoE models with GH200. This is a **config problem**, fixed entirely in yaml, no patching needed:
+
+```yaml
+gdn-prefill-backend: "triton"
+moe-backend: triton             # Forces vLLM to use pre-compiled Triton MoE kernels
+attention-config: '{"backend":"TRITON_ATTN"}'
+enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
+```
+
+Required for every MoE model with `tensor-parallel-size >= 2`. ⚠️ **This flag has a real trap**: `enable-flashinfer-autotune: false` as a bare yaml boolean is silently **dropped** by vLLM's own `--config` loader for any flag whose CLI default isn't already `False` (confirmed against `vllm/utils/argparse_utils.py` — the yaml→argv conversion only emits `--flag` when the value is `True`, never emits anything for `False`, which only works if "absent" already means off; `enable_flashinfer_autotune` defaults to `None`, later resolved to `True` by the active optimization-level preset). **Always wrap it in the JSON-blob form instead**: `kernel-config: '{"enable_flashinfer_autotune": false}'` — dict-valued yaml keys are JSON-serialized as-is and don't hit this code path. This exact bug caused a reproducible startup OOM across multiple MiniMax-M3 debugging sessions before being traced — every `vllm.yaml` in this repo using the bare boolean form was silently unaffected by it.
+
+**Problem 2 — `EngineCore` import hang (silent, no crash, GPU util pinned at 0%, ~5 minutes then nothing).** Different mechanism entirely: `flashinfer`'s own package `__init__` makes an eager `torch.cuda.get_device_capability()` call at import time. Two vLLM files import `flashinfer.comm` unconditionally at module level (`vllm/compilation/passes/fusion/allreduce_rms_fusion.py`, `vllm/distributed/device_communicators/flashinfer_all_reduce.py`), pulled in transitively during model-class resolution — **including inside `EngineCore`'s own process**, which has no CUDA context yet and no legitimate use for either module. This is a **source problem**, not fixable from yaml — it needs an `ivllm patch` (see below).
+
+- **`IVLLM_DISABLE_FLASHINFER=1`** (set in a job's yaml `env:` block) is a **Worker-only** runtime guard — it makes `_can_use_flashinfer()` return `False, 0` immediately, falling back to plain `all_reduce` + `GemmaRMSNorm` (numerically identical, just not fused). **It does not, by itself, prevent the `EngineCore` import hang** — that happens regardless of this flag, since it's a module-level import, not a runtime dispatch decision.
+- The actually-currently-applied fix (`patches/*/disable-flashinfer-unified.v*.patch`) decouples the two questions: it **unconditionally** skips the flashinfer import in `EngineCore`'s own process (detected via `setproctitle.getproctitle()` — `EngineCore` never legitimately uses either patched module, confirmed by tracing every use of `flashinfer_comm` back to being function-body-only or behind an `if flashinfer_comm is not None:` guard), while Workers still import and use the real fused kernel **unless** `IVLLM_DISABLE_FLASHINFER=1` is explicitly set for that job.
+- **When to set `IVLLM_DISABLE_FLASHINFER=1`**: a genuine multi-node topology where neither FlashInfer allreduce backend works (`trtllm` is single-node only; `mnnvl` needs real inter-node NVLink, which Slingshot doesn't provide) — i.e. the same scoping as the multi-node flashinfer allreduce crash in Step 5, for models that call the fused kernel directly rather than through the `torch.compile` fusion pass that flag already covers. **Do not set it by default "to be safe"** — it forces every layer onto the slower fallback path unconditionally for that job.
+
+**When you need a patch vs. when yaml is enough**: yaml-only config (`enable-flashinfer-autotune`, `compilation-config`, `IVLLM_DISABLE_FLASHINFER`) covers *runtime dispatch decisions* — which kernel path gets *used*. A source patch is needed when the problem is something vLLM does unconditionally regardless of config (an eager unconditional import; a bug in vLLM's own weight-name mapping for a brand-new model architecture; an upstream fix that hasn't reached a tagged release yet — see `design/active-issues.md`'s GLM-5.3-Flash entry for a real recent example, where the needed fix was 416 commits ahead of the installed tag). Check `patches/<installed-version>/` for an existing fix first; if none exists for the exact installed version, a nearby version's patch is often trivially adaptable (see "Custom vLLM patching" below) — verify with `patch --dry-run` before assuming it applies unchanged.
+
+### Custom vLLM patching (`ivllm patch`)
+
+For problems a yaml key can't fix — vLLM does something unconditionally regardless of config, or a needed fix hasn't landed in the installed tagged release yet. `ivllm patch` applies an ordinary unified diff to an already-installed vLLM venv on the HPC, keyed by version:
+
+```bash
+ivllm patch <vllm-version> <patch-file>              # apply
+ivllm patch <vllm-version> <patch-file> --revert     # revert
+```
+
+- Patch files live in `patches/<vllm-version>/`, named `<descriptive-name>.v<vllm-version>.v<revision>.patch` — each is an ordinary unified diff with git-style `a/`/`b/` paths rooted at the vLLM package's `site-packages` directory, applied via `patch -p1`.
+- **Idempotent in both directions** — applying an already-applied patch, or reverting one that isn't applied, is a clean no-op (checked via a dry-run in both directions first).
+- A version bump creates a fresh venv — patches don't automatically carry forward. Check whether a patch needs re-verifying (and possibly a small update — vLLM's own code around the patched lines can shift between versions) against the new version with `patch --dry-run` before assuming it still applies; see `patches/README.md` for the full workflow and current patch inventory.
+- **Never edit an applied patch file in place** — save a new file with the revision bumped (`...v1.patch` → `...v2.patch`) instead. Editing in place is genuinely dangerous: the dry-run idempotency check only compares the *current* file against the *current* venv state, with no way to know an *older* revision is what's actually installed — if the new content partially overlaps the old, both forward and reverse dry-runs can fail silently and the tool reports "already applied, nothing to do" without actually applying anything.
+
 ## References
 
 ### Official vLLM Documentation (verified)
@@ -892,20 +904,18 @@ grep -i "out of memory\|flashinfer\|nccl\|timeout" diagnostics/<job>/vllm.0.log 
 - **[vLLM serve CLI (stable)](https://docs.vllm.ai/en/stable/cli/serve/)** — Complete CLI option reference
 - **[vLLM CompilationConfig](https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.CompilationConfig)** — torch.compile configuration
 - **[vLLM KernelConfig](https://docs.vllm.ai/en/latest/api/vllm/config/#vllm.config.KernelConfig)** — MoE/attention backend settings
-- **[Official vLLM configs reference (local)](references/vllm-official-configs.md)** — Curated Isambard-specific settings from official docs
 
 ### Isambard-Specific References
 
 - [Isambard AI hardware specs](references/isambard-specs.md)
 - [Isambard AI vLLM packages & dependencies](references/isambard-vllm-packages.md) — **Comprehensive guide to UCCL-EP, NIXL, DeepGEMM, HPC-OPS, FlashInfer, humming-kernels, and all dependencies**
-- **[MoE parallelism strategy guide](references/moe-parallelism-strategy.md)** — **Wide EP vs Hybrid EP decision framework for multi-node MoE deployment**
-- **[vLLM backend selection guide](references/vllm-backend-selection.md)** — **Complete moe-backend, all2all-backend, attention-backend, linear-backend matrix with quantization support**
-- **[Shared layer replication fix](design/shared-layer-replication-fix.md)** — **Why Wide EP fails for large MoE models, how to calculate minimum TP**
-- **[Example configs Isambard reality check](design/example-configs-isambard-reality.md)** — **Hardware constraints, KV offloading guide, testing priorities**
-- **[GH200 KV offloading research](design/gh200-kv-offloading-research.md)** — **UVA vs Mooncake vs DirectKV comparison, NVLink-C2C optimization**
+- **[Shared layer replication fix](references/shared-layer-replication-fix.md)** — **Why Wide EP fails for large MoE models, how to calculate minimum TP**
+- **[Example configs Isambard reality check](references/example-configs-isambard-reality.md)** — **Hardware constraints, testing priorities**
+- **[GH200 KV offloading research](references/gh200-kv-offloading-research.md)** — background reading on GH200 unified-memory bandwidth only. ⚠️ **Its core comparison conflates two different vLLM features** — `cpu-offload-gb`/`offload-backend` (weight offload, `UVAOffloadConfig`) is not an alternative to KV-cache offloading (`OffloadingConnector`/`--kv-offloading-size`) the way this doc presents it; several of its cited sources could not be verified. Treat as unverified background, not authoritative — see the KV cache offloading section above for the current, hands-on-verified guidance instead.
 - [vLLM config options and memory guide](references/vllm-config-guide.md)
 - [vLLM serve cli options](references/vllm-serve-cli-0.23.0.md)
 - [vLLM config environment variables](references/vllm-env-vars-0.23.0.md)
 - [vLLM model-specific recipes](https://docs.vllm.ai/projects/recipes/en/latest/)
 - [Isambard AI specs online](https://docs.isambard.ac.uk/specs/#system-specifications-isambard-ai-phase-2)
+- [`scripts/estimate-gpu-memory.sh`](scripts/estimate-gpu-memory.sh) — TP/PP/DP weight-fit and KV-cache sweep tool, see Step 5
 

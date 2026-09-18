@@ -1906,7 +1906,7 @@ except ImportError as e:
 "
 echo "=== Final Environment Variables for vLLM ==="
 # Expanded search to capture your critical NVSHMEM, EP, DG, and GLOO runtime flags
-env | grep -E "^(PYTORCH|TORCH|VLLM_|RAY_|NCCL_|FI_|NVHPC|CUDA_|LD_|CPATH|PATH|SLURM_|TRITON|NVSHMEM_|EP_|DG_|GLOO_)" | sort
+env | grep -E "^(PYTORCH|TORCH|IVLLM_|VLLM_|RAY_|NCCL_|FI_|NVHPC|CUDA_|LD_|CPATH|PATH|SLURM_|TRITON|NVSHMEM_|EP_|DG_|GLOO_)" | sort
 echo "============================================"
 }
 
