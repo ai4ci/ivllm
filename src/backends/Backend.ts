@@ -35,8 +35,9 @@ export abstract class Backend {
      * Install or update vLLM on the HPC.
      * @param version — vLLM version to install (e.g. `'0.19.1'`)
      * @param force — If true, reinstall even if version already exists
+     * @param retry — If true, retry failed installation components
      */
-    abstract setup(version: string, force?: boolean): Promise<void>;
+    abstract setup(version: string, force?: boolean, retry?: boolean): Promise<void>;
 
     /**
      * Install or update vLLM on the HPC.

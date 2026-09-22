@@ -90,7 +90,7 @@ exactly this happening twice in a row (v0.26.0 → v0.29.0 → v0.29.1rc0).
 
 ## Current patches
 
-### `disable-flashinfer-unified.v{0.26.0,0.29.0,0.29.1rc0}.v1.patch`
+### `disable-flashinfer-unified.v{0.26.0,0.29.0,0.29.1rc0,0.30.0}.v1.patch`
 
 **What it does**: two independent guards around `import flashinfer.comm` in
 `vllm/compilation/passes/fusion/allreduce_rms_fusion.py` and
@@ -122,9 +122,12 @@ line as untouched context instead of rewriting it, matching whichever
 upstream version is installed); v0.29.1rc0 additionally added a new
 `from vllm.platforms import current_platform` import line just above our
 insertion point in `fused_allreduce_gemma_rms_norm.py` (AITER/ROCm support,
-unrelated to this patch — just needed as extra context). All three variants
-verified with a real `patch --dry-run` + full apply against a fresh worktree
-of the respective vLLM tag, not just visual inspection.
+unrelated to this patch — just needed as extra context). Ported to `v0.30.0`
+(2026-09-22, skipping the `0.29.1` final tag which was never cut) — no content
+changes needed at all, byte-identical to the `v0.29.1rc0` variant; `patch -p1`
+applies clean (only the same benign fuzz/offset already seen on `v0.29.1rc0`).
+All four variants verified with a real `patch --dry-run` + full apply against
+a fresh worktree of the respective vLLM tag, not just visual inspection.
 
 ### `minimax-m3-indexer-unfuse.v0.26.0.v1.patch`
 

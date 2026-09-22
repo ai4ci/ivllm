@@ -193,27 +193,26 @@ else
     echo "WARNING: no DeepGEMM git reference found to compile. skipping DeepGEMM."
   else
 
-    echo "=== compiling DeepGEMM from source ==="
-
-    deepGEMMgit="https://github.com/deepseek-ai/DeepGEMM.git"
     mkdir -p "$workingDir/deepgemm"
-    # Checkout the specific reference
-    git clone --recursive --shallow-submodules "$deepGEMMgit" "$workingDir/deepgemm"
     pushd "$workingDir/deepgemm"
+    (
+      echo "=== compiling DeepGEMM from source ==="
 
-    # Checkout the specific reference
-    git checkout "$deepGEMMRef"
+      deepGEMMgit="https://github.com/deepseek-ai/DeepGEMM.git"
+      # Checkout the specific reference
+      git clone --recursive --shallow-submodules "$deepGEMMgit" "$workingDir/deepgemm"
 
-    # COMPILE AND PIP INSTALL VIA UV
-    echo "Compiling DeepGEMM C++/CUDA extensions directly into venv..."
-    if uv pip install --no-build-isolation -vvv .; then
-      echo "DeepGEMM successfully compiled and installed from tmpfs."
-      popd
-      echo "DeepGEMM installation success"
-    else
-      popd
-      echo "DeepGEMM installation did not complete"
-    fi
+
+      # Checkout the specific reference
+      git checkout "$deepGEMMRef"
+
+      # COMPILE AND PIP INSTALL VIA UV
+      echo "Compiling DeepGEMM C++/CUDA extensions directly into venv..."
+      uv pip install --no-build-isolation -vvv .
+    ) && echo "DeepGEMM installation success" ||
+    echo "DeepGEMM installation did not complete"
+
+    popd
 
   fi
 fi
@@ -239,17 +238,20 @@ else
     # replicates specific instructions from:
     # https://raw.githubusercontent.com/uccl-project/uccl/refs/heads/main/build_inner.sh
 
+    mkdir -p "$workingDir/uccl"
+    pushd "$workingDir/uccl"
+
     (
       # The doublewordAI fork has been built for isambard.
       # ucclEPgit="https://github.com/doublewordai/uccl.git"
       # most of the pull requests have been merged
       ucclEPgit="https://github.com/uccl-project/uccl.git"
-      mkdir -p "$workingDir/uccl"
+
 
       if git clone --recursive --shallow-submodules -b main "$ucclEPgit" "$workingDir/uccl"; then
 
-        pushd "$workingDir/uccl"
-        echo "--> Compiling P2P extension components..."
+
+          echo "--> Compiling P2P extension components..."
             cd p2p && make clean && make "-j$(nproc)" && cd ..
 
             mkdir -p uccl/lib

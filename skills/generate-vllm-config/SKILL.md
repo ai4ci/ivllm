@@ -34,6 +34,13 @@ FP8 is King on Isambard-AI: The absolute fastest way to run quantized models on 
 
 If you are picking out checkpoints to run on Isambard-AI, look for models compressed using LLM Compressor into FP8 format (often labeled as neuralmagic or vllm-compatible-fp8 on Hugging Face) for maximum scaling performance.
 
+**FP8-block vs FP8-dynamic — don't pick randomly, here's what the names actually mean.** These are two different, independently-varying things that checkpoint naming often blurs together (confirmed directly in vLLM's `Fp8Config`, `vllm/model_executor/layers/quantization/fp8.py`):
+
+- **Weight granularity**: *block-quantized* (`weight_block_size` set, typically `[128, 128]` — DeepSeek's own format) gives each small tile of a weight matrix its own scale factor; *non-block* (`weight_block_size` unset — the far more common case) uses one scale per whole tensor/channel. Block scales adapt to local value-range variation within a huge matrix, so they're **more accurate** than a single global scale — but they need a kernel that actually understands block dequantization to run fast (`deep_gemm`, as already used for DeepSeek-R1/V3 in the backend table below — not every `moe-backend`/`linear-backend` choice supports it).
+- **Activation scheme**: *dynamic* computes the FP8 scale for activations at runtime from the real values passing through (typically per-token); *static* uses a fixed scale pre-calibrated into the checkpoint. vLLM only allows block-quantized weights paired with dynamic activations (raises an error otherwise) — so "FP8-block" checkpoints are always also dynamic-activation. "FP8-dynamic" **on its own**, without "block" in the name (the common llm-compressor/neuralmagic/RedHat-AI convention, and what most `examples/` configs in this repo actually use), means the *simpler*, non-block case: one scale per tensor/channel, dynamic activations — not block-quantized at all, despite sharing the word "dynamic."
+
+**When both a block and a dynamic checkpoint exist for the same model** (this does happen — different orgs requantize the same base model differently): prefer the **block-quantized** one *if and only if* you're confident the backend you're setting (`moe-backend`/`linear-backend`) actually has fast block-dequant support for this architecture — `deep_gemm` is the confirmed case (DeepSeek family). If you're not sure the backend supports it, or the model architecture isn't one with an established block-quant kernel path, **default to the plain FP8-dynamic checkpoint instead** — broader kernel compatibility, no risk of silently falling back to a slow/generic path, and still the accuracy-competitive default for most models. Don't assume block is a strict upgrade; it only pays off with the matching kernel.
+
 NVFP4 is not supported on the GH200. The NVIDIA GH200 Grace Hopper Superchip is based on the Hopper architecture (Compute Capability 9.0). Hopper natively supports standard FP16, BF16, and FP8 (E4M3/E5M2) precisions, but it lacks the specialized execution units required for 4-bit floating-point data.
 
 For Maximum VRAM Savings (4-Bit): GPTQ INT4 or AWQ INT4. If you must shrink a model down to 4-bit to fit into memory, use standard integer-based quantization formats like AWQ or GPTQ. vLLM handles these formats smoothly on Hopper by mapping them to optimized Machete or Marlin GPU inference kernels. This is only worth doing where a model has about 400B parameters and would be too large for one node unquantised.
@@ -127,7 +134,7 @@ TP=8 configs *have* now been run in practice on Isambard (GLM-5.3-Flash, Nemotro
 
 | Issue | Impact | Fix |
 |-------|--------|-----|
-| **MoE + flashinfer** | 2+ hour JIT compilation hang | Must set `gdn-prefill-backend`, `moe-backend`, `attention-config`, `enable-flashinfer-autotune: false` (see Step 7) |
+| **MoE + flashinfer, TP≥2** | Historically a 2+ hour JIT compilation hang; `flashinfer-jit-cache` (now installed by `ivllm setup`) removes the compile-time part, but vLLM's own autotune-*result* cache is disabled for any multi-GPU run, so the benchmark sweep itself still re-runs unreused every job — real-world impact unconfirmed since the cache was added, see Step 7 | If startup is still slow, set `gdn-prefill-backend`, `moe-backend`, `attention-config`, `enable-flashinfer-autotune: false` (see Step 7) |
 | **Multi-node (any model, MoE or dense)** | vLLM startup crash: `Flashinfer allreduce is not supported for multi-node allreduce with 'trtllm' backend` | Set `compilation-config: '{"pass_config": {"fuse_allreduce_rms": false}}'` — **required on every multi-node (`pipeline-parallel-size > 1`) config, regardless of model or architecture** (see Step 5, Multi-node) |
 | **`-cc.dotted.shorthand`** | vLLM startup crash | Expand to long form: `-cc.key=val` → `compilation-config: '{"key": val}'` (see Step 8) |
 | **`tensor-parallel-size` does not divide attention heads** | vLLM crash on weight loading | tp must be 1, 2, or 4 and must evenly divide `num_attention_heads` |
@@ -516,9 +523,9 @@ moe-backend: triton
 all2all-backend: allgather_reducescatter  # Most stable on Slingshot 11
 ```
 
-🚨 **MoE models — flashinfer JIT hang (this causes 2+ hour startup delays)**:
+🚨 **MoE models — flashinfer JIT/autotune hang (historically 2+ hour startup delays) — status needs re-benchmarking**:
 
-If the model is MoE **and** `tensor-parallel-size >= 2`, **you must** set these four keys to force Triton kernels and disable the autotune profiling loop:
+This guidance predates `flashinfer-jit-cache` being installed by `ivllm setup`, which removes the *compilation* part of the original delay (pre-built kernel binaries, no more waiting on `nvcc`). It does **not** necessarily remove the *autotune benchmark sweep* — a separate, later step that actually times each candidate kernel implementation against real dummy data — and vLLM's own persistent cache for those results is unconditionally disabled for any run with `world_size > 1` (`kernel_warmup.py`: "tune on every rank so the collectives stay synchronized"), i.e. exactly MoE + `tensor-parallel-size >= 2`. So a real hang is still plausible for that case, just for a narrower reason than before — this hasn't been re-measured since the JIT cache was added, and settling it properly needs an actual benchmark (one run with flashinfer autotune left on vs. forced Triton, on a real MoE+TP≥2 model), not more reasoning from source. Until that's done, if a MoE + `tensor-parallel-size >= 2` job's startup is slow, force Triton kernels and disable the autotune sweep entirely with these four keys:
 
 ```yaml
 gdn-prefill-backend: "triton"
@@ -527,9 +534,7 @@ attention-config: '{"backend":"TRITON_ATTN"}'
 enable-flashinfer-autotune: false
 ```
 
-This applies to DeepSeek, Qwen3.5, Gemma, and all MoE models on Isambard AI. The autotune loop takes >2 hours on these models; the Triton kernels are pre-compiled and work immediately.
-
-If you do end up having to use them they will be cached and re-used in theory but if the user is complaining about long start up times this is where to start.
+Triton kernels here are pre-compiled and work immediately, so this remains a safe, known-good fallback — just don't assume it's still *required* by default the way it once was.
 
 - **FP8 quantization**: GH200/H100 (Hopper) has native FP8 tensor cores. If the model is memory-constrained or throughput is important, suggest `quantization: fp8`. This halves weight memory (`params_B × 1 GB` vs `× 2 GB`). Check if a pre-quantized `-FP8` variant exists on HuggingFace — prefer it over runtime quantization.
 - **Tool calling**: Always include `enable-auto-tool-choice: true` and the matching `tool-call-parser` unless the model is known not to support function calling (e.g. base/pretrain checkpoints, pure reasoning models without tool support). The parser is required — without it, tool call responses come back as raw text rather than structured `tool_calls` objects. See the tool-call parser table in `references/vllm-config-guide.md`.
@@ -787,7 +792,7 @@ Before writing the file, verify every item:
 
 ### Special options
 
-- [ ] **MoE model + tp ≥ 2**: flashinfer settings present (`gdn-prefill-backend`, `moe-backend`, `attention-config`, `enable-flashinfer-autotune: false`)
+- [ ] **MoE model + tp ≥ 2**: if startup is known/reported slow, flashinfer-forced-Triton settings present (`gdn-prefill-backend`, `moe-backend`, `attention-config`, `enable-flashinfer-autotune: false`) — no longer assumed mandatory by default, see Step 7
 - [ ] **Reasoning model**: correct `reasoning-parser` name from the recipe
 - [ ] **Tool calling**: `enable-auto-tool-choice: true` + matching `tool-call-parser` (or explicitly omitted for base models)
 - [ ] **Prefix caching**: `enable-prefix-caching: true` recommended for agent/chatbot use cases
@@ -863,7 +868,7 @@ Set `ivllm-debug-level: N` (0-5) in the job's yaml to progressively enable more 
 
 FlashInfer causes two genuinely different classes of problem here, and they need different fixes — don't reach for one when the other is needed.
 
-**Problem 1 — MoE JIT autotune hang (2+ hours on startup).** FlashInfer's autotune profiling loop can take 2+ hours on MoE models with GH200. This is a **config problem**, fixed entirely in yaml, no patching needed:
+**Problem 1 — MoE JIT/autotune hang (historically 2+ hours on startup) — needs re-benchmarking, not assumed fixed or still-broken.** FlashInfer's autotune profiling loop could take 2+ hours on MoE models with GH200. Since this guidance was written, `flashinfer-jit-cache` has been added to `ivllm setup`'s install — it ships pre-compiled kernel binaries, removing the `nvcc` JIT-compilation cost that was plausibly a large share of the original delay. It does **not** remove the *autotune benchmark sweep* itself (a distinct step: real dummy-data forward passes timing each candidate kernel implementation), and vLLM's own cache for those results is unconditionally disabled whenever `world_size > 1` — exactly the MoE + `tensor-parallel-size >= 2` case this was written for — so the sweep still re-runs, uncached, on every such job regardless of the JIT cache. **Net effect unknown until someone actually times it**: one real run with flashinfer autotune left on vs. forced Triton, on a real MoE+TP≥2 model, would settle this properly. Until then, this remains the known-good fallback if startup is slow — a **config problem**, fixed entirely in yaml, no patching needed:
 
 ```yaml
 gdn-prefill-backend: "triton"
@@ -872,7 +877,7 @@ attention-config: '{"backend":"TRITON_ATTN"}'
 enable-flashinfer-autotune: false  # Explicitly kills the profiling loop
 ```
 
-Required for every MoE model with `tensor-parallel-size >= 2`. ⚠️ **This flag has a real trap**: `enable-flashinfer-autotune: false` as a bare yaml boolean is silently **dropped** by vLLM's own `--config` loader for any flag whose CLI default isn't already `False` (confirmed against `vllm/utils/argparse_utils.py` — the yaml→argv conversion only emits `--flag` when the value is `True`, never emits anything for `False`, which only works if "absent" already means off; `enable_flashinfer_autotune` defaults to `None`, later resolved to `True` by the active optimization-level preset). **Always wrap it in the JSON-blob form instead**: `kernel-config: '{"enable_flashinfer_autotune": false}'` — dict-valued yaml keys are JSON-serialized as-is and don't hit this code path. This exact bug caused a reproducible startup OOM across multiple MiniMax-M3 debugging sessions before being traced — every `vllm.yaml` in this repo using the bare boolean form was silently unaffected by it.
+⚠️ **This flag has a real trap**: `enable-flashinfer-autotune: false` as a bare yaml boolean is silently **dropped** by vLLM's own `--config` loader for any flag whose CLI default isn't already `False` (confirmed against `vllm/utils/argparse_utils.py` — the yaml→argv conversion only emits `--flag` when the value is `True`, never emits anything for `False`, which only works if "absent" already means off; `enable_flashinfer_autotune` defaults to `None`, later resolved to `True` by the active optimization-level preset). **Always wrap it in the JSON-blob form instead**: `kernel-config: '{"enable_flashinfer_autotune": false}'` — dict-valued yaml keys are JSON-serialized as-is and don't hit this code path. This exact bug caused a reproducible startup OOM across multiple MiniMax-M3 debugging sessions before being traced — every `vllm.yaml` in this repo using the bare boolean form was silently unaffected by it.
 
 **Problem 2 — `EngineCore` import hang (silent, no crash, GPU util pinned at 0%, ~5 minutes then nothing).** Different mechanism entirely: `flashinfer`'s own package `__init__` makes an eager `torch.cuda.get_device_capability()` call at import time. Two vLLM files import `flashinfer.comm` unconditionally at module level (`vllm/compilation/passes/fusion/allreduce_rms_fusion.py`, `vllm/distributed/device_communicators/flashinfer_all_reduce.py`), pulled in transitively during model-class resolution — **including inside `EngineCore`'s own process**, which has no CUDA context yet and no legitimate use for either module. This is a **source problem**, not fixable from yaml — it needs an `ivllm patch` (see below).
 

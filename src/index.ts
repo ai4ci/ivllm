@@ -35,6 +35,11 @@ async function main() {
             'Force reinstallation of the vLLM version even if it exists',
             false,
         )
+        .option(
+            '--retry',
+            'Retry failed installation of vLLM version.',
+            false,
+        )
         .action(cmdSetup);
 
     program
@@ -272,12 +277,12 @@ async function cmdConfig(options: {
  */
 async function cmdSetup(
     vllmVersion: string,
-    options: { force: boolean },
+    options: { force: boolean, retry: boolean },
 ): Promise<void> {
     const config = loadCredentials();
     assertConfigured(config);
     const backend = getBackend(config);
-    await backend.setup(vllmVersion, options.force);
+    await backend.setup(vllmVersion, options.force, options.retry);
 }
 
 /**

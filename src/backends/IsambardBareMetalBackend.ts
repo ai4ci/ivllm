@@ -47,12 +47,12 @@ export class IsambardBareMetalBackend extends Backend {
         this.bootstrapped = true;
     }
 
-    async setup(version: string, force?: boolean): Promise<void> {
+    async setup(version: string, force?: boolean, retry?: boolean): Promise<void> {
         await this.bootstrap();
         const remoteEngine = await this.getRemoteEngine();
 
         const { stdout, exitCode } = await this.ops.runRemote(
-            `${remoteEngine}/ivllm-setup.sh -v "${version}"${force ? ' -f' : ''}`,
+            `${remoteEngine}/ivllm-setup.sh -v "${version}"${force ? ' -f' : ''}${retry ? ' -r' : ''}`,
             { env: this.envs, silent: false },
         );
 
