@@ -1,0 +1,51 @@
+metadata:
+    target: Isambard-AI GH200
+    created-by: Rob
+    version: 0.0.1
+    lifecycle: experimental
+min-vllm-version: "0.30.0"
+idle-timeout: 60
+
+# Model: 763B total parameters, 8/16B active parameters (MoE)
+# Using the full fp8 unquantised base model to keep in the fp8 sweet spot
+# Architecture: Mixture of Experts (MoE) with hybrid CSA+HCA attention
+#   Compressed Sparse Attention (CSA) and Heavily Compressed Attention (HCA)
+#   reduce the KV cache footprint to just 10% of V3.2.
+
+model: deepseek-ai/DeepSeek-V4.1-Flash
+tensor-parallel-size: 8
+enable-expert-parallel: true
+
+# Highly KV-cache efficient; FP8 KV cache further reduces memory footprint
+kv-cache-dtype: fp8_ds_mla
+block-size: 256
+
+max-model-len: auto #1048576
+max-num-seqs: 16
+gpu-memory-utilization: 0.92
+max-cudagraph-capture-size: 256
+engram-config: '{"cpu_offload":true}'
+max-num-batched-tokens: 4096
+
+trust-remote-code: true
+
+# Thinking / reasoning — exposes explicit step-by-step reasoning
+reasoning-parser: deepseek_v41
+
+
+# Tool calling — DeepSeek V4 uses a custom protocol;
+enable-auto-tool-choice: true
+tool-call-parser: deepseek_v41
+tokenizer-mode: deepseek_v41
+
+# Prefix caching — valuable for repeated system prompts and CoT contexts.
+enable-prefix-caching: true
+
+env:
+    PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    VLLM_USE_V2_MODEL_RUNNER: 1
+    VLLM_USE_RUST_FRONTEND: 1
+
+speculative-config: '{"method": "deepseek_mtp","num_speculative_tokens": 3}'
+
+mm-encoder-tp-mode: data

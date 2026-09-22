@@ -492,7 +492,9 @@ set_jit_caches() {
     export EP_JIT_CACHE_DIR="$localdir/deep_ep_cache"
     export DG_JIT_CACHE_DIR="$localdir/deep_gemm_cache"
     export TRITON_CACHE_DIR="$localdir/triton"
+    export TILELANG_CACHE_DIR="$localdir/tilelang"
     export FLASHINFER_JIT_CACHE_DIR="$localdir/flashinfer"
+    export FLASHINFER_WORKSPACE_BASE="$localdir"
     export VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR="$localdir/flashinfer_auto"
     export TORCHINDUCTOR_CACHE_DIR="$localdir/torchinductor"
 }

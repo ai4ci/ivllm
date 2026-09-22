@@ -1,9 +1,9 @@
 metadata:
     target: Isambard-AI GH200
     created-by: Rob
-    version: 0.0.1
-    lifecycle: experimental
-min-vllm-version: "0.29.1"
+    version: 0.3.0
+    lifecycle: operational
+min-vllm-version: "0.30.0"
 # ivllm-debug-level: 3
 idle-timeout: 60
 
@@ -24,15 +24,22 @@ distributed-backend-executor: ray
 enable-expert-parallel: true
 no-enable-flashinfer-autotune: true
 
-max-model-len: auto #1048576
+# enforce-eager: true
+# compilation-config: '{"cudagraph_mode": "PIECEWISE"}'
+# max-cudagraph-capture-size: 8
+
+max-model-len: 1048576
 gpu-memory-utilization: 0.95
 max-num-seqs: 16
 max-num-batched-tokens: 16384
 
 # Probably required.
-# Would need patched 0.29.1
+# ValueError: Flashinfer allreduce is not supported for multi-node allreduce with 'trtllm' backend. Please use 'mnnvl' backend instead.
+# requires patching:
+# ivllm patch 0.30.0 patches/0.30.0/disable-flashinfer-unified.v0.30.0.v1.patch
 env:
    IVLLM_DISABLE_FLASHINFER: 1
+   VLLM_USE_BREAKABLE_CUDAGRAPH: 0
 
 # Parsers
 enable-auto-tool-choice: true

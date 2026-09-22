@@ -229,10 +229,12 @@ rooted at `resolve_localdir(job)` (`/local/user/<uid>`):
 | `EP_JIT_CACHE_DIR` | `$localdir/deep_ep_cache` |
 | `DG_JIT_CACHE_DIR` | `$localdir/deep_gemm_cache` |
 | `TRITON_CACHE_DIR` | `$localdir/triton` |
-| `FLASHINFER_JIT_CACHE_DIR` | `$localdir/flashinfer` |
+| `FLASHINFER_JIT_CACHE_DIR` | `$localdir/flashinfer` — **not a real flashinfer env var, confirmed 2026-09-22 (see `active-issues.md`'s glm53flash entry). Has never redirected anything.** |
 | `VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR` | `$localdir/flashinfer_auto` |
 | `TORCHINDUCTOR_CACHE_DIR` | `$localdir/torchinductor` |
 | `VLLM_XLA_CACHE_PATH` | `$localdir/xla` |
+| `TILELANG_CACHE_DIR` | **not yet added — should be** `$localdir/tilelang` (see `active-issues.md`) |
+| `FLASHINFER_WORKSPACE_BASE` | **not yet added — should be** `$localdir` (the real flashinfer cache-root override; see `active-issues.md`) |
 
 Notes:
 - `resolve_localdir(job)`: **TODO in source itself** — `brics/userenv`
