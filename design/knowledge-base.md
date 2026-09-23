@@ -86,7 +86,7 @@ is `always`/`never`, not in the tuning tables below.
 | `VLLM_ALLREDUCE_USE_SYMM_MEM` | `0` | always | | disables broken experimental allocator |
 | `VLLM_COMPILE_CACHE_SAVE_FORMAT` | `binary` | always | | changed from `unpacked` 2026-09-03; per vLLM's own docs, `binary` is multiprocess-safe, `unpacked` is not (race conditions with concurrent `vllm serve` processes sharing a cache) |
 | `DG_JIT_USE_RUNTIME_API` | `1` | always | DeepGEMM | |
-| `VLLM_USE_DEEP_GEMM_E8M0` | `0` | always | Hopper/GH200 | E8M0 unsupported |
+| `VLLM_USE_DEEP_GEMM_E8M0` | `0` | always | Hopper/GH200 | **stale/dogma, see note 2026-09-23 — not actually unsupported on Hopper** |
 | `EP_DISABLE_GIN` | `1` | always | DeepEP/UCCL-EP | |
 | `FI_CXI_RDZV_THRESHOLD` | `0` | never (expecting "always rendezvous") | | floored to 192 regardless — **matches vendor's own guidance, see note** |
 | `FI_CXI_RDZV_GET_MIN` | `0` | never (expecting "always rendezvous") | | see `FI_CXI_RDZV_THRESHOLD` |
@@ -162,7 +162,7 @@ Notes:
   overflow / "LE resources not recovered" flow-control errors, and Slingshot
   memory-hook deadlocks respectively) (recommendation).
 - `EP_DISABLE_GIN` per [deepseek-ai/DeepEP](https://github.com/deepseek-ai/DeepEP) (documentation).
-- `VLLM_USE_DEEP_GEMM_E8M0=0`: E8M0 is not supported on Hopper, which GH200 is (documentation).
+- `VLLM_USE_DEEP_GEMM_E8M0=0`: **"E8M0 not supported on Hopper" checked against vLLM 0.30.0 source directly, 2026-09-23, and found to be dogma, not fact — no citation ever existed for it, just an inherited comment.** `current_platform.support_deep_gemm()` (`vllm/platforms/cuda.py:721-727`) explicitly includes SM90 (Hopper) alongside Blackwell. The E8M0 scale-format oracle (`vllm/utils/deep_gemm.py`, `DeepGemmQuantScaleFMT.init_oracle_cache()`) has a dedicated, named non-Blackwell variant, `FLOAT32_CEIL_UE8M0` ("compute float32 scales and ceil to UE8M0, keep in a float32 tensor"), dispatched automatically on anything that isn't SM100/SM120 — i.e. Hopper has a real, first-class E8M0 code path, just not the packed-int32 `UE8M0` format Blackwell's hardware accelerates. The only Blackwell-*specific* E8M0 guard in that file is a known-bad-accuracy model exclusion list scoped to SM100+ only (`is_deep_gemm_e8m0_impaired()`) — it returns `False` immediately on Hopper, doesn't block anything there. Separately, `transformers_utils/config.py:842-865` auto-enables this flag whenever a checkpoint's own `quantization_config.scale_fmt == "ue8m0"` is detected — this global `=0` override was silently fighting that per-checkpoint auto-detection for every model whose checkpoint requests it, not just a no-op default. **Empirically confirmed, `ds41flash`, 2026-09-23**: `VLLM_USE_DEEP_GEMM_E8M0: 1` starts and serves successfully on GH200 (previously failing to reach this path at all under the old `=0` default, silently falling back to Marlin). **Not yet confirmed**: whether it's actually exercising the E8M0/DeepGEMM path at all versus still falling back to something else for an unrelated reason — Rob explicitly deferred that investigation since nothing is broken. Worth a real check (log grep for the `"DeepGEMM E8M0 enabled on current platform"`/`"UE8M0 for DeepGEMM disabled"` info/warning lines from `deep_gemm.py`/`config.py` above) before trusting this as a confirmed perf win, not just "didn't crash."
 - `CUDA_MANAGED_FORCE_DEVICE_ALLOC`: per `cuda-env.md`
   (`design/references/cuda-env.md`), a non-zero value "forces the driver to
   use device memory for physical storage" for all Unified Memory in the

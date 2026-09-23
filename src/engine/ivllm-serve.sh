@@ -237,9 +237,11 @@ if [[ $EXIT_CODE == 0 ]]; then
 
 else
     echo "  Slurm job rejected"
+    echo "  N.B. you can only have one interactive job running at a time"
+    echo "  use --batch/-b mode to start multiple jobs"
     echo "=================================="
     export SLURM_NODEID=0
-    update_status_failed "$IVLLM_JOB" "SLURM rejection" "$EXIT_CODE"
+    update_status_stopped "$IVLLM_JOB" "SLURM rejection" "$EXIT_CODE"
 fi
 
 popd > /dev/null 2>&1 || exit $EXIT_CODE

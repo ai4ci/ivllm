@@ -4,7 +4,6 @@ metadata:
     version: 0.3.0
     lifecycle: operational
 min-vllm-version: "0.30.0"
-# ivllm-debug-level: 3
 idle-timeout: 60
 
 # vLLM config for zai-org/GLM-5.3-Flash on Isambard AI

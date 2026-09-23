@@ -1,24 +1,20 @@
 metadata:
     target: Isambard-AI GH200
     created-by: Rob
-    version: 0.0.1
-    lifecycle: experimental
+    version: 0.3.0
+    lifecycle: operational
 min-vllm-version: "0.30.0"
 idle-timeout: 60
 
 # Model: 763B total parameters, 8/16B active parameters (MoE)
-# Using the full fp8 unquantised base model to keep in the fp8 sweet spot
-# Architecture: Mixture of Experts (MoE) with hybrid CSA+HCA attention
-#   Compressed Sparse Attention (CSA) and Heavily Compressed Attention (HCA)
-#   reduce the KV cache footprint to just 10% of V3.2.
+# Using the full fp8 unquantised base model
 
 model: deepseek-ai/DeepSeek-V4.1-Flash
 tensor-parallel-size: 8
 enable-expert-parallel: true
 
-# Highly KV-cache efficient; FP8 KV cache further reduces memory footprint
 kv-cache-dtype: fp8_ds_mla
-block-size: 256
+block-size: 64
 
 max-model-len: auto #1048576
 max-num-seqs: 16
@@ -42,10 +38,11 @@ tokenizer-mode: deepseek_v41
 enable-prefix-caching: true
 
 env:
+    IVLLM_DISABLE_FLASHINFER: 1
     PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
     VLLM_USE_V2_MODEL_RUNNER: 1
-    VLLM_USE_RUST_FRONTEND: 1
+    VLLM_USE_DEEP_GEMM_E8M0: 1
 
-speculative-config: '{"method": "deepseek_mtp","num_speculative_tokens": 3}'
+speculative-config: '{"method": "dspark","num_speculative_tokens": 3}'
 
 mm-encoder-tp-mode: data

@@ -189,16 +189,44 @@ if uv pip show deep_gemm &>/dev/null; then
 else
   deepGEMMRef=$(curl -fsSL "https://raw.githubusercontent.com/vllm-project/vllm/refs/heads/releases/v$vllmVersion"/tools/install_deepgemm.sh | grep "DEEPGEMM_GIT_REF=" | head -n 1 | sed 's/.*="\(.*\)".*/\1/')
 
+  deepGEMMgit=$(curl -fsSL "https://raw.githubusercontent.com/vllm-project/vllm/refs/heads/releases/v$vllmVersion"/tools/install_deepgemm.sh | grep "DEEPGEMM_GIT_REPO=" | head -n 1 | sed 's/.*="\(.*\)".*/\1/')
+
+  deepGEMMgit="${deepGEMMgit:-git://github.com/deepseek-ai/DeepGEMM.git}"
+
   if [[ -z ${deepGEMMRef:-} ]]; then
     echo "WARNING: no DeepGEMM git reference found to compile. skipping DeepGEMM."
   else
+
+    if (
+      # DeepGEMM's vendored DeepJIT submodule (third-party/deep_jit) hard-requires
+      # elfutils/libdwfl.h to compile (DWARF symbol support for JIT-error stack
+      # traces) — not available via any system package/module on Isambard, and
+      # no uv/pip package ships it. Install it into node-local scratch via
+      # micromamba (a single static binary, no root needed) and point the
+      # compiler at it. Build-time only — DeepJIT dlopens the actual DWARF
+      # support at runtime, so this doesn't need to survive past this step.
+      echo "=== installing elfutils headers for DeepGEMM build ==="
+      mkdir -p "$workingDir/elfutils-env"
+      if [[ ! -x "$workingDir/micromamba" ]]; then
+        curl -Ls https://micro.mamba.pm/api/micromamba/linux-aarch64/latest \
+          | tar -xj -C "$workingDir" bin/micromamba --strip-components=1
+      fi
+      "$workingDir/micromamba" create -y -r "$workingDir/mamba-root" -p "$workingDir/elfutils-env" \
+        -c conda-forge elfutils
+    ); then
+      export CPATH="$workingDir/elfutils-env/include:${CPATH:-}"
+      export LIBRARY_PATH="$workingDir/elfutils-env/lib:${LIBRARY_PATH:-}"
+      export LD_LIBRARY_PATH="$workingDir/elfutils-env/lib:${LD_LIBRARY_PATH:-}"
+      echo "=== elfutils installed for deepgemm build ==="
+    else
+      echo "=== elfutils install failed ==="
+    fi
 
     mkdir -p "$workingDir/deepgemm"
     pushd "$workingDir/deepgemm"
     (
       echo "=== compiling DeepGEMM from source ==="
 
-      deepGEMMgit="https://github.com/deepseek-ai/DeepGEMM.git"
       # Checkout the specific reference
       git clone --recursive --shallow-submodules "$deepGEMMgit" "$workingDir/deepgemm"
 

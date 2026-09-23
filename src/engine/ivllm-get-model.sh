@@ -34,8 +34,8 @@ while getopts "m:t:l:h" opt; do
 done
 
 # shellcheck disable=2119
-modelDir=$(resolve_model_dir)
-export HF_HOME="$modelDir/hf"
+hfDir=$(resolve_model_dir)
+export HF_HOME="$hfDir/hf"
 if [[ -z $LOG ]]; then
     LOG=$(resolve_job_log "hf-download")
 fi
@@ -50,7 +50,7 @@ exec > >(tee "$LOG") 2>&1
 
 echo "[model] checking for model: $HF_MODEL"
 
-hfVenv="$modelDir/venv"
+hfVenv="$hfDir/venv"
 
 # Check if the virtual environment binary exists instead of checking the command path
 if [ ! -f "$hfVenv/bin/hf" ]; then
@@ -94,13 +94,27 @@ else
         echo "[model] ERROR: No token parameter supplied or HF_TOKEN env var set" >&2
         exit 1
     fi
-    echo "[model] downloading $HF_MODEL to $HF_HOME"
+
+    model_dir=$(resolve_model_dir "$HF_MODEL")
+
+    echo "[model] downloading $HF_MODEL to $model_dir"
 
     # srun executes in the foreground, streams output live, which will end
     # up in the log due to the tee command above.
     # and automatically preserves/returns the exit code of the script.
     # HF_HOME and HF_TOKEN wil be resolved.
     # --partition=interactive \ seems unnecessary?
+
+    export PYTHONUNBUFFERED=1
+
+    (
+        while true; do
+            sleep 30
+            echo "[model] still downloading... $(du -sh "$model_dir" 2>/dev/null | cut -f1) so far"
+        done
+    ) &
+    heartbeat_pid=$!
+    trap 'kill "$heartbeat_pid" 2>/dev/null' EXIT
 
     srun \
         --partition=interactive \
@@ -113,6 +127,9 @@ else
 
     # Capture the direct exit code of the srun command
     exit_code=$?
+
+    kill "$heartbeat_pid" 2>/dev/null
+    trap - EXIT
 
     echo "[model] download job finished with exit code: $exit_code"
     exit "$exit_code"
