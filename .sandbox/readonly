@@ -1,0 +1,10 @@
+.github/
+.claude/
+opencode.json
+.gitignore
+package-lock.json
+poetry.lock
+Cargo.lock
+pnpm-lock.yaml
+yarn.lock
+mise.toml

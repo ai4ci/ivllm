@@ -123,7 +123,13 @@ Notes:
   `PATH` itself (which the `PATH` export above already guarantees) —
   pointing Triton at it directly removes that dependency.
 - `VLLM_ENABLE_CUDA_COMPATIBILITY`/`_PATH`: vLLM's own forward-compatibility
-  mechanism, pointed at the NVHPC-provided compat libs.
+  mechanism, pointed at the NVHPC-provided compat libs. **No longer needed
+  since Isambard's 2026-10 update moved the kernel driver to 580.173.02,
+  which runs CUDA 12.9 natively.** Forward compat only works when the compat
+  `libcuda` (575.57.08 here) is newer than the kernel driver; once the driver
+  is newer, it fails with CUDA error 803. The SDK itself is unchanged. Should
+  be enabled only when the driver is older than the compat library (see
+  `active-issues.md`, 2026-10-09).
 
 ## Networking configuration
 

@@ -348,6 +348,23 @@ ivllm connect <job>
 
 * * *
 
+## Troubleshooting
+
+1. Permissions error when starting a model you didn't download.
+
+Ask the person who downloaded the model to run this on Isambard to make the files
+group readable:
+
+```
+find $PROJECTDIR/model/hf/hub -path '*/trees/*.json' ! -perm -g=r -exec chmod g+rw {} +
+```
+
+Cause by a hf download bug, this is fixed in the ivllm code since `3.16.0`
+
+2. Cuda version mismatch causing crash on startup.
+
+Update your `ivllm` version to `>=3.16.0`
+
 ## Development
 
 Design documents in `design/` folder

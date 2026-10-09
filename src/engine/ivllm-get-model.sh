@@ -88,6 +88,9 @@ fi
 # Check if it exists in the cache by adding the prefix for the match
 if hf cache ls --format json | jq -e ".[] | select(.repo_id == \"$HF_MODEL\")" > /dev/null; then
     echo "[model] $HF_MODEL already cached in $HF_HOME."
+
+    # Fix any broken permissions issues:
+    chmod -R g+rw "$HF_HOME/hub/models--${HF_MODEL//\//--}/trees" 2>/dev/null || true
     exit 0
 else
     if [[ -z "$HF_TOKEN" ]]; then
@@ -127,6 +130,11 @@ else
 
     # Capture the direct exit code of the srun command
     exit_code=$?
+
+    # Fix HF bug where model trees directory written with permissions 0600
+    if (( exit_code == 0 )); then
+        chmod -R g+rw "$HF_HOME/hub/models--${HF_MODEL//\//--}/trees" 2>/dev/null || true
+    fi
 
     kill "$heartbeat_pid" 2>/dev/null
     trap - EXIT

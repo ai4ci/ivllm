@@ -113,6 +113,16 @@ export EP_NIC_NAME="cxi0"
 
 # Set up compilation environment variables if local rdma-core was successfully built or already present
 # 2. Hardcode the definitive Cray libfabric absolute paths for Isambard AI
+# Follow the libfabric the system module provides; fall back to the newest
+# install under /opt/cray/libfabric. Don't hardcode a version.
+if LIBFABRIC_ROOT=$(pkg-config --variable=prefix libfabric 2>/dev/null) && [[ -n $LIBFABRIC_ROOT ]]; then
+else
+    LIBFABRIC_ROOT=$(ls -d /opt/cray/libfabric/*/ 2>/dev/null | sort -V | tail -n1)
+    LIBFABRIC_ROOT=${LIBFABRIC_ROOT%/}
+fi
+LIBFABRIC_INC_DIR="$LIBFABRIC_ROOT/include"
+LIBFABRIC_LIB_DIR="$LIBFABRIC_ROOT/lib64"
+
 LIBFABRIC_INC_DIR="/opt/cray/libfabric/1.22.0/include"
 LIBFABRIC_LIB_DIR="/opt/cray/libfabric/1.22.0/lib64"
 
@@ -128,14 +138,24 @@ export LD_LIBRARY_PATH="$RDMA_ROOT/lib64:$RDMA_ROOT/lib:${LIBFABRIC_LIB_DIR}:${L
 export LIBRARY_PATH="$RDMA_ROOT/lib64:$RDMA_ROOT/lib:${LIBFABRIC_LIB_DIR}:${LIBRARY_PATH:-}"
 
 # Library path: brics/nccl libs first, then compat libs, then CUDA, compilers, NCCL, NVSHMEM, math.
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:$RDMA_ROOT/lib:$NVHPC_ROOT/cuda/$CUDA_VERSION/compat:$NVHPC_ROOT/cuda/$CUDA_VERSION/lib64:$NVHPC_ROOT/compilers/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nccl/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nvshmem/lib:$NVHPC_ROOT/math_libs/$CUDA_VERSION/lib64"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:$RDMA_ROOT/lib:$NVHPC_ROOT/cuda/$CUDA_VERSION/lib64:$NVHPC_ROOT/compilers/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nccl/lib:$NVHPC_ROOT/comm_libs/$CUDA_VERSION/nvshmem/lib:$NVHPC_ROOT/math_libs/$CUDA_VERSION/lib64"
 
-# Explicitly force the loader to link the forward-compat debugger library
-export LD_PRELOAD="$NVHPC_ROOT/cuda/$CUDA_VERSION/compat/libcudadebugger.so.1${LD_PRELOAD:+:${LD_PRELOAD}}"
+# CUDA forward compatibility: only when the kernel driver is older than the
+# compat libcuda. A compat libcuda older than the driver fails with CUDA
+# error 803 (seen after Isambard moved to driver 580, 2026-10).
+compatDir="$NVHPC_ROOT/cuda/$CUDA_VERSION/compat"
+kernelDriver=$(sed -n 's/.*Kernel Module.*  \([0-9][0-9.]*\)  .*/\1/p' /proc/driver/nvidia/version 2>/dev/null)
+compatDriver=$(basename "$(ls "$compatDir"/libcuda.so.[0-9]*.* 2>/dev/null | head -n1)" | sed 's/^libcuda\.so\.//')
 
-# vLLM CUDA forward compatibility
-export VLLM_ENABLE_CUDA_COMPATIBILITY=1
-export VLLM_CUDA_COMPATIBILITY_PATH="$NVHPC_ROOT/cuda/$CUDA_VERSION/compat"
+if [[ -n $kernelDriver && -n $compatDriver ]] &&
+    [[ $(printf '%s\n%s\n' "$kernelDriver" "$compatDriver" | sort -V | head -n1) != "$compatDriver" ]]; then
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:$compatDir"
+    export LD_PRELOAD="$compatDir/libcudadebugger.so.1${LD_PRELOAD:+:${LD_PRELOAD}}"
+    export VLLM_ENABLE_CUDA_COMPATIBILITY=1
+    export VLLM_CUDA_COMPATIBILITY_PATH="$compatDir"
+else
+    export VLLM_ENABLE_CUDA_COMPATIBILITY=0
+fi
 
 # VLLM_NCCL_SO_PATH
 # Path to the NCCL library file. It is needed because nccl>=2.19 brought
